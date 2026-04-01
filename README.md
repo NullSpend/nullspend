@@ -113,17 +113,46 @@ ns = NullSpend(api_key="ns_live_sk_...")
 
 ### Proxy Mode — full enforcement
 
-<p align="center">
-  <img src="docs/assets/architecture-proxy.svg" alt="Proxy architecture — authorize, reserve, forward, track, settle" width="800" />
-</p>
+```mermaid
+flowchart LR
+    A["Your Agent"] -->|LLM request| B["NullSpend Proxy"]
+    B -->|forward| C["OpenAI / Anthropic"]
+    C -->|response| B
+    B -->|response + cost| A
+    B -->|events| D["Dashboard & Webhooks"]
 
-Every request follows the same path: **authorize** the spend against your budget, **reserve** the estimated cost atomically, **forward** to the provider, **track** the actual token usage, **settle** the final cost. If the budget can't cover it, the request never leaves.
+    subgraph B["NullSpend Proxy"]
+        direction TB
+        B1["1. Authorize"] --> B2["2. Reserve budget"]
+        B2 --> B3["3. Forward to provider"]
+        B3 --> B4["4. Track usage & cost"]
+        B4 --> B5["5. Settle & reconcile"]
+    end
+
+    style B fill:#eff6ff,stroke:#2563eb,stroke-width:2px
+```
+
+Every request follows the same path: **authorize** the spend against your budget, **reserve** the estimated cost atomically, **forward** to the provider, **track** the actual token usage, **settle** the final cost. If the budget can't cover it, the request never leaves. Sub-millisecond enforcement overhead on the global edge via Cloudflare Workers and Durable Objects.
 
 ### SDK Mode — no proxy in the path
 
-<p align="center">
-  <img src="docs/assets/architecture-sdk.svg" alt="SDK architecture — direct API calls with async cost reporting" width="800" />
-</p>
+```mermaid
+flowchart LR
+    subgraph A["Your Agent"]
+        direction TB
+        S["@nullspend/sdk"] --> S1["Intercept request"]
+        S1 --> S2["Parse response"]
+        S2 --> S3["Calculate cost"]
+        S3 --> S4["Report async"]
+    end
+
+    A ==>|"direct API call"| C["OpenAI / Anthropic"]
+    C ==>|response| A
+    S4 -.->|"cost events"| D["NullSpend API"]
+
+    style A fill:#f5f3ff,stroke:#7c3aed,stroke-width:2px
+    style D fill:#f9fafb,stroke:#d1d5db
+```
 
 Don't want to route traffic through a proxy? The SDK wraps your existing fetch call, calculates cost client-side using the built-in pricing engine, and reports to NullSpend asynchronously. Your requests go directly to the provider — NullSpend never touches the request path.
 
