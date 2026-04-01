@@ -124,7 +124,7 @@ Not every use case needs the same level of control. Pick the integration path th
 | Velocity controls | Yes | — | — | — | — |
 | Session limits | Yes | — | — | — | — |
 | Request/response logging | Yes | — | — | — | — |
-| HITL approval | — | Yes | Yes | Yes | Yes |
+| HITL approval | Via SDK | Yes | Yes | Yes | Yes |
 | MCP tool gating | — | — | — | Yes | Yes |
 | Budget self-audit | — | Yes | Yes | Yes | — |
 
