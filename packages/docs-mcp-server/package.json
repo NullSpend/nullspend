@@ -1,0 +1,56 @@
+{
+  "name": "@nullspend/docs",
+  "version": "0.1.0",
+  "description": "MCP server that serves NullSpend documentation to AI coding tools",
+  "type": "module",
+  "license": "Apache-2.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "nullspend-docs": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsx scripts/build-content.ts && tsup",
+    "prepublishOnly": "pnpm build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "nullspend",
+    "mcp",
+    "model-context-protocol",
+    "documentation",
+    "ai-coding",
+    "finops"
+  ],
+  "homepage": "https://nullspend.com",
+  "author": "NullSpend <chris@nullspend.dev>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NullSpend/nullspend",
+    "directory": "packages/docs-mcp-server"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "tsup": "^8.4.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

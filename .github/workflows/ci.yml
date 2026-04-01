@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Lint, Typecheck & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @nullspend/db
+        run: pnpm db:build
+
+      - name: Build @nullspend/cost-engine
+        run: pnpm cost-engine:build
+
+      - name: Build @nullspend/sdk
+        run: pnpm sdk:build
+
+      - name: Build @nullspend/claude-agent
+        run: pnpm claude-agent:build
+
+      - name: Build @nullspend/docs
+        run: pnpm docs-mcp:build
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Proxy typecheck
+        run: pnpm proxy:typecheck
+
+      - name: Proxy tests
+        run: pnpm proxy:test
+
+      - name: SDK tests
+        run: pnpm sdk:test
+
+      - name: Cost engine tests
+        run: pnpm cost-engine:test
+
+      - name: Claude agent tests
+        run: pnpm claude-agent:test
+
+      - name: MCP server tests
+        run: pnpm mcp:test
+
+      - name: DB tests
+        run: pnpm db:test
+
+      - name: MCP proxy tests
+        run: pnpm mcp-proxy:test
+
+      - name: Docs MCP tests
+        run: pnpm docs-mcp:test

@@ -1,0 +1,281 @@
+{
+  "openai/gpt-5.4": {
+    "inputPerMTok": 2.50,
+    "cachedInputPerMTok": 0.25,
+    "outputPerMTok": 15.00
+  },
+  "openai/gpt-5.4-mini": {
+    "inputPerMTok": 0.75,
+    "cachedInputPerMTok": 0.075,
+    "outputPerMTok": 4.50
+  },
+  "openai/gpt-5.4-nano": {
+    "inputPerMTok": 0.20,
+    "cachedInputPerMTok": 0.02,
+    "outputPerMTok": 1.25
+  },
+  "openai/gpt-5.4-pro": {
+    "inputPerMTok": 30.00,
+    "cachedInputPerMTok": 30.00,
+    "outputPerMTok": 180.00
+  },
+  "openai/gpt-5.3-chat-latest": {
+    "inputPerMTok": 1.75,
+    "cachedInputPerMTok": 0.175,
+    "outputPerMTok": 14.00
+  },
+  "openai/gpt-5.3-codex": {
+    "inputPerMTok": 1.75,
+    "cachedInputPerMTok": 0.175,
+    "outputPerMTok": 14.00
+  },
+  "openai/o3-deep-research": {
+    "inputPerMTok": 5.00,
+    "cachedInputPerMTok": 5.00,
+    "outputPerMTok": 20.00
+  },
+  "openai/o4-mini-deep-research": {
+    "inputPerMTok": 1.00,
+    "cachedInputPerMTok": 1.00,
+    "outputPerMTok": 4.00
+  },
+  "openai/computer-use-preview": {
+    "inputPerMTok": 1.50,
+    "cachedInputPerMTok": 1.50,
+    "outputPerMTok": 6.00
+  },
+  "openai/gpt-4o": {
+    "inputPerMTok": 2.50,
+    "cachedInputPerMTok": 1.25,
+    "outputPerMTok": 10.00
+  },
+  "openai/gpt-4o-mini": {
+    "inputPerMTok": 0.15,
+    "cachedInputPerMTok": 0.075,
+    "outputPerMTok": 0.60
+  },
+  "openai/gpt-4.1": {
+    "inputPerMTok": 2.00,
+    "cachedInputPerMTok": 0.50,
+    "outputPerMTok": 8.00
+  },
+  "openai/gpt-4.1-mini": {
+    "inputPerMTok": 0.40,
+    "cachedInputPerMTok": 0.10,
+    "outputPerMTok": 1.60
+  },
+  "openai/gpt-4.1-nano": {
+    "inputPerMTok": 0.10,
+    "cachedInputPerMTok": 0.025,
+    "outputPerMTok": 0.40
+  },
+  "openai/o4-mini": {
+    "inputPerMTok": 1.10,
+    "cachedInputPerMTok": 0.275,
+    "outputPerMTok": 4.40
+  },
+  "openai/o3": {
+    "inputPerMTok": 2.00,
+    "cachedInputPerMTok": 0.50,
+    "outputPerMTok": 8.00
+  },
+  "openai/o3-mini": {
+    "inputPerMTok": 1.10,
+    "cachedInputPerMTok": 0.55,
+    "outputPerMTok": 4.40
+  },
+  "openai/o1": {
+    "inputPerMTok": 15.00,
+    "cachedInputPerMTok": 7.50,
+    "outputPerMTok": 60.00
+  },
+  "openai/gpt-5": {
+    "inputPerMTok": 1.25,
+    "cachedInputPerMTok": 0.125,
+    "outputPerMTok": 10.00
+  },
+  "openai/gpt-5-mini": {
+    "inputPerMTok": 0.25,
+    "cachedInputPerMTok": 0.025,
+    "outputPerMTok": 2.00
+  },
+  "openai/gpt-5-nano": {
+    "inputPerMTok": 0.05,
+    "cachedInputPerMTok": 0.005,
+    "outputPerMTok": 0.40
+  },
+  "openai/gpt-5.1": {
+    "inputPerMTok": 1.25,
+    "cachedInputPerMTok": 0.125,
+    "outputPerMTok": 10.00
+  },
+  "openai/gpt-5.2": {
+    "inputPerMTok": 1.75,
+    "cachedInputPerMTok": 0.175,
+    "outputPerMTok": 14.00
+  },
+  "anthropic/claude-sonnet-4-6": {
+    "inputPerMTok": 3.00,
+    "cachedInputPerMTok": 0.30,
+    "cacheWrite5mPerMTok": 3.75,
+    "cacheWrite1hPerMTok": 6.00,
+    "outputPerMTok": 15.00
+  },
+  "anthropic/claude-haiku-3.5": {
+    "inputPerMTok": 0.80,
+    "cachedInputPerMTok": 0.08,
+    "cacheWrite5mPerMTok": 1.00,
+    "cacheWrite1hPerMTok": 1.60,
+    "outputPerMTok": 4.00
+  },
+  "anthropic/claude-opus-4": {
+    "inputPerMTok": 15.00,
+    "cachedInputPerMTok": 1.50,
+    "cacheWrite5mPerMTok": 18.75,
+    "cacheWrite1hPerMTok": 30.00,
+    "outputPerMTok": 75.00
+  },
+  "anthropic/claude-opus-4-6": {
+    "inputPerMTok": 5.00,
+    "cachedInputPerMTok": 0.50,
+    "cacheWrite5mPerMTok": 6.25,
+    "cacheWrite1hPerMTok": 10.00,
+    "outputPerMTok": 25.00
+  },
+  "anthropic/claude-sonnet-4-5": {
+    "inputPerMTok": 3.00,
+    "cachedInputPerMTok": 0.30,
+    "cacheWrite5mPerMTok": 3.75,
+    "cacheWrite1hPerMTok": 6.00,
+    "outputPerMTok": 15.00
+  },
+  "anthropic/claude-opus-4-5": {
+    "inputPerMTok": 5.00,
+    "cachedInputPerMTok": 0.50,
+    "cacheWrite5mPerMTok": 6.25,
+    "cacheWrite1hPerMTok": 10.00,
+    "outputPerMTok": 25.00
+  },
+  "anthropic/claude-opus-4-1": {
+    "inputPerMTok": 15.00,
+    "cachedInputPerMTok": 1.50,
+    "cacheWrite5mPerMTok": 18.75,
+    "cacheWrite1hPerMTok": 30.00,
+    "outputPerMTok": 75.00
+  },
+  "anthropic/claude-sonnet-4": {
+    "inputPerMTok": 3.00,
+    "cachedInputPerMTok": 0.30,
+    "cacheWrite5mPerMTok": 3.75,
+    "cacheWrite1hPerMTok": 6.00,
+    "outputPerMTok": 15.00
+  },
+  "anthropic/claude-haiku-4-5": {
+    "inputPerMTok": 1.00,
+    "cachedInputPerMTok": 0.10,
+    "cacheWrite5mPerMTok": 1.25,
+    "cacheWrite1hPerMTok": 2.00,
+    "outputPerMTok": 5.00
+  },
+  "anthropic/claude-haiku-3": {
+    "inputPerMTok": 0.25,
+    "cachedInputPerMTok": 0.03,
+    "cacheWrite5mPerMTok": 0.30,
+    "cacheWrite1hPerMTok": 0.50,
+    "outputPerMTok": 1.25
+  },
+  "anthropic/claude-opus-4-6-20260205": {
+    "inputPerMTok": 5.00,
+    "cachedInputPerMTok": 0.50,
+    "cacheWrite5mPerMTok": 6.25,
+    "cacheWrite1hPerMTok": 10.00,
+    "outputPerMTok": 25.00
+  },
+  "anthropic/claude-sonnet-4-6-20260217": {
+    "inputPerMTok": 3.00,
+    "cachedInputPerMTok": 0.30,
+    "cacheWrite5mPerMTok": 3.75,
+    "cacheWrite1hPerMTok": 6.00,
+    "outputPerMTok": 15.00
+  },
+  "anthropic/claude-sonnet-4-5-20250929": {
+    "inputPerMTok": 3.00,
+    "cachedInputPerMTok": 0.30,
+    "cacheWrite5mPerMTok": 3.75,
+    "cacheWrite1hPerMTok": 6.00,
+    "outputPerMTok": 15.00
+  },
+  "anthropic/claude-opus-4-5-20251101": {
+    "inputPerMTok": 5.00,
+    "cachedInputPerMTok": 0.50,
+    "cacheWrite5mPerMTok": 6.25,
+    "cacheWrite1hPerMTok": 10.00,
+    "outputPerMTok": 25.00
+  },
+  "anthropic/claude-haiku-4-5-20251001": {
+    "inputPerMTok": 1.00,
+    "cachedInputPerMTok": 0.10,
+    "cacheWrite5mPerMTok": 1.25,
+    "cacheWrite1hPerMTok": 2.00,
+    "outputPerMTok": 5.00
+  },
+  "anthropic/claude-opus-4-1-20250805": {
+    "inputPerMTok": 15.00,
+    "cachedInputPerMTok": 1.50,
+    "cacheWrite5mPerMTok": 18.75,
+    "cacheWrite1hPerMTok": 30.00,
+    "outputPerMTok": 75.00
+  },
+  "anthropic/claude-opus-4-20250514": {
+    "inputPerMTok": 15.00,
+    "cachedInputPerMTok": 1.50,
+    "cacheWrite5mPerMTok": 18.75,
+    "cacheWrite1hPerMTok": 30.00,
+    "outputPerMTok": 75.00
+  },
+  "anthropic/claude-sonnet-4-20250514": {
+    "inputPerMTok": 3.00,
+    "cachedInputPerMTok": 0.30,
+    "cacheWrite5mPerMTok": 3.75,
+    "cacheWrite1hPerMTok": 6.00,
+    "outputPerMTok": 15.00
+  },
+  "anthropic/claude-3-5-haiku-20241022": {
+    "inputPerMTok": 0.80,
+    "cachedInputPerMTok": 0.08,
+    "cacheWrite5mPerMTok": 1.00,
+    "cacheWrite1hPerMTok": 1.60,
+    "outputPerMTok": 4.00
+  },
+  "anthropic/claude-3-haiku-20240307": {
+    "inputPerMTok": 0.25,
+    "cachedInputPerMTok": 0.03,
+    "cacheWrite5mPerMTok": 0.30,
+    "cacheWrite1hPerMTok": 0.50,
+    "outputPerMTok": 1.25
+  },
+  "anthropic/claude-opus-4-0": {
+    "inputPerMTok": 15.00,
+    "cachedInputPerMTok": 1.50,
+    "cacheWrite5mPerMTok": 18.75,
+    "cacheWrite1hPerMTok": 30.00,
+    "outputPerMTok": 75.00
+  },
+  "anthropic/claude-sonnet-4-0": {
+    "inputPerMTok": 3.00,
+    "cachedInputPerMTok": 0.30,
+    "cacheWrite5mPerMTok": 3.75,
+    "cacheWrite1hPerMTok": 6.00,
+    "outputPerMTok": 15.00
+  },
+  "google/gemini-2.5-pro": {
+    "inputPerMTok": 1.25,
+    "cachedInputPerMTok": 0.3125,
+    "outputPerMTok": 10.00
+  },
+  "google/gemini-2.5-flash": {
+    "inputPerMTok": 0.15,
+    "cachedInputPerMTok": 0.0375,
+    "outputPerMTok": 0.60
+  }
+}

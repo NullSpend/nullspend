@@ -1,0 +1,45 @@
+{
+  "name": "@nullspend/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for NullSpend — propose, approve, and execute risky AI agent actions",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NullSpend/nullspend",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://nullspend.com",
+  "author": "NullSpend <chris@nullspend.dev>",
+  "keywords": ["nullspend", "finops", "ai-agents", "cost-tracking", "budget", "llm", "typescript"],
+  "engines": { "node": ">=20.11.0" },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@nullspend/cost-engine": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8.4.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

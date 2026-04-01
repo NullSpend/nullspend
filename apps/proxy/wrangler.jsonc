@@ -1,0 +1,87 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nullspend",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-09",
+  "compatibility_flags": ["nodejs_compat"],
+  "placement": { "mode": "smart" },
+  "vars": {},
+  "ratelimits": [
+    {
+      "name": "IP_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 120, "period": 60 }
+    },
+    {
+      "name": "KEY_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 600, "period": 60 }
+    }
+  ],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "ae987aca79704f1fa94bf2c4bb761f14"
+    }
+  ],
+  "analytics_engine_datasets": [
+    { "binding": "METRICS", "dataset": "proxy_latency" }
+  ],
+  "kv_namespaces": [
+    { "binding": "CACHE_KV", "id": "a1c41950606849ccbfc4c044d80bbca4" }
+  ],
+  "r2_buckets": [
+    { "binding": "BODY_STORAGE", "bucket_name": "nullspend-request-bodies" }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "USER_BUDGET", "class_name": "UserBudgetDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["UserBudgetDO"] }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "RECONCILE_QUEUE", "queue": "nullspend-reconcile" },
+      { "binding": "COST_EVENT_QUEUE", "queue": "nullspend-cost-events" },
+      { "binding": "WEBHOOK_QUEUE", "queue": "nullspend-webhooks" }
+    ],
+    "consumers": [
+      {
+        "queue": "nullspend-reconcile",
+        "max_retries": 3,
+        "dead_letter_queue": "nullspend-reconcile-dlq",
+        "retry_delay": 5
+      },
+      {
+        "queue": "nullspend-reconcile-dlq",
+        "max_retries": 0
+      },
+      {
+        "queue": "nullspend-cost-events",
+        "max_batch_size": 100,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "dead_letter_queue": "nullspend-cost-events-dlq",
+        "retry_delay": 5
+      },
+      {
+        "queue": "nullspend-cost-events-dlq",
+        "max_retries": 0
+      },
+      {
+        "queue": "nullspend-webhooks",
+        "max_batch_size": 10,
+        "max_batch_timeout": 2,
+        "max_retries": 5,
+        "dead_letter_queue": "nullspend-webhooks-dlq",
+        "retry_delay": 10
+      },
+      {
+        "queue": "nullspend-webhooks-dlq",
+        "max_retries": 0
+      }
+    ]
+  }
+}

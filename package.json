@@ -1,0 +1,48 @@
+{
+  "name": "nullspend",
+  "description": "FinOps layer for AI agents — cost tracking, budget enforcement, and open-source SDKs",
+  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NullSpend/nullspend"
+  },
+  "homepage": "https://nullspend.com",
+  "author": "NullSpend <chris@nullspend.dev>",
+  "scripts": {
+    "test": "echo \"Run package-specific tests — see below\" && exit 1",
+    "lint": "eslint .",
+    "sdk:build": "pnpm --filter @nullspend/sdk build",
+    "sdk:test": "pnpm --filter @nullspend/sdk test",
+    "cost-engine:build": "pnpm --filter @nullspend/cost-engine build",
+    "cost-engine:test": "pnpm --filter @nullspend/cost-engine test",
+    "claude-agent:build": "pnpm --filter @nullspend/claude-agent build",
+    "claude-agent:test": "pnpm --filter @nullspend/claude-agent test",
+    "mcp:build": "pnpm --filter @nullspend/mcp-server build",
+    "mcp:test": "pnpm --filter @nullspend/mcp-server test",
+    "mcp-proxy:build": "pnpm --filter @nullspend/mcp-proxy build",
+    "mcp-proxy:test": "pnpm --filter @nullspend/mcp-proxy test",
+    "docs-mcp:build": "pnpm --filter @nullspend/docs build",
+    "docs-mcp:test": "pnpm --filter @nullspend/docs test",
+    "db:build": "pnpm --filter @nullspend/db build",
+    "db:test": "pnpm --filter @nullspend/db test",
+    "proxy:dev": "pnpm --filter @nullspend/proxy dev",
+    "proxy:deploy": "pnpm --filter @nullspend/proxy deploy",
+    "proxy:test": "pnpm --filter @nullspend/proxy test",
+    "proxy:typecheck": "pnpm --filter @nullspend/proxy typecheck"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "workerd"
+    ],
+    "overrides": {
+      "drizzle-orm": "^0.45.1"
+    }
+  },
+  "devDependencies": {
+    "eslint": "^9.39.4",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1",
+    "vitest": "^4.1.0"
+  }
+}
