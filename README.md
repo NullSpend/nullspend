@@ -19,7 +19,7 @@ AI agents are becoming autonomous economic actors. They negotiate, transact, and
 
 **NullSpend is building it.**
 
-We're creating the financial infrastructure layer for the autonomous AI economy: real-time budget authorization, spend velocity controls, cost attribution, cross-provider governance, and human-in-the-loop approval — all through a transparent proxy that integrates in one line and enforces in under a millisecond.
+We're creating the financial infrastructure layer for the autonomous AI economy: real-time budget authorization, model and provider mandates, spend velocity controls, cost attribution, cross-provider governance, and human-in-the-loop approval — all through a transparent proxy that integrates in one line and enforces in under a millisecond.
 
 ```
 OPENAI_BASE_URL=https://proxy.nullspend.com/v1
@@ -36,9 +36,11 @@ Agents don't need dashboards. They need authorization infrastructure.
 NullSpend provides:
 
 - **Pre-request budget authorization** — spend is checked and reserved before the LLM call, not reconciled after
+- **Model & provider mandates** — restrict which models and providers each API key can access
 - **Sub-millisecond enforcement** — real-time synchronous budget checks on every single request
 - **Network-level governance** — the proxy is the single control point every request passes through. One env var. Every provider. No escape route.
 - **Velocity circuit breakers** — automatically detect and halt runaway spend patterns
+- **Tag-level budgets** — enforce spend limits per customer, team, or any dimension you tag
 - **Unified LLM + tool budgets** — one budget governs API calls and MCP tool calls together
 
 ## Get Started in 2 Minutes
@@ -109,9 +111,28 @@ from nullspend import NullSpend
 ns = NullSpend(api_key="ns_live_sk_...")
 ```
 
+## Choose Your Integration
+
+Not every use case needs the same level of control. Pick the integration path that fits.
+
+| Capability | Proxy | SDK | Claude Agent | MCP Server | MCP Proxy |
+|---|:---:|:---:|:---:|:---:|:---:|
+| Cost tracking | Yes | Yes | Yes | Yes | Yes |
+| Budget enforcement | Yes | Cooperative | Via proxy | — | — |
+| Model & provider mandates | Yes | Cooperative | Via proxy | — | — |
+| Tag-level budgets | Yes | — | — | — | — |
+| Velocity controls | Yes | — | — | — | — |
+| Session limits | Yes | — | — | — | — |
+| Request/response logging | Yes | — | — | — | — |
+| HITL approval | — | Yes | Yes | Yes | Yes |
+| MCP tool gating | — | — | — | Yes | Yes |
+| Budget self-audit | — | Yes | Yes | Yes | — |
+
+**Proxy** gives you full, guaranteed enforcement at the network level — nothing gets past it. **SDK** gives you cooperative client-side enforcement with direct provider calls. Both report to the same dashboard.
+
 ## How It Works
 
-### Proxy Mode — full enforcement
+### Proxy Mode — guaranteed enforcement
 
 ```mermaid
 flowchart LR
@@ -132,7 +153,7 @@ flowchart LR
     style B fill:#eff6ff,stroke:#2563eb,stroke-width:2px
 ```
 
-Every request follows the same path: **authorize** the spend against your budget, **reserve** the estimated cost atomically, **forward** to the provider, **track** the actual token usage, **settle** the final cost. If the budget can't cover it, the request never leaves. Sub-millisecond enforcement overhead on the global edge via Cloudflare Workers and Durable Objects.
+Every request follows the same path: **authorize** the spend against your budget and mandates, **reserve** the estimated cost atomically, **forward** to the provider, **track** the actual token usage, **settle** the final cost. If the budget can't cover it — or the model isn't allowed — the request never leaves. Sub-millisecond enforcement overhead on the global edge via Cloudflare Workers and Durable Objects.
 
 ### SDK Mode — direct calls with client-side enforcement
 
@@ -155,48 +176,88 @@ flowchart LR
     style D fill:#f9fafb,stroke:#d1d5db
 ```
 
-Don't want to route traffic through a proxy? The SDK wraps your existing fetch call with `createTrackedFetch()`. With `enforcement: true`, it checks budget and model mandates **before** the request — blocking it client-side if the budget would be exceeded. Cost is calculated locally using the built-in pricing engine and reported asynchronously. Your requests go directly to the provider.
+Don't want to route traffic through a proxy? The SDK wraps your existing fetch call with `createTrackedFetch()`. With `enforcement: true`, it fetches your key's policy, checks budget and model mandates **before** the request — throwing `BudgetExceededError` or `MandateViolationError` if the call would violate policy. Cost is calculated locally using the built-in pricing engine and reported asynchronously. Your requests go directly to the provider.
+
+> **Note:** SDK enforcement is cooperative — it runs client-side and can be bypassed by raw API calls. For guaranteed, un-bypassable enforcement, use the proxy.
 
 ## Platform Capabilities
 
 ### Budget Authorization
-Real-time, pre-request budget enforcement. Set spend limits per user, per API key, or per tag. If a request would exceed the limit, the proxy returns `429` without ever calling the upstream provider. Atomic reservation-based deductions with sub-millisecond latency.
+Real-time, pre-request budget enforcement. Set spend limits per user, per API key, or per tag. If a request would exceed the limit, the proxy returns `429 budget_exceeded` without ever calling the upstream provider. Atomic reservation-based deductions with sub-millisecond latency.
+
+### Model & Provider Mandates
+Restrict which models and providers each API key can access. An agent with a key mandated to `gpt-4o-mini` only will be blocked from calling `gpt-4o` — before the request executes. Mandate violations return `429 mandate_violation` with the allowed model list. The SDK also enforces mandates client-side and includes a `cheapest_overall` recommendation from the policy endpoint.
+
+### Tag-Level Budgets
+Go beyond per-user and per-key budgets. Enforce spend limits on any tag dimension — per customer, per team, per feature, per environment. A customer tagged `customer_id: acme-corp` can have its own $500/month budget enforced across every agent and every provider. Triggers `tag_budget.exceeded` webhooks when limits are hit.
 
 ### Velocity Controls
-Sliding-window spend velocity detection. When an agent starts burning money faster than normal — 200 requests/min when the baseline is 10 — the circuit breaker trips automatically. Recovers when the anomaly subsides.
+Sliding-window spend velocity detection. When an agent starts burning money faster than normal — 200 requests/min when the baseline is 10 — the circuit breaker trips automatically. Configurable window size and cooldown period. Triggers `velocity.exceeded` and `velocity.recovered` webhooks. Recovers automatically when the anomaly subsides.
 
 ### Session Governance
-Cap total spend per agent session. Control how much a single conversation, task, or workflow can cost before it stops or escalates to a human.
+Cap total spend per agent session. If a single request would push the session over its limit, it's blocked with `429 session_limit_exceeded` — the agent is forced to stop or escalate. Track per-session spend across multiple requests for conversation-level cost control.
 
 ### Cost Attribution
 Tag every request with customer ID, team, agent, feature, environment — any dimension you care about. Break down spend by any combination of tags across your entire fleet. Full visibility into who's spending what, where, and why.
 
+### Request & Response Logging
+Automatically capture and store full request/response bodies for audit, compliance, and debugging. Supports both streaming and non-streaming responses. Retrieve stored bodies via the API for post-hoc analysis and incident investigation.
+
 ### Webhook Event System
-15 event types with HMAC-SHA256 signed delivery: budget thresholds, budget exceeded, request blocked, velocity spikes, approval actions, and more. Wire them into Slack, PagerDuty, or your own alerting and automation systems.
+15 event types with HMAC-SHA256 signed delivery:
+
+| Event | When it fires |
+|---|---|
+| `cost_event.created` | Every tracked LLM call |
+| `budget.threshold.warning` | Spend crosses warning threshold (e.g., 80%) |
+| `budget.threshold.critical` | Spend crosses critical threshold (e.g., 95%) |
+| `budget.exceeded` | Budget limit reached, requests blocked |
+| `budget.reset` | Budget period resets |
+| `tag_budget.exceeded` | Tag-level budget limit reached |
+| `request.blocked` | Request denied by budget or mandate |
+| `velocity.exceeded` | Spend velocity spike detected |
+| `velocity.recovered` | Velocity circuit breaker recovered |
+| `session.limit_exceeded` | Session spend cap reached |
+| `action.created` | HITL action proposed |
+| `action.approved` | Human approved the action |
+| `action.rejected` | Human rejected the action |
+| `action.expired` | Action expired without decision |
+| `test.ping` | Webhook endpoint verification |
+
+Wire them into Slack, PagerDuty, or your own alerting and automation systems.
 
 ### Human-in-the-Loop Approval
 Propose high-stakes actions — sending emails, calling external APIs, writing to production databases — and wait for human approval before execution. Full SDK with polling, timeouts, and lifecycle tracking. Give your agents autonomy with governance.
 
 ### Unified LLM + MCP Budgets
-One budget governs API calls and tool calls together. Gate MCP tool calls through approval workflows with `@nullspend/mcp-proxy`, or expose approval tools directly to MCP clients with `@nullspend/mcp-server`. A single financial policy across your entire agent stack.
+One budget governs API calls and tool calls together. Track MCP tool execution costs alongside LLM calls. Gate MCP tool calls through approval workflows with `@nullspend/mcp-proxy`, or expose tools directly to MCP clients with `@nullspend/mcp-server` — including `get_budgets`, `get_spend_summary`, and `get_recent_costs` so agents can self-audit their own spend.
 
 ### Distributed Tracing
-W3C traceparent support for correlating requests across services. Link cost events to traces, sessions, and approval actions for end-to-end financial observability.
+W3C traceparent support for correlating requests across services. Link cost events to traces, sessions, and approval actions. Trace a single user interaction from the first LLM call through tool execution to final cost — across providers and services.
 
 ### Cost Engine
-47 models across OpenAI (23), Anthropic (22), and Google (2). Accurate token-to-cost calculation with support for cached tokens, reasoning tokens, and Anthropic cache write tiers.
+47 models across OpenAI (23), Anthropic (22), and Google (2):
+
+- **OpenAI** — GPT-5.4, GPT-5.3, GPT-5, GPT-4.1, GPT-4o, o3, o4-mini, and more
+- **Anthropic** — Claude Opus 4.6, Sonnet 4.6, Haiku 4.5, plus all dated variants
+- **Google** — Gemini 2.5 Pro, Gemini 2.5 Flash
+
+Accurate token-to-cost calculation with support for cached tokens, reasoning tokens (o-series), and Anthropic cache write tiers (5-min and 1-hour).
+
+### Rate Limiting
+Built-in abuse protection: 120 requests/min per IP, 600 requests/min per API key. Prevents runaway clients from overwhelming the proxy while keeping limits high enough for normal agent workloads.
 
 ## Packages
 
 | Package | Description |
 |---|---|
-| [`apps/proxy`](apps/proxy/) | Cloudflare Workers proxy — auth, budget authorization, cost tracking, velocity controls, webhooks, streaming |
-| [`@nullspend/sdk`](packages/sdk/) | TypeScript SDK — tracked fetch, cost reporting, HITL approval workflows, budget status |
-| [`nullspend`](packages/sdk-python/) | Python SDK |
-| [`@nullspend/cost-engine`](packages/cost-engine/) | Pricing catalog and cost calculation for 47 models |
+| [`apps/proxy`](apps/proxy/) | Cloudflare Workers proxy — budget authorization, mandates, cost tracking, velocity controls, session limits, webhooks, request logging, streaming |
+| [`@nullspend/sdk`](packages/sdk/) | TypeScript SDK — tracked fetch with client-side enforcement, cost reporting, HITL approval workflows, budget & spend queries |
+| [`nullspend`](packages/sdk-python/) | Python SDK — full feature parity with the TypeScript SDK |
+| [`@nullspend/cost-engine`](packages/cost-engine/) | Pricing catalog and cost calculation for 47 models across 3 providers |
 | [`@nullspend/claude-agent`](packages/claude-agent/) | Claude Agent SDK adapter — `withNullSpend()` and `withNullSpendAsync()` for budget-aware agents |
-| [`@nullspend/mcp-server`](packages/mcp-server/) | MCP server exposing NullSpend approval tools to any MCP client |
-| [`@nullspend/mcp-proxy`](packages/mcp-proxy/) | MCP proxy — gate tool calls through approval before forwarding |
+| [`@nullspend/mcp-server`](packages/mcp-server/) | MCP server — approval tools, budget queries, spend summaries, and cost event listing for any MCP client |
+| [`@nullspend/mcp-proxy`](packages/mcp-proxy/) | MCP proxy — gate tool calls through approval before forwarding to upstream servers |
 | [`@nullspend/docs`](packages/docs-mcp-server/) | MCP server that serves NullSpend docs to AI coding tools |
 | [`@nullspend/db`](packages/db/) | Drizzle ORM schema and types |
 
