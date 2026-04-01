@@ -25,7 +25,7 @@ We're creating the financial infrastructure layer for the autonomous AI economy:
 OPENAI_BASE_URL=https://proxy.nullspend.com/v1
 ```
 
-This isn't observability. This isn't logging. This is **financial authorization** — every request checked against your budget before it executes, with the spend reserved atomically, the cost reconciled on completion, and the overage guaranteed to be zero.
+This isn't observability. This isn't logging. This is **financial authorization** — every request checked against your budget before it executes, with the spend reserved atomically and the cost reconciled on completion.
 
 ## The Problem Is Structural
 
@@ -40,7 +40,6 @@ NullSpend provides:
 - **Network-level governance** — the proxy is the single control point every request passes through. One env var. Every provider. No escape route.
 - **Velocity circuit breakers** — automatically detect and halt runaway spend patterns
 - **Unified LLM + tool budgets** — one budget governs API calls and MCP tool calls together
-- **$0 overspend guarantee** — a $50 budget is a $50 budget. Period.
 
 ## Get Started in 2 Minutes
 
@@ -112,18 +111,21 @@ ns = NullSpend(api_key="ns_live_sk_...")
 
 ## How It Works
 
-```
-┌─────────────┐     ┌──────────────────────────────┐     ┌──────────────┐
-│             │     │       NullSpend Proxy         │     │              │
-│  Your Agent ├────>│                              ├────>│   OpenAI /   │
-│             │<────┤  Authorize ─> Reserve ─>     │<────│   Anthropic  │
-│             │     │  Forward ─> Track ─> Settle  │     │              │
-└─────────────┘     └──────────────────────────────┘     └──────────────┘
-                         <1ms enforcement overhead
-                    Cloudflare Workers · Durable Objects · Global Edge
-```
+### Proxy Mode — full enforcement
+
+<p align="center">
+  <img src="docs/assets/architecture-proxy.svg" alt="Proxy architecture — authorize, reserve, forward, track, settle" width="800" />
+</p>
 
 Every request follows the same path: **authorize** the spend against your budget, **reserve** the estimated cost atomically, **forward** to the provider, **track** the actual token usage, **settle** the final cost. If the budget can't cover it, the request never leaves.
+
+### SDK Mode — no proxy in the path
+
+<p align="center">
+  <img src="docs/assets/architecture-sdk.svg" alt="SDK architecture — direct API calls with async cost reporting" width="800" />
+</p>
+
+Don't want to route traffic through a proxy? The SDK wraps your existing fetch call, calculates cost client-side using the built-in pricing engine, and reports to NullSpend asynchronously. Your requests go directly to the provider — NullSpend never touches the request path.
 
 ## Platform Capabilities
 

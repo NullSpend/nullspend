@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 340" fill="none">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .title { font-size: 13px; font-weight: 600; }
+    .subtitle { font-size: 11px; fill: #6b7280; }
+    .label { font-size: 11px; font-weight: 500; }
+    .small { font-size: 10px; fill: #9ca3af; }
+    .step-num { font-size: 10px; font-weight: 700; fill: white; }
+    @media (prefers-color-scheme: dark) {
+      .box { stroke: #374151; }
+      .box-fill { fill: #1f2937; }
+      .center-fill { fill: #0f172a; }
+      .title { fill: #f9fafb; }
+      .label { fill: #e5e7eb; }
+      .subtitle { fill: #9ca3af; }
+      .small { fill: #6b7280; }
+      .arrow { stroke: #6b7280; fill: #6b7280; }
+      .step-bg { fill: #3b82f6; }
+      .divider { stroke: #374151; }
+    }
+    @media (prefers-color-scheme: light) {
+      .box { stroke: #d1d5db; }
+      .box-fill { fill: #f9fafb; }
+      .center-fill { fill: #eff6ff; }
+      .title { fill: #111827; }
+      .label { fill: #374151; }
+      .subtitle { fill: #6b7280; }
+      .small { fill: #9ca3af; }
+      .arrow { stroke: #9ca3af; fill: #9ca3af; }
+      .step-bg { fill: #2563eb; }
+      .divider { stroke: #e5e7eb; }
+    }
+  </style>
+
+  <!-- Agent Box -->
+  <rect x="30" y="80" width="160" height="120" rx="12" class="box box-fill" stroke-width="1.5"/>
+  <text x="110" y="130" text-anchor="middle" class="title">Your Agent</text>
+  <text x="110" y="150" text-anchor="middle" class="subtitle">OpenAI SDK</text>
+  <text x="110" y="166" text-anchor="middle" class="subtitle">Anthropic SDK</text>
+  <text x="110" y="182" text-anchor="middle" class="subtitle">Any HTTP client</text>
+
+  <!-- Arrow: Agent -> Proxy -->
+  <line x1="190" y1="125" x2="310" y2="125" class="arrow" stroke-width="1.5"/>
+  <polygon points="310,121 318,125 310,129" class="arrow"/>
+  <text x="250" y="118" text-anchor="middle" class="small">LLM request</text>
+
+  <!-- Arrow: Proxy -> Agent (response) -->
+  <line x1="310" y1="155" x2="190" y2="155" class="arrow" stroke-width="1.5"/>
+  <polygon points="190,151 182,155 190,159" class="arrow"/>
+  <text x="250" y="172" text-anchor="middle" class="small">response + cost</text>
+
+  <!-- NullSpend Proxy Box -->
+  <rect x="320" y="40" width="260" height="240" rx="12" class="box center-fill" stroke-width="2"/>
+  <text x="450" y="70" text-anchor="middle" class="title">NullSpend Proxy</text>
+  <text x="450" y="86" text-anchor="middle" class="small">Cloudflare Workers &middot; Global Edge</text>
+
+  <!-- Step circles inside proxy -->
+  <circle cx="355" cy="115" r="10" class="step-bg"/>
+  <text x="355" y="119" text-anchor="middle" class="step-num">1</text>
+  <text x="375" y="119" class="label">Authorize</text>
+
+  <circle cx="355" cy="145" r="10" class="step-bg"/>
+  <text x="355" y="149" text-anchor="middle" class="step-num">2</text>
+  <text x="375" y="149" class="label">Reserve budget</text>
+
+  <circle cx="355" cy="175" r="10" class="step-bg"/>
+  <text x="355" y="179" text-anchor="middle" class="step-num">3</text>
+  <text x="375" y="179" class="label">Forward to provider</text>
+
+  <circle cx="355" cy="205" r="10" class="step-bg"/>
+  <text x="355" y="209" text-anchor="middle" class="step-num">4</text>
+  <text x="375" y="209" class="label">Track usage &amp; cost</text>
+
+  <circle cx="355" cy="235" r="10" class="step-bg"/>
+  <text x="355" y="239" text-anchor="middle" class="step-num">5</text>
+  <text x="375" y="239" class="label">Settle &amp; reconcile</text>
+
+  <line x1="340" y1="256" x2="560" y2="256" class="divider" stroke-width="1"/>
+  <text x="450" y="272" text-anchor="middle" class="small">&lt;1ms enforcement overhead</text>
+
+  <!-- Arrow: Proxy -> Provider -->
+  <line x1="580" y1="125" x2="690" y2="125" class="arrow" stroke-width="1.5"/>
+  <polygon points="690,121 698,125 690,129" class="arrow"/>
+
+  <!-- Arrow: Provider -> Proxy -->
+  <line x1="690" y1="155" x2="580" y2="155" class="arrow" stroke-width="1.5"/>
+  <polygon points="580,151 572,155 580,159" class="arrow"/>
+
+  <!-- Provider Box -->
+  <rect x="700" y="80" width="160" height="120" rx="12" class="box box-fill" stroke-width="1.5"/>
+  <text x="780" y="130" text-anchor="middle" class="title">AI Provider</text>
+  <text x="780" y="150" text-anchor="middle" class="subtitle">OpenAI</text>
+  <text x="780" y="166" text-anchor="middle" class="subtitle">Anthropic</text>
+
+  <!-- Dashboard arrow -->
+  <line x1="450" y1="280" x2="450" y2="310" class="arrow" stroke-width="1.5"/>
+  <polygon points="446,310 450,318 454,310" class="arrow"/>
+  <text x="450" y="335" text-anchor="middle" class="subtitle">Dashboard &middot; Analytics &middot; Webhooks</text>
+</svg>
