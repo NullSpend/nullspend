@@ -118,17 +118,17 @@ Not every use case needs the same level of control. Pick the integration path th
 | Capability | Proxy | SDK | Claude Agent | MCP Server | MCP Proxy |
 |---|:---:|:---:|:---:|:---:|:---:|
 | Cost tracking | Yes | Yes | Yes | Yes | Yes |
-| Budget enforcement | Yes | Cooperative | Via proxy | — | — |
-| Model & provider mandates | Yes | Cooperative | Via proxy | — | — |
-| Tag-level budgets | Yes | — | — | — | — |
-| Velocity controls | Yes | — | — | — | — |
-| Session limits | Yes | — | — | — | — |
-| Request/response logging | Yes | — | — | — | — |
-| HITL approval | Via SDK | Yes | Yes | Yes | Yes |
+| Budget enforcement | Yes | Cooperative | Yes | — | — |
+| Model & provider mandates | Yes | Cooperative | Yes | — | — |
+| Tag-level budgets | Yes | — | Yes | — | — |
+| Velocity controls | Yes | — | Yes | — | — |
+| Session limits | Yes | — | Yes | — | — |
+| Request/response logging | Yes | — | Yes | — | — |
+| HITL approval | Via SDK | Yes | Via SDK | Yes | Yes |
 | MCP tool gating | — | — | — | Yes | Yes |
 | Budget self-audit | — | Yes | Yes | Yes | — |
 
-**Proxy** gives you full, guaranteed enforcement at the network level — nothing gets past it. **SDK** gives you cooperative client-side enforcement with direct provider calls. Both report to the same dashboard.
+**Proxy** gives you full, guaranteed enforcement at the network level — nothing gets past it. **Claude Agent** routes through the proxy automatically, so it inherits every proxy capability. **SDK** gives you cooperative client-side enforcement with direct provider calls. All paths report to the same dashboard.
 
 ## How It Works
 
