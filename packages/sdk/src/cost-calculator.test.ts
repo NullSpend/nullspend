@@ -317,7 +317,7 @@ describe("calculateAnthropicCostEvent — Anthropic", () => {
       output_tokens: 1000,
     };
 
-    const result = calculateAnthropicCostEvent(
+    calculateAnthropicCostEvent(
       "claude-sonnet-4-20250514",
       usage,
       null,
