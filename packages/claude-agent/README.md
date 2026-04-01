@@ -87,7 +87,16 @@ Both functions return an `Options` object with:
 
 ## How It Works
 
-`withNullSpend` configures the Agent SDK to send LLM requests through the NullSpend proxy instead of directly to Anthropic. The proxy authenticates the request, forwards it to Anthropic, tracks token usage and cost, enforces any active budgets, and reports the cost event to your dashboard.
+`withNullSpend` configures the Agent SDK to send LLM requests through the NullSpend proxy instead of directly to Anthropic. Because all calls route through the proxy, your agent automatically gets the full proxy feature set:
+
+- Budget enforcement (pre-request authorization)
+- Model & provider mandates
+- Tag-level budgets
+- Velocity controls (circuit breaker for runaway loops)
+- Session limits (per-conversation spend caps)
+- Request/response logging
+- Cost tracking with attribution
+- Webhook alerts
 
 ## License
 

@@ -1,6 +1,6 @@
 # @nullspend/mcp-proxy
 
-MCP proxy that sits between an LLM and any upstream MCP server, transparently gating risky tool calls through NullSpend approval before forwarding them.
+MCP proxy that sits between an LLM and any upstream MCP server — gating risky tool calls through human approval, tracking cost per invocation, and enforcing budgets before execution.
 
 ## How it works
 
@@ -10,14 +10,18 @@ LLM / MCP Client  ──stdio──▶  NullSpend MCP Proxy  ──stdio──�
                                       │ HTTP
                                       ▼
                                 NullSpend API
+                          (approval, budgets, cost events)
                                       ▲
                           Human reviews in Dashboard
 ```
 
 1. The proxy spawns the upstream MCP server as a child process and discovers all its tools.
 2. It re-exposes those tools to the LLM under the same names and schemas.
-3. When the LLM calls a **gated** tool, the proxy creates an NullSpend action, waits for human approval, then either forwards the call upstream or returns a rejection message.
-4. **Passthrough** tools are forwarded directly without approval.
+3. On every tool call, the proxy:
+   - **Checks the budget** — if the estimated cost would exceed the limit, the call is blocked (`budget exceeded`)
+   - **Gates through approval** (if configured) — creates an action, waits for human approval, then forwards or rejects
+   - **Tracks cost** — reports the tool invocation cost to the NullSpend dashboard
+4. **Passthrough** tools skip approval but still get cost tracking and budget checks.
 
 ## Quick start (local)
 
@@ -102,6 +106,10 @@ All configuration is via environment variables.
 | `PASSTHROUGH_TOOLS` | (none) | Comma-separated list of tools that are **always forwarded** without approval. **Passthrough always wins** — if a tool appears in both `GATED_TOOLS` and `PASSTHROUGH_TOOLS`, it is passed through. |
 | `NULLSPEND_AGENT_ID` | `mcp-proxy` | Agent identifier attached to actions created by this proxy. |
 | `APPROVAL_TIMEOUT_SECONDS` | `300` | How long (seconds) to wait for a human decision before timing out. |
+| `NULLSPEND_COST_TRACKING` | `true` | Set to `false` to disable cost event reporting. |
+| `NULLSPEND_BUDGET_ENFORCEMENT` | `true` | Set to `false` to disable pre-call budget checks. |
+| `NULLSPEND_SERVER_NAME` | `UPSTREAM_COMMAND` | Server name for cost events and analytics. Must not contain `/`. |
+| `NULLSPEND_TOOL_COSTS` | `{}` | JSON object mapping tool names to cost in microdollars (e.g. `{"write_file": 50000}`). |
 
 ### Gating examples
 
@@ -120,6 +128,22 @@ All configuration is via environment variables.
 4. The proxy polls until the action is **approved**, **rejected**, **expired** (server-side TTL elapsed), or the client-side timeout expires.
 5. On **approval**: the proxy marks the action `executing`, forwards the call to the upstream server, then marks it `executed` (or `failed` if the upstream errors).
 6. On **rejection**, **expiration**, or **timeout**: the proxy returns an error message to the LLM explaining the tool call was blocked.
+
+## Cost Tracking & Budget Enforcement
+
+Cost tracking and budget enforcement are enabled by default.
+
+**Cost estimation** uses a three-tier priority:
+
+1. `NULLSPEND_TOOL_COSTS` env var — per-tool overrides in microdollars
+2. Dashboard-configured costs — fetched from the API at startup
+3. MCP annotation tiers — inferred from the tool's `annotations` field (free / $0.01 / $0.10)
+
+**Budget enforcement** checks the budget before each tool call. If the estimated cost would exceed the remaining budget, the call is blocked with `Tool "<name>" blocked: budget exceeded.` The budget client includes a circuit breaker (5 consecutive failures → fail-open, 30s cooldown).
+
+**Cost events** are batched (20 events / 5s flush interval) and reported to the NullSpend API for dashboard visibility.
+
+Set `NULLSPEND_BUDGET_ENFORCEMENT=false` to disable budget checks while keeping cost tracking active.
 
 ## Development
 
