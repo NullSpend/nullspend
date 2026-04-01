@@ -1,0 +1,20 @@
+{
+  "title": "NullSpend Docs",
+  "pages": [
+    "index",
+    "---Getting Started---",
+    "...quickstart",
+    "---Features---",
+    "...features",
+    "---API Reference---",
+    "...api-reference",
+    "---Webhooks---",
+    "...webhooks",
+    "---SDKs---",
+    "...sdks",
+    "---Reference---",
+    "...reference",
+    "---Guides---",
+    "...guides"
+  ]
+}

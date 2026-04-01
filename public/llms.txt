@@ -1,0 +1,183 @@
+# NullSpend
+
+> FinOps layer for AI agents — cost tracking, budget enforcement, and human-in-the-loop approval.
+
+## What NullSpend Does
+
+NullSpend tracks costs per-request, enforces budgets before requests reach the provider, and provides a dashboard with analytics, attribution, and webhook alerts. Three integration paths — proxy, SDK, or Claude Agent adapter — all feed the same dashboard.
+
+## Integration Paths
+
+Every cost event has a `source` field indicating how it was ingested:
+
+| Source | Value | How It Works |
+|---|---|---|
+| Proxy | `"proxy"` | Route LLM calls through `proxy.nullspend.com`. Automatic cost tracking, budget enforcement, zero code changes beyond config. |
+| SDK | `"api"` | Use `@nullspend/sdk` with `createTrackedFetch()` to auto-track costs client-side. Call providers directly, report costs to NullSpend. |
+| MCP | `"mcp"` | Use `@nullspend/claude-agent` or `@nullspend/mcp-server` for Claude Agent SDK and MCP tool cost tracking. |
+
+## Quick Integration
+
+### Option 1: Proxy (recommended)
+
+```typescript
+// OpenAI — change base URL, add one header
+const openai = new OpenAI({
+  baseURL: "https://proxy.nullspend.com/v1",
+  defaultHeaders: { "X-NullSpend-Key": process.env.NULLSPEND_API_KEY },
+});
+
+// Anthropic
+const anthropic = new Anthropic({
+  baseURL: "https://proxy.nullspend.com/v1",
+  defaultHeaders: { "X-NullSpend-Key": process.env.NULLSPEND_API_KEY },
+});
+```
+
+### Option 2: SDK (client-side cost tracking)
+
+```typescript
+import { NullSpend } from "@nullspend/sdk";
+
+const ns = new NullSpend({
+  baseUrl: "https://app.nullspend.com",
+  apiKey: process.env.NULLSPEND_API_KEY,
+  costReporting: {},
+});
+
+const fetch = ns.createTrackedFetch("openai");
+```
+
+### Option 3: Claude Agent SDK
+
+```typescript
+import { withNullSpend } from "@nullspend/claude-agent";
+
+const config = withNullSpend({
+  apiKey: process.env.NULLSPEND_API_KEY,
+  tags: { agent: "my-agent" },
+});
+```
+
+## Proxy Endpoints
+
+The proxy forwards requests to the upstream provider. Supported routes:
+
+- `POST /v1/chat/completions` — OpenAI chat completions (streaming + non-streaming)
+- `POST /v1/responses` — OpenAI Responses API
+- `POST /v1/messages` — Anthropic messages (streaming + non-streaming)
+
+## Request Headers
+
+| Header | Required | Description |
+|---|---|---|
+| `X-NullSpend-Key` | Yes | API key (`ns_live_sk_...`). 43 characters. |
+| `X-NullSpend-Tags` | No | JSON object for cost attribution. Max 10 keys, key max 64 chars (`[a-zA-Z0-9_-]+`), value max 256 chars. Keys starting with `_ns_` are reserved. |
+| `X-NullSpend-Session` | No | Session ID for per-session spend limits and session replay. Max 256 chars. |
+| `X-NullSpend-Trace-Id` | No | 32-char hex trace ID for request correlation. Auto-generated if omitted. |
+| `X-NullSpend-Action-Id` | No | Link cost events to a HITL approval action (`ns_act_...`). |
+| `X-NullSpend-Upstream` | No | Override upstream provider URL (must be in allowlist). |
+| `NullSpend-Version` | No | API version (ISO date, e.g., `2026-04-01`). |
+
+## Response Headers
+
+| Header | Description |
+|---|---|
+| `X-NullSpend-Trace-Id` | Trace ID (echoed or auto-generated) |
+| `NullSpend-Version` | API version used |
+| `x-nullspend-overhead-ms` | Proxy overhead in milliseconds |
+| `X-NullSpend-Session` | Session ID (echoed if sent) |
+
+## Dashboard API Endpoints (API Key Auth)
+
+These endpoints are callable from your agent or SDK using the `X-NullSpend-Key` header.
+
+### Ingest Cost Event
+`POST /api/cost-events`
+Body: `{ provider, model, inputTokens, outputTokens, costMicrodollars, cachedInputTokens?, reasoningTokens?, durationMs?, sessionId?, traceId?, eventType?, tags? }`
+Response: `{ data: { id, createdAt } }`
+Note: Events ingested via this endpoint are tagged with `source: "api"`. Proxy events get `source: "proxy"`, MCP events get `source: "mcp"`.
+
+### List Cost Events (Dashboard)
+`GET /api/cost-events`
+Query: `limit`, `cursor`, `provider`, `model`, `source` (`"proxy"`, `"api"`, `"mcp"`), `apiKeyId`, `sessionId`, `traceId`, `tag.*`
+Response: `{ data: [CostEventRecord], cursor }` — each record includes `source` field.
+
+### Batch Ingest
+`POST /api/cost-events/batch`
+Body: `{ events: [CostEventInput, ...] }` (max 100)
+Response: `{ inserted, ids }`
+
+### Check Budget Status
+`GET /api/budgets/status`
+Response: `{ entities: [{ entityType, entityId, limitMicrodollars, spendMicrodollars, remainingMicrodollars, policy, resetInterval, currentPeriodStart }] }`
+
+### Create HITL Action
+`POST /api/actions`
+Body: `{ agentId, actionType, payload, metadata?, expiresInSeconds? }`
+Action types: `send_email`, `http_post`, `http_delete`, `shell_command`, `db_write`, `file_write`, `file_delete`
+Response: `{ data: { id, status, expiresAt } }`
+
+### Get Action Status
+`GET /api/actions/:id`
+Response: `{ data: ActionRecord }` with status: `pending`, `approved`, `rejected`, `expired`, `executing`, `executed`, `failed`
+
+### Mark Action Result
+`POST /api/actions/:id/result`
+Body: `{ status: "executing" | "executed" | "failed", result?, errorMessage? }`
+Response: `{ data: { id, status, executedAt? } }`
+
+### Key Introspection
+`GET /api/auth/introspect`
+Response: `{ data: { keyId, orgId, apiVersion } }`
+
+## Cost Calculation
+
+Costs are in microdollars (1 microdollar = $0.000001, so $1 = 1,000,000 microdollars).
+
+Supported models: 14 OpenAI models (GPT-4o, GPT-4o-mini, o1, o3, o3-mini, o4-mini, GPT-4.1, GPT-4.1-mini, GPT-4.1-nano, GPT-4.5-preview, GPT-5, GPT-5-mini) + 22 Anthropic models (Claude Opus 4, Sonnet 4, Haiku 3.5, plus dated variants) + 2 Google models (Gemini 2.5 Pro/Flash, cost calculation only).
+
+## Budget Enforcement
+
+The proxy checks budgets BEFORE forwarding requests. If a budget would be exceeded, the proxy returns `429 budget_exceeded` without calling the upstream provider. Budget types: per-user, per-API-key. Enforcement order: period reset → session limit → velocity check → budget check → reserve → forward → reconcile.
+
+## Tags for Cost Attribution
+
+Tag requests with metadata for per-customer, per-team, or per-feature cost breakdowns:
+
+```typescript
+const response = await openai.chat.completions.create(
+  { model: "gpt-4o", messages: [...] },
+  { headers: { "X-NullSpend-Tags": JSON.stringify({ customer_id: "acme-corp", team: "engineering" }) } }
+);
+```
+
+View attribution breakdowns in the dashboard at /app/attribution or via the API:
+- `GET /api/cost-events/attribution?groupBy=customer_id&period=30d` — group by any tag
+- `GET /api/cost-events/attribution?groupBy=api_key&period=30d` — group by API key
+- `GET /api/cost-events/attribution/:key?groupBy=customer_id` — detail drill-down
+
+## Error Format
+
+All errors follow: `{ error: { code: "machine_code", message: "Human readable.", details: null } }`
+
+Common codes: `authentication_required` (401), `forbidden` (403), `budget_exceeded` (429), `rate_limited` (429), `validation_error` (400), `not_found` (404).
+
+## SDKs
+
+- JavaScript/TypeScript: `@nullspend/sdk`
+- Python: `nullspend`
+- Claude Agent SDK adapter: `@nullspend/claude-agent`
+- MCP Server: `@nullspend/mcp-server`
+- MCP Proxy: `@nullspend/mcp-proxy`
+
+## Webhooks
+
+15 event types with HMAC-SHA256 signing: `cost_event.created`, `budget.threshold.warning`, `budget.threshold.critical`, `budget.exceeded`, `budget.reset`, `request.blocked`, `action.created`, `action.approved`, `action.rejected`, `action.expired`, `velocity.exceeded`, `velocity.recovered`, `session.limit_exceeded`, `tag_budget.exceeded`, `test.ping`.
+
+## Documentation
+
+Full docs: https://nullspend.com/docs
+API Reference: https://nullspend.com/docs/api-reference/overview
+Quickstart (OpenAI): https://nullspend.com/docs/quickstart/openai
+Quickstart (Anthropic): https://nullspend.com/docs/quickstart/anthropic
