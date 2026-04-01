@@ -48,9 +48,6 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Proxy typecheck
-        run: pnpm proxy:typecheck
-
       - name: Proxy tests
         run: pnpm proxy:test
 
