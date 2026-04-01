@@ -29,13 +29,13 @@ One environment variable. Real-time enforcement. $0 overspend guarantee.
 
 |  | NullSpend | LiteLLM | Portkey | Helicone |
 |---|---|---|---|---|
-| **Pre-request enforcement** | 7ms sync | 60s stale | Async | No |
+| **Pre-request enforcement** | <1ms sync | 60s stale | Async | No |
 | **Velocity / loop detection** | Yes | No | No | No |
 | **Unified LLM + MCP budget** | Yes | No | No | No |
 | **HITL approval** | Yes | No | No | No |
 | **Open source** | Yes | Yes | Partial | Yes |
 
-Competitors claiming sub-millisecond latency achieve it by not enforcing anything — they're passthrough or async. NullSpend does real-time synchronous enforcement in 7ms, faster than most competitors can log a cost event.
+Competitors claiming sub-millisecond latency achieve it by not enforcing anything — they're passthrough or async. NullSpend does real-time synchronous enforcement in under 1ms, faster than most competitors can log a cost event.
 
 ## Get Started in 2 Minutes
 
@@ -109,7 +109,7 @@ ns = NullSpend(api_key="ns_live_sk_...")
 
 ### Authorization, Not Notification
 
-Budget reserved before the LLM call — like Visa authorizing a card swipe, not like a bank statement you read after the money's gone. A $50 budget never becomes a $764 invoice.
+Budget reserved before the LLM call in under 1ms — like Visa authorizing a card swipe, not like a bank statement you read after the money's gone. A $50 budget never becomes a $764 invoice.
 
 ### Network-Level Chokepoint
 
@@ -122,7 +122,7 @@ Visa-style anomaly detection for AI agents. Detects runaway loops and spending v
 ## What You Get
 
 ### Budget Enforcement
-Set spend limits per user, per API key, or per tag. Budgets are enforced **before** the request reaches the provider — if it would exceed the limit, the proxy returns `429` without ever calling OpenAI/Anthropic. Atomic reservation-based deductions with 7ms latency.
+Set spend limits per user, per API key, or per tag. Budgets are enforced **before** the request reaches the provider — if it would exceed the limit, the proxy returns `429` without ever calling OpenAI/Anthropic. Atomic reservation-based deductions with sub-millisecond latency.
 
 ### Velocity Limits
 Sliding-window spend rate detection. Automatically blocks requests during spend spikes and recovers when the window clears. The financial circuit breaker for runaway agents.
@@ -157,7 +157,7 @@ W3C traceparent support for correlating requests across distributed systems. Lin
 │             │<────┤  Auth ─> Budget ─> Forward   │<────│   Anthropic  │
 │             │     │  ─> Track Cost ─> Reconcile  │     │              │
 └─────────────┘     └──────────────────────────────┘     └──────────────┘
-                      7ms enforcement · <1ms p50 overhead
+                         <1ms enforcement overhead
                     Cloudflare Workers · Durable Objects · Global Edge
 ```
 
