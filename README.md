@@ -118,7 +118,7 @@ Not every use case needs the same level of control. Pick the integration path th
 | Capability | Proxy | SDK | Claude Agent | MCP Server | MCP Proxy |
 |---|:---:|:---:|:---:|:---:|:---:|
 | Cost tracking | Yes | Yes | Yes | Yes | Yes |
-| Budget enforcement | Yes | Cooperative | Yes | — | — |
+| Budget enforcement | Yes | Cooperative | Yes | — | Yes |
 | Model & provider mandates | Yes | Cooperative | Yes | — | — |
 | Tag-level budgets | Yes | — | Yes | — | — |
 | Velocity controls | Yes | — | Yes | — | — |
