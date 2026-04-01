@@ -157,7 +157,7 @@ W3C traceparent support for correlating requests across distributed systems. Lin
 │             │<────┤  Auth ─> Budget ─> Forward   │<────│   Anthropic  │
 │             │     │  ─> Track Cost ─> Reconcile  │     │              │
 └─────────────┘     └──────────────────────────────┘     └──────────────┘
-                      7ms enforcement · 0ms auth overhead
+                      7ms enforcement · <1ms p50 overhead
                     Cloudflare Workers · Durable Objects · Global Edge
 ```
 
