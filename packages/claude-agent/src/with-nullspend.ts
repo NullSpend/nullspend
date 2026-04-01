@@ -211,12 +211,14 @@ export async function withNullSpendAsync(
 
   const budgetContext = buildBudgetContext(policy);
 
-  // Append to existing appendSystemPrompt if present
+  // appendSystemPrompt is on SDKControlInitializeRequest, not Options,
+  // but the Agent SDK passes it through at runtime. Cast to avoid DTS error.
   const existing = (base as Record<string, unknown>).appendSystemPrompt as string | undefined;
+  const merged = existing ? `${existing}\n\n${budgetContext}` : budgetContext;
   return {
     ...base,
-    appendSystemPrompt: existing ? `${existing}\n\n${budgetContext}` : budgetContext,
-  };
+    appendSystemPrompt: merged,
+  } as Options;
 }
 
 /** Reset policy cache — exposed for testing only. */
