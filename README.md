@@ -1,9 +1,9 @@
 <p align="center">
   <h1 align="center">NullSpend</h1>
   <p align="center">
-    <strong>Every AI request. Authorized. Tracked. Enforced.</strong>
+    <strong>The financial control plane for the AI agent economy.</strong>
     <br />
-    The financial control plane for autonomous AI agents.
+    Every request authorized. Every dollar tracked. Every budget enforced — before the call executes.
   </p>
 </p>
 
@@ -15,27 +15,32 @@
 
 ---
 
-Your agents make thousands of LLM calls. Each one costs money. One bad loop can burn your entire monthly budget in minutes — and you won't know until the invoice lands.
+AI agents are becoming autonomous economic actors. They negotiate, transact, and spend — across providers, tools, and workflows — at machine speed. The infrastructure to govern that spend doesn't exist yet.
 
-NullSpend is the layer that sits between your agents and the AI providers. Every request is authorized against your budget **before** it executes. Not after. Not on a cron job. Not in a batch. Before.
+**NullSpend is building it.**
+
+We're creating the financial infrastructure layer for the autonomous AI economy: real-time budget authorization, spend velocity controls, cost attribution, cross-provider governance, and human-in-the-loop approval — all through a transparent proxy that integrates in one line and enforces in under a millisecond.
 
 ```
 OPENAI_BASE_URL=https://proxy.nullspend.com/v1
 ```
 
-One line. Sub-millisecond enforcement. Zero overspend. Full visibility.
+This isn't observability. This isn't logging. This is **financial authorization** — every request checked against your budget before it executes, with the spend reserved atomically, the cost reconciled on completion, and the overage guaranteed to be zero.
 
-## Why This Exists
+## The Problem Is Structural
 
-The current state of AI cost management is broken. Most tools watch spend passively and send you a notification after you've already blown your budget. A $50 limit becomes a $764 invoice because enforcement runs on a 60-second polling loop.
+Today's AI cost tools are built on a fundamentally broken model: they **observe** spend and **notify** you after the fact. A $50 budget limit enforced on a 60-second polling loop becomes a $764 invoice. A runaway agent loop burns $127K in four hours, and the team finds out on their monthly bill.
 
-NullSpend takes a fundamentally different approach:
+Agents don't need dashboards. They need authorization infrastructure.
 
-- **Pre-request authorization** — budgets are checked and reserved before the LLM call, not reconciled after
-- **Sub-millisecond enforcement** — real-time synchronous budget checks on every request
-- **Network-level control** — the proxy is the single chokepoint every request passes through. Can't be bypassed, can't be misconfigured, can't be forgotten
-- **Anomaly detection** — velocity limits detect runaway loops and spending spikes automatically
-- **$0 overspend guarantee** — a $50 budget stays a $50 budget
+NullSpend provides:
+
+- **Pre-request budget authorization** — spend is checked and reserved before the LLM call, not reconciled after
+- **Sub-millisecond enforcement** — real-time synchronous budget checks on every single request
+- **Network-level governance** — the proxy is the single control point every request passes through. One env var. Every provider. No escape route.
+- **Velocity circuit breakers** — automatically detect and halt runaway spend patterns
+- **Unified LLM + tool budgets** — one budget governs API calls and MCP tool calls together
+- **$0 overspend guarantee** — a $50 budget is a $50 budget. Period.
 
 ## Get Started in 2 Minutes
 
@@ -49,7 +54,7 @@ const openai = new OpenAI({
   defaultHeaders: { "X-NullSpend-Key": process.env.NULLSPEND_API_KEY },
 });
 
-// Every call is now tracked, budgeted, and enforced. Your code doesn't change.
+// Every call is now authorized, tracked, and enforced. Your code doesn't change.
 const response = await openai.chat.completions.create({
   model: "gpt-4o",
   messages: [{ role: "user", content: "Hello" }],
@@ -118,33 +123,33 @@ ns = NullSpend(api_key="ns_live_sk_...")
                     Cloudflare Workers · Durable Objects · Global Edge
 ```
 
-Every request follows the same path: **authorize** the spend against your budget, **reserve** the estimated cost, **forward** to the provider, **track** the actual usage, **settle** the final cost. If the budget can't cover it, the request never leaves.
+Every request follows the same path: **authorize** the spend against your budget, **reserve** the estimated cost atomically, **forward** to the provider, **track** the actual token usage, **settle** the final cost. If the budget can't cover it, the request never leaves.
 
-## What You Get
+## Platform Capabilities
 
-### Pre-Request Budget Enforcement
-Set spend limits per user, per API key, or per tag. Budgets are enforced **before** the request reaches the provider — if it would exceed the limit, the proxy returns `429` without ever calling the upstream API. Atomic reservation-based deductions with sub-millisecond latency.
+### Budget Authorization
+Real-time, pre-request budget enforcement. Set spend limits per user, per API key, or per tag. If a request would exceed the limit, the proxy returns `429` without ever calling the upstream provider. Atomic reservation-based deductions with sub-millisecond latency.
 
-### Velocity Limits
-Sliding-window spend rate detection. When an agent starts burning money faster than normal — 200 requests/min when the baseline is 10 — the circuit breaker trips. Automatically recovers when the spike subsides.
+### Velocity Controls
+Sliding-window spend velocity detection. When an agent starts burning money faster than normal — 200 requests/min when the baseline is 10 — the circuit breaker trips automatically. Recovers when the anomaly subsides.
 
-### Session Limits
+### Session Governance
 Cap total spend per agent session. Control how much a single conversation, task, or workflow can cost before it stops or escalates to a human.
 
 ### Cost Attribution
-Tag every request with customer ID, team, agent, feature, environment — any dimension you need. Break down spend by any combination of tags. Know exactly where every dollar goes and who's responsible for it.
+Tag every request with customer ID, team, agent, feature, environment — any dimension you care about. Break down spend by any combination of tags across your entire fleet. Full visibility into who's spending what, where, and why.
 
-### Webhooks
-15 event types with HMAC-SHA256 signed delivery: budget thresholds, budget exceeded, request blocked, velocity spikes, HITL actions, and more. Wire them into Slack, PagerDuty, or your own alerting stack.
+### Webhook Event System
+15 event types with HMAC-SHA256 signed delivery: budget thresholds, budget exceeded, request blocked, velocity spikes, approval actions, and more. Wire them into Slack, PagerDuty, or your own alerting and automation systems.
 
 ### Human-in-the-Loop Approval
-Propose risky actions — sending emails, calling APIs, writing to databases — wait for human approval, then execute. Full SDK with polling, timeouts, and status tracking. Give your agents autonomy with guardrails.
+Propose high-stakes actions — sending emails, calling external APIs, writing to production databases — and wait for human approval before execution. Full SDK with polling, timeouts, and lifecycle tracking. Give your agents autonomy with governance.
 
 ### Unified LLM + MCP Budgets
-One budget covers API calls and tool calls. Gate MCP tool calls through approval workflows with `@nullspend/mcp-proxy`, or expose approval tools directly to MCP clients with `@nullspend/mcp-server`.
+One budget governs API calls and tool calls together. Gate MCP tool calls through approval workflows with `@nullspend/mcp-proxy`, or expose approval tools directly to MCP clients with `@nullspend/mcp-server`. A single financial policy across your entire agent stack.
 
-### Tracing
-W3C traceparent support for correlating requests across distributed systems. Link cost events to traces, sessions, and approval actions for full observability.
+### Distributed Tracing
+W3C traceparent support for correlating requests across services. Link cost events to traces, sessions, and approval actions for end-to-end financial observability.
 
 ### Cost Engine
 47 models across OpenAI (23), Anthropic (22), and Google (2). Accurate token-to-cost calculation with support for cached tokens, reasoning tokens, and Anthropic cache write tiers.
@@ -153,19 +158,19 @@ W3C traceparent support for correlating requests across distributed systems. Lin
 
 | Package | Description |
 |---|---|
-| [`apps/proxy`](apps/proxy/) | Cloudflare Workers proxy — auth, cost tracking, budget enforcement, velocity limits, webhooks, streaming |
+| [`apps/proxy`](apps/proxy/) | Cloudflare Workers proxy — auth, budget authorization, cost tracking, velocity controls, webhooks, streaming |
 | [`@nullspend/sdk`](packages/sdk/) | TypeScript SDK — tracked fetch, cost reporting, HITL approval workflows, budget status |
 | [`nullspend`](packages/sdk-python/) | Python SDK |
 | [`@nullspend/cost-engine`](packages/cost-engine/) | Pricing catalog and cost calculation for 47 models |
 | [`@nullspend/claude-agent`](packages/claude-agent/) | Claude Agent SDK adapter — `withNullSpend()` and `withNullSpendAsync()` for budget-aware agents |
 | [`@nullspend/mcp-server`](packages/mcp-server/) | MCP server exposing NullSpend approval tools to any MCP client |
-| [`@nullspend/mcp-proxy`](packages/mcp-proxy/) | MCP proxy — gate risky tool calls through approval before forwarding |
+| [`@nullspend/mcp-proxy`](packages/mcp-proxy/) | MCP proxy — gate tool calls through approval before forwarding |
 | [`@nullspend/docs`](packages/docs-mcp-server/) | MCP server that serves NullSpend docs to AI coding tools |
 | [`@nullspend/db`](packages/db/) | Drizzle ORM schema and types |
 
-## Hosted Dashboard
+## Hosted Platform
 
-The open-source packages handle tracking and enforcement. The [hosted dashboard at nullspend.com](https://nullspend.com) adds real-time analytics, attribution breakdowns, budget management UI, webhook configuration, team management, and session replay.
+The open-source packages handle authorization and enforcement at the network layer. The [hosted platform at nullspend.com](https://nullspend.com) adds real-time analytics, attribution dashboards, budget management, webhook configuration, team governance, and session replay.
 
 ## Proxy Endpoints
 
