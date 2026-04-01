@@ -134,14 +134,14 @@ flowchart LR
 
 Every request follows the same path: **authorize** the spend against your budget, **reserve** the estimated cost atomically, **forward** to the provider, **track** the actual token usage, **settle** the final cost. If the budget can't cover it, the request never leaves. Sub-millisecond enforcement overhead on the global edge via Cloudflare Workers and Durable Objects.
 
-### SDK Mode — no proxy in the path
+### SDK Mode — direct calls with client-side enforcement
 
 ```mermaid
 flowchart LR
     subgraph A["Your Agent"]
         direction TB
-        S["@nullspend/sdk"] --> S1["Intercept request"]
-        S1 --> S2["Parse response"]
+        S["@nullspend/sdk"] --> S1["Check budget & mandates"]
+        S1 --> S2["Call provider directly"]
         S2 --> S3["Calculate cost"]
         S3 --> S4["Report async"]
     end
@@ -149,12 +149,13 @@ flowchart LR
     A ==>|"direct API call"| C["OpenAI / Anthropic"]
     C ==>|response| A
     S4 -.->|"cost events"| D["NullSpend API"]
+    D -.->|"policy"| S
 
     style A fill:#f5f3ff,stroke:#7c3aed,stroke-width:2px
     style D fill:#f9fafb,stroke:#d1d5db
 ```
 
-Don't want to route traffic through a proxy? The SDK wraps your existing fetch call, calculates cost client-side using the built-in pricing engine, and reports to NullSpend asynchronously. Your requests go directly to the provider — NullSpend never touches the request path.
+Don't want to route traffic through a proxy? The SDK wraps your existing fetch call with `createTrackedFetch()`. With `enforcement: true`, it checks budget and model mandates **before** the request — blocking it client-side if the budget would be exceeded. Cost is calculated locally using the built-in pricing engine and reported asynchronously. Your requests go directly to the provider.
 
 ## Platform Capabilities
 
