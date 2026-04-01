@@ -1,9 +1,9 @@
 <p align="center">
   <h1 align="center">NullSpend</h1>
   <p align="center">
-    <strong>The financial control plane for the AI agent economy.</strong>
+    <strong>Financial infrastructure for the autonomous AI economy.</strong>
     <br />
-    Every request authorized. Every dollar tracked. Every budget enforced — before the call executes.
+    The first FinOps platform purpose-built for AI agents.
   </p>
 </p>
 
