@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: NullSpend Dashboard Issues
+    url: https://nullspend.com
+    about: For issues with the hosted NullSpend dashboard, contact support via the dashboard.
+  - name: Security Vulnerabilities
+    url: https://github.com/NullSpend/nullspend/blob/main/SECURITY.md
+    about: For security vulnerabilities, please follow our security policy.

@@ -1,0 +1,38 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+.next
+.turbo
+coverage
+tsconfig.tsbuildinfo
+
+# Environment
+.env
+.env.local
+.env.*.local
+.dev.vars
+.dev.vars.local
+.env.smoke
+
+# Cloudflare
+.wrangler
+worker-configuration.d.ts
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/settings.local.json
+
+# MCP config
+.mcp.json
+.cursor/mcp.json

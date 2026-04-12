@@ -1,0 +1,15 @@
+{
+  "title": "Features",
+  "pages": [
+    "cost-tracking",
+    "cost-attribution",
+    "budgets",
+    "velocity-limits",
+    "session-limits",
+    "tags",
+    "tracing",
+    "margins",
+    "organizations",
+    "human-in-the-loop"
+  ]
+}

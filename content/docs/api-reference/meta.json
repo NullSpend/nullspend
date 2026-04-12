@@ -1,0 +1,21 @@
+{
+  "title": "API Reference",
+  "pages": [
+    "overview",
+    "authentication",
+    "proxy-endpoints",
+    "custom-headers",
+    "errors",
+    "rate-limits",
+    "versioning",
+    "cost-events-api",
+    "budgets-api",
+    "api-keys-api",
+    "webhooks-api",
+    "actions-api",
+    "margins-api",
+    "tool-costs-api",
+    "audit-log-api",
+    "customer-mappings-api"
+  ]
+}
