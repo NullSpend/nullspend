@@ -1,15 +1,16 @@
 <p align="center">
   <h1 align="center">NullSpend</h1>
   <p align="center">
-    <strong>Financial infrastructure for the autonomous AI economy.</strong>
+    <strong>AI cost monitoring, customer margin tracking, and budget enforcement.</strong>
     <br />
-    The first FinOps platform purpose-built for AI agents.
+    Open-source FinOps platform with a proxy, TypeScript SDK, and Python SDK.
   </p>
 </p>
 
 <p align="center">
   <a href="https://github.com/NullSpend/nullspend/actions"><img src="https://github.com/NullSpend/nullspend/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/NullSpend/nullspend/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License" /></a>
+  <a href="https://www.npmjs.com/package/@nullspend/sdk"><img src="https://img.shields.io/npm/v/@nullspend/sdk" alt="npm" /></a>
   <a href="https://nullspend.dev/docs"><img src="https://img.shields.io/badge/docs-nullspend.dev-brightgreen" alt="Docs" /></a>
 </p>
 
@@ -17,10 +18,14 @@
 
 Track every dollar your AI agents spend. Know which customers are profitable. Stop runaway costs before they hit your bill.
 
-NullSpend is the FinOps platform for AI-native companies: **cost monitoring**, **per-customer margin tracking**, **real-time budget enforcement**, and **human-in-the-loop approval** — all in one platform. Connect Stripe to see profitability. Set a budget to enforce it. One line to integrate.
+NullSpend is the FinOps platform for AI-native companies: **cost monitoring**, **per-customer margin tracking** (via Stripe), **real-time budget enforcement**, and **human-in-the-loop approval**. Two integration paths — a **proxy** for zero-code enforcement, and **SDKs** (TypeScript + Python) for direct provider calls with client-side tracking.
 
 ```
+# Proxy — one env var, guaranteed enforcement
 OPENAI_BASE_URL=https://proxy.nullspend.dev/v1
+
+# SDK — wrap your existing client, no proxy needed
+openai = OpenAI(http_client=ns.openai)
 ```
 
 ## What NullSpend Does
@@ -98,7 +103,7 @@ import OpenAI from "openai";
 import { NullSpend } from "@nullspend/sdk";
 
 const ns = new NullSpend({
-  baseUrl: "https://app.nullspend.dev",
+  baseUrl: "https://nullspend.dev",
   apiKey: process.env.NULLSPEND_API_KEY,
   costReporting: {},
 });
@@ -233,13 +238,13 @@ Capture full request/response bodies for audit, compliance, and debugging. Suppo
 One budget governs API calls and tool calls together. Gate MCP tool calls through approval workflows with `@nullspend/mcp-proxy`, or expose budget awareness directly to agents with `@nullspend/mcp-server` — including self-audit tools so agents can check their own spend.
 
 ### Cost Engine
-45 models across OpenAI, Anthropic, and Google — bundled in both TypeScript and Python SDKs:
+47 models across OpenAI and Anthropic — bundled in both TypeScript and Python SDKs:
 
-- **OpenAI** — GPT-5.4, GPT-5.3, GPT-5, GPT-4.1, GPT-4o, o3, o4-mini, and more
-- **Anthropic** — Claude Opus 4.6, Sonnet 4.6, Haiku 4.5, plus all dated variants
-- **Google** — Gemini 2.5 Pro, Gemini 2.5 Flash
+- **OpenAI** (23 models) — GPT-5.4, GPT-5.3, GPT-5, GPT-4.1, GPT-4o, o3, o4-mini, and more
+- **Anthropic** (22 models) — Claude Opus 4.6, Sonnet 4.6, Haiku 4.5, plus all dated variants
+- **Google** (2 models, pricing only) — Gemini 2.5 Pro, Gemini 2.5 Flash
 
-Accurate token-to-cost calculation with cached tokens, reasoning tokens (o-series), and Anthropic cache write tiers.
+Proxy routes OpenAI and Anthropic. Google pricing is in the catalog for SDK-side cost calculation (direct mode). Accurate token-to-cost math with cached tokens, reasoning tokens (o-series), and Anthropic cache write tiers.
 
 ### Teams & Organizations
 Multi-org support with role-based access (Owner, Admin, Member, Viewer). Invite team members, manage API keys per org, audit log for all changes. Separate billing per org with Free and Pro tiers.
@@ -251,7 +256,7 @@ Multi-org support with role-based access (Owner, Admin, Member, Viewer). Invite 
 | [`apps/proxy`](apps/proxy/) | Cloudflare Workers proxy — budget authorization, mandates, cost tracking, velocity controls, session limits, webhooks, request logging, streaming |
 | [`@nullspend/sdk`](packages/sdk/) | TypeScript SDK — tracked fetch with client-side enforcement, cost reporting, HITL approval workflows, budget & spend queries |
 | [`nullspend`](packages/sdk-python/) | Python SDK — full feature parity with the TypeScript SDK |
-| [`@nullspend/cost-engine`](packages/cost-engine/) | Pricing catalog and cost calculation for 45 models across OpenAI and Anthropic |
+| [`@nullspend/cost-engine`](packages/cost-engine/) | Pricing catalog and cost calculation for 47 models (OpenAI, Anthropic, Google) |
 | [`@nullspend/claude-agent`](packages/claude-agent/) | Claude Agent SDK adapter — `withNullSpend()` and `withNullSpendAsync()` for budget-aware agents |
 | [`@nullspend/mcp-server`](packages/mcp-server/) | MCP server — approval tools, budget queries, spend summaries, and cost event listing for any MCP client |
 | [`@nullspend/mcp-proxy`](packages/mcp-proxy/) | MCP proxy — gate tool calls through approval before forwarding to upstream servers |
