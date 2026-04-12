@@ -211,7 +211,7 @@ Connect your Stripe account and see per-customer profitability in real time. Nul
 If you're billing customers for AI features, this answers the question: "Am I making money on each customer, or losing it?"
 
 ### Budget Authorization
-Real-time, pre-request budget enforcement. Set spend limits per user, per API key, per customer, or per tag. If a request would exceed the limit, the proxy returns `429 budget_exceeded` without ever calling the upstream provider. Atomic reservation-based deductions with sub-millisecond latency. Three enforcement policies: `strict_block` (deny), `soft_block` (log but allow), `warn` (track only). Period resets (daily/weekly/monthly) and customizable threshold alerts (50%, 80%, 90%, 95%).
+Real-time, pre-request budget enforcement. Set spend limits per user, per API key, per customer, or per tag. If a request would exceed the limit, the proxy returns `429 budget_exceeded` without ever calling the upstream provider. Atomic reservation-based deductions with sub-millisecond latency. Three enforcement policies: `strict_block` (deny), `soft_block` (log but allow), `warn` (track only). Period resets (daily/weekly/monthly/yearly) and customizable threshold alerts (50%, 80%, 90%, 95%).
 
 ### Model & Provider Mandates
 Restrict which models and providers each API key can access. An agent with a key mandated to `gpt-4o-mini` only will be blocked from calling `gpt-4o` — before the request executes. The SDK also enforces mandates client-side and includes a `cheapest_overall` recommendation from the policy endpoint.
