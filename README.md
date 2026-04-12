@@ -28,28 +28,48 @@ OPENAI_BASE_URL=https://proxy.nullspend.dev/v1
 openai = OpenAI(http_client=ns.openai)
 ```
 
-## What NullSpend Does
+## Per-Customer Margins (Stripe Integration)
 
-**See where the money goes.** Real-time cost analytics across every LLM call — by model, provider, customer, team, or any tag. Daily trends, session replay, CSV export.
+If you bill customers for AI features, the first question is: **am I making money on each one?**
 
-**Know if you're making money.** Connect Stripe and see per-customer gross margins in real time. Health tiers (Healthy / At Risk / Critical), 3-month trajectory projections, and Slack alerts when margins worsen. If you bill customers for AI features, this tells you which ones are profitable.
+Connect Stripe and NullSpend answers it automatically:
+
+| Customer | Revenue | AI Cost | Margin | Health |
+|---|---|---|---|---|
+| Acme Corp | $2,400/mo | $890/mo | 62.9% | Healthy |
+| Beta Inc | $800/mo | $1,240/mo | -55.0% | Critical |
+| Gamma Ltd | $1,600/mo | $1,120/mo | 30.0% | Moderate |
+
+- **Auto-sync** — invoices pulled from Stripe every 2 hours (last 3 months + current)
+- **Auto-match** — Stripe customers matched to NullSpend cost tags by metadata or customer ID
+- **Health tiers** — Healthy (50%+), Moderate (20-49%), At Risk (0-19%), Critical (negative)
+- **Trajectory** — 3-month sparkline with linear regression, Slack alerts when a customer's margin drops a tier
+- **Per-customer detail** — drill into any customer to see revenue over time, model breakdown, and cost drivers
+
+Manual mapping for customers that don't auto-match. CSV export for the full margin table.
+
+## Cost Monitoring & Analytics
+
+Real-time cost tracking across every LLM call — by model, provider, customer, team, or any tag you define. The dashboard shows daily spend trends, model/provider/key breakdowns, tag-based attribution, and session replay. Export to CSV.
+
+Tag requests with `X-NullSpend-Tags` (proxy) or pass `tags` in the SDK to attribute costs to customers, teams, features, or environments. Break down spend by any dimension.
+
+## Budget Enforcement & Controls
 
 **Stop runaway spend.** Pre-request budget enforcement — spend is checked and reserved before the LLM call executes, not reconciled after. Velocity circuit breakers detect and halt spend anomalies automatically. Sub-millisecond overhead.
 
 **Control what agents can do.** Model and provider mandates, tag-level budgets, session spend caps, and human-in-the-loop approval for high-stakes actions. One budget governs LLM calls and MCP tool calls together.
 
-NullSpend provides:
+### At a glance
 
-- **Cost monitoring** — real-time spend tracking, model/provider/customer breakdowns, session replay
-- **Stripe margin tracking** — per-customer profitability with auto-matching, health tiers, and trajectory alerts
-- **Pre-request budget enforcement** — atomic reservation-based spend control, not after-the-fact notifications
-- **Model & provider mandates** — restrict which models each API key can access
-- **Velocity circuit breakers** — automatically detect and halt runaway spend patterns
-- **Tag-level budgets** — enforce spend limits per customer, team, or any dimension you tag
-- **Session governance** — cap total spend per agent conversation
-- **Human-in-the-loop approval** — propose actions, wait for human decision, execute on approval
-- **Webhook & Slack alerts** — 18 event types for budget thresholds, velocity spikes, margin changes
-- **Unified LLM + MCP budgets** — one budget governs API calls and tool calls together
+- **Budgets** — per-user, per-key, per-customer, per-tag spend limits with `strict_block` / `soft_block` / `warn` policies
+- **Mandates** — restrict which models and providers each API key can access
+- **Velocity controls** — sliding-window circuit breaker for spend rate anomalies
+- **Session limits** — cap total spend per agent conversation
+- **HITL approval** — propose high-stakes actions, wait for human decision, execute on approval
+- **Budget negotiation** — agents can request budget increases that humans approve from dashboard or Slack
+- **Webhook & Slack alerts** — 18 event types for thresholds, velocity spikes, margin changes, HITL actions
+- **Period resets** — daily, weekly, monthly, or yearly automatic budget resets
 
 ## Get Started in 2 Minutes
 
