@@ -15,33 +15,36 @@
 
 ---
 
-AI agents are becoming autonomous economic actors. They negotiate, transact, and spend — across providers, tools, and workflows — at machine speed. The infrastructure to govern that spend doesn't exist yet.
+Track every dollar your AI agents spend. Know which customers are profitable. Stop runaway costs before they hit your bill.
 
-**NullSpend is building it.**
-
-We're creating the financial infrastructure layer for the autonomous AI economy: real-time budget authorization, model and provider mandates, spend velocity controls, cost attribution, cross-provider governance, and human-in-the-loop approval — all through a transparent proxy that integrates in one line and enforces in under a millisecond.
+NullSpend is the FinOps platform for AI-native companies: **cost monitoring**, **per-customer margin tracking**, **real-time budget enforcement**, and **human-in-the-loop approval** — all in one platform. Connect Stripe to see profitability. Set a budget to enforce it. One line to integrate.
 
 ```
 OPENAI_BASE_URL=https://proxy.nullspend.dev/v1
 ```
 
-This isn't observability. This isn't logging. This is **financial authorization** — every request checked against your budget before it executes, with the spend reserved atomically and the cost reconciled on completion.
+## What NullSpend Does
 
-## The Problem Is Structural
+**See where the money goes.** Real-time cost analytics across every LLM call — by model, provider, customer, team, or any tag. Daily trends, session replay, CSV export.
 
-Today's AI cost tools are built on a fundamentally broken model: they **observe** spend and **notify** you after the fact. A $50 budget limit enforced on a 60-second polling loop becomes a $764 invoice. A runaway agent loop burns $127K in four hours, and the team finds out on their monthly bill.
+**Know if you're making money.** Connect Stripe and see per-customer gross margins in real time. Health tiers (Healthy / At Risk / Critical), 3-month trajectory projections, and Slack alerts when margins worsen. If you bill customers for AI features, this tells you which ones are profitable.
 
-Agents don't need dashboards. They need authorization infrastructure.
+**Stop runaway spend.** Pre-request budget enforcement — spend is checked and reserved before the LLM call executes, not reconciled after. Velocity circuit breakers detect and halt spend anomalies automatically. Sub-millisecond overhead.
+
+**Control what agents can do.** Model and provider mandates, tag-level budgets, session spend caps, and human-in-the-loop approval for high-stakes actions. One budget governs LLM calls and MCP tool calls together.
 
 NullSpend provides:
 
-- **Pre-request budget authorization** — spend is checked and reserved before the LLM call, not reconciled after
-- **Model & provider mandates** — restrict which models and providers each API key can access
-- **Sub-millisecond enforcement** — real-time synchronous budget checks on every single request
-- **Network-level governance** — the proxy is the single control point every request passes through. One env var. Every provider. No escape route.
+- **Cost monitoring** — real-time spend tracking, model/provider/customer breakdowns, session replay
+- **Stripe margin tracking** — per-customer profitability with auto-matching, health tiers, and trajectory alerts
+- **Pre-request budget enforcement** — atomic reservation-based spend control, not after-the-fact notifications
+- **Model & provider mandates** — restrict which models each API key can access
 - **Velocity circuit breakers** — automatically detect and halt runaway spend patterns
 - **Tag-level budgets** — enforce spend limits per customer, team, or any dimension you tag
-- **Unified LLM + tool budgets** — one budget governs API calls and MCP tool calls together
+- **Session governance** — cap total spend per agent conversation
+- **Human-in-the-loop approval** — propose actions, wait for human decision, execute on approval
+- **Webhook & Slack alerts** — 18 event types for budget thresholds, velocity spikes, margin changes
+- **Unified LLM + MCP budgets** — one budget governs API calls and tool calls together
 
 ## Get Started in 2 Minutes
 
