@@ -28,6 +28,13 @@ OPENAI_BASE_URL=https://proxy.nullspend.dev/v1
 openai = OpenAI(http_client=ns.openai)
 ```
 
+### Built for teams who
+
+- **Bill customers for AI features** and need to know per-customer margins before the monthly surprise
+- **Deploy autonomous agents** that spend money without a human watching every call
+- **Run multi-model, multi-provider stacks** and want a single pane of glass for cost and control
+- **Need to explain AI spend** to finance, leadership, or investors with real attribution data
+
 ## Per-Customer Margins (Stripe Integration)
 
 If you bill customers for AI features, the first question is: **am I making money on each one?**
@@ -71,37 +78,57 @@ Tag requests with `X-NullSpend-Tags` (proxy) or pass `tags` in the SDK to attrib
 - **Webhook & Slack alerts** — 18 event types for thresholds, velocity spikes, margin changes, HITL actions
 - **Period resets** — daily, weekly, monthly, or yearly automatic budget resets
 
-## Get Started in 2 Minutes
+## Get Started
 
-### OpenAI
+Pick one. All paths report to the same dashboard.
+
+### Option 1: Proxy (zero-code, guaranteed enforcement)
+
+Point your provider SDK at the proxy. Every call is tracked, budgeted, and enforced. Your code doesn't change.
 
 ```typescript
-import OpenAI from "openai";
-
+// TypeScript — OpenAI
 const openai = new OpenAI({
   baseURL: "https://proxy.nullspend.dev/v1",
   defaultHeaders: { "X-NullSpend-Key": process.env.NULLSPEND_API_KEY },
 });
 
-// Every call is now authorized, tracked, and enforced. Your code doesn't change.
-const response = await openai.chat.completions.create({
-  model: "gpt-4o",
-  messages: [{ role: "user", content: "Hello" }],
-});
-```
-
-### Anthropic
-
-```typescript
-import Anthropic from "@anthropic-ai/sdk";
-
+// TypeScript — Anthropic
 const anthropic = new Anthropic({
   baseURL: "https://proxy.nullspend.dev/v1",
   defaultHeaders: { "X-NullSpend-Key": process.env.NULLSPEND_API_KEY },
 });
 ```
 
-### Claude Agent SDK
+```python
+# Python — OpenAI
+openai = OpenAI(
+    base_url="https://proxy.nullspend.dev/v1",
+    default_headers={"X-NullSpend-Key": os.environ["NULLSPEND_API_KEY"]},
+)
+```
+
+### Option 2: SDK (direct calls, client-side tracking)
+
+Wrap your provider client. Costs are calculated locally and reported in the background. No proxy in the path.
+
+```typescript
+// TypeScript
+import { NullSpend } from "@nullspend/sdk";
+
+const ns = new NullSpend({ apiKey: process.env.NULLSPEND_API_KEY, costReporting: {} });
+const openai = new OpenAI({ fetch: ns.createTrackedFetch("openai") });
+```
+
+```python
+# Python
+from nullspend import NullSpend
+
+ns = NullSpend(api_key=os.environ["NULLSPEND_API_KEY"], cost_reporting={})
+openai = OpenAI(http_client=ns.openai)
+```
+
+### Option 3: Claude Agent SDK
 
 ```typescript
 import { withNullSpend } from "@nullspend/claude-agent";
@@ -114,38 +141,6 @@ const agent = new Agent({
     tags: { agent: "research-bot", customer: "acme-corp" },
   }),
 });
-```
-
-### TypeScript SDK
-
-```typescript
-import OpenAI from "openai";
-import { NullSpend } from "@nullspend/sdk";
-
-const ns = new NullSpend({
-  baseUrl: "https://nullspend.dev",
-  apiKey: process.env.NULLSPEND_API_KEY,
-  costReporting: {},
-});
-
-const openai = new OpenAI({ fetch: ns.createTrackedFetch("openai") });
-```
-
-### Python SDK
-
-```python
-from openai import OpenAI
-from nullspend import NullSpend
-
-ns = NullSpend(api_key="ns_live_sk_...", cost_reporting={})
-
-# Wrap OpenAI — costs tracked automatically, enforcement optional
-openai = OpenAI(http_client=ns.openai)
-
-response = openai.chat.completions.create(
-    model="gpt-4o",
-    messages=[{"role": "user", "content": "Hello"}],
-)
 ```
 
 ## Choose Your Integration
@@ -218,56 +213,15 @@ Don't want to route traffic through a proxy? The SDK wraps your existing fetch c
 
 > **Note:** SDK enforcement is cooperative — it runs client-side and can be bypassed by raw API calls. For guaranteed, un-bypassable enforcement, use the proxy.
 
-## Platform Capabilities
+## Supported Models
 
-### Cost Monitoring & Analytics
-Real-time cost tracking across every LLM call with per-request token counts, model pricing, and microdollar precision. The dashboard surfaces daily spend trends, model/provider/key breakdowns, tag-based attribution, and CSV export. Group spend by API key, customer, team, or any custom tag — drill into any dimension to understand where money goes.
+47 models with accurate token-to-cost calculation — cached tokens, reasoning tokens (o-series), Anthropic cache write tiers:
 
-Session replay lets you trace an entire agent conversation: every request, every model, every cost, in order.
+- **OpenAI** (23) — GPT-5.4, GPT-5.3, GPT-5, GPT-4.1, GPT-4o, o3, o4-mini, and more
+- **Anthropic** (22) — Claude Opus 4.6, Sonnet 4.6, Haiku 4.5, plus all dated variants
+- **Google** (2, pricing only) — Gemini 2.5 Pro, Gemini 2.5 Flash
 
-### Profitability Tracking (Stripe Margins)
-Connect your Stripe account and see per-customer profitability in real time. NullSpend syncs invoices automatically, matches Stripe customers to your cost tags (by metadata or manual mapping), and calculates gross margins. Health tiers (Healthy / Moderate / At Risk / Critical) with 3-month trajectory projections and Slack alerts when margins worsen.
-
-If you're billing customers for AI features, this answers the question: "Am I making money on each customer, or losing it?"
-
-### Budget Authorization
-Real-time, pre-request budget enforcement. Set spend limits per user, per API key, per customer, or per tag. If a request would exceed the limit, the proxy returns `429 budget_exceeded` without ever calling the upstream provider. Atomic reservation-based deductions with sub-millisecond latency. Three enforcement policies: `strict_block` (deny), `soft_block` (log but allow), `warn` (track only). Period resets (daily/weekly/monthly/yearly) and customizable threshold alerts (50%, 80%, 90%, 95%).
-
-### Model & Provider Mandates
-Restrict which models and providers each API key can access. An agent with a key mandated to `gpt-4o-mini` only will be blocked from calling `gpt-4o` — before the request executes. The SDK also enforces mandates client-side and includes a `cheapest_overall` recommendation from the policy endpoint.
-
-### Velocity Controls
-Sliding-window spend velocity detection. When an agent starts burning money faster than normal, the circuit breaker trips automatically. Configurable window size and cooldown period. Triggers `velocity.exceeded` and `velocity.recovered` webhooks. Recovers automatically when the anomaly subsides.
-
-### Session Governance
-Cap total spend per agent session. If a single request would push the session over its limit, it's blocked — the agent is forced to stop or escalate. Track per-session spend across multiple requests for conversation-level cost control.
-
-### Customer Attribution
-Tag requests with customer IDs for per-customer cost tracking and profitability analysis. Combined with Stripe margins, you get a complete picture: what each customer pays you, what they cost you, and whether the unit economics work.
-
-### Human-in-the-Loop Approval
-Propose high-stakes actions — sending emails, calling external APIs, writing to production databases — and wait for human approval before execution. Full SDK support (TypeScript + Python) with polling, timeouts, and lifecycle tracking. Budget increase negotiation: agents can request more budget, humans approve or reject from the dashboard or Slack.
-
-### Request & Response Logging
-Capture full request/response bodies for audit, compliance, and debugging. Supports streaming and non-streaming. Retrieve stored bodies via the API for post-hoc analysis. (Pro/Enterprise)
-
-### Webhook & Slack Alerts
-18 event types with HMAC-SHA256 signed delivery. Budget threshold warnings, velocity spikes, session limit breaches, HITL action notifications, margin alerts — all routable to webhooks, Slack, or any HTTP endpoint.
-
-### Unified LLM + MCP Budgets
-One budget governs API calls and tool calls together. Gate MCP tool calls through approval workflows with `@nullspend/mcp-proxy`, or expose budget awareness directly to agents with `@nullspend/mcp-server` — including self-audit tools so agents can check their own spend.
-
-### Cost Engine
-47 models across OpenAI and Anthropic — bundled in both TypeScript and Python SDKs:
-
-- **OpenAI** (23 models) — GPT-5.4, GPT-5.3, GPT-5, GPT-4.1, GPT-4o, o3, o4-mini, and more
-- **Anthropic** (22 models) — Claude Opus 4.6, Sonnet 4.6, Haiku 4.5, plus all dated variants
-- **Google** (2 models, pricing only) — Gemini 2.5 Pro, Gemini 2.5 Flash
-
-Proxy routes OpenAI and Anthropic. Google pricing is in the catalog for SDK-side cost calculation (direct mode). Accurate token-to-cost math with cached tokens, reasoning tokens (o-series), and Anthropic cache write tiers.
-
-### Teams & Organizations
-Multi-org support with role-based access (Owner, Admin, Member, Viewer). Invite team members, manage API keys per org, audit log for all changes. Separate billing per org with Free and Pro tiers.
+Proxy routes OpenAI and Anthropic. Google pricing is in the catalog for SDK-side cost calculation.
 
 ## Packages
 
