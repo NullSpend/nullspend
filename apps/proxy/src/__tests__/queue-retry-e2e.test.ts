@@ -4,12 +4,16 @@
  * Bug: `doBudgetReconcile` never throws (catches errors internally),
  * so the queue handler's try/catch never triggered `message.retry()`.
  *
- * Fix: `doBudgetReconcile` returns a status string ("ok" | "pg_failed" | "error")
+ * Fix: `doBudgetReconcile` returns a status string ("ok" | "error")
  * and `reconcileBudget` throws when `throwOnError` is set.
+ *
+ * Strategy E removed the optimistic PG write — the DO's outbox + alarm
+ * handler owns Postgres sync entirely. The only failure mode that triggers
+ * queue retry is a DO error.
  *
  * These tests run the FULL chain:
  *   handleReconciliationQueue → reconcileBudget → doBudgetReconcile
- * with only the DO stub and `updateBudgetSpend` mocked.
+ * with only the DO stub mocked.
  */
 import { cloudflareWorkersMock } from "./test-helpers.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -18,16 +22,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Hoisted mocks — must be declared before any import that touches them
 // ---------------------------------------------------------------------------
 
-const { mockUpdateBudgetSpend, mockReconcileStub } = vi.hoisted(() => ({
-  mockUpdateBudgetSpend: vi.fn(),
+const { mockReconcileStub } = vi.hoisted(() => ({
   mockReconcileStub: vi.fn(),
 }));
 
 vi.mock("cloudflare:workers", () => cloudflareWorkersMock());
 
-// Mock only the PG write — let everything else run for real
+// Mock budget-spend to avoid loading real Postgres dependencies.
+// Strategy E removed the optimistic PG write from doBudgetReconcile,
+// but budget-orchestrator still imports resetBudgetPeriod for checkBudget.
 vi.mock("../lib/budget-spend.js", () => ({
-  updateBudgetSpend: (...args: unknown[]) => mockUpdateBudgetSpend(...args),
+  updateBudgetSpend: vi.fn().mockResolvedValue(undefined),
   resetBudgetPeriod: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -105,77 +110,11 @@ describe("Queue retry fix — end-to-end chain", () => {
   });
 
   // -----------------------------------------------------------------------
-  // 1. PG failure → retry triggered
-  // -----------------------------------------------------------------------
-  describe("PG failure → retry triggered", () => {
-    it("doBudgetReconcile returns 'pg_failed' on single PG attempt failure", async () => {
-      mockReconcileStub.mockResolvedValue({ status: "ok" });
-      mockUpdateBudgetSpend.mockRejectedValue(new Error("PG connection refused"));
-
-      const env = makeEnv();
-      const status = await doBudgetReconcile(
-        env,
-        "user-abc",
-        "org-test",
-        "res-123",
-        50_000,
-        [{ entityType: "api_key", entityId: "key-1" }],
-        "postgresql://test:test@db:5432/test",
-      );
-
-      expect(status).toBe("pg_failed");
-      // Single attempt only — no retry loop
-      expect(mockUpdateBudgetSpend).toHaveBeenCalledTimes(1);
-    });
-
-    it("reconcileBudget with throwOnError throws on pg_failed status", async () => {
-      mockReconcileStub.mockResolvedValue({ status: "ok" });
-      mockUpdateBudgetSpend.mockRejectedValue(new Error("PG connection refused"));
-
-      const env = makeEnv();
-      await expect(
-        reconcileBudget(
-          env,
-          "user-abc",
-          "org-test",
-          "res-123",
-          50_000,
-          [
-            {
-              entityKey: "{budget}:api_key:key-1",
-              entityType: "api_key",
-              entityId: "key-1",
-              maxBudget: 0,
-              spend: 0,
-              reserved: 0,
-              policy: "strict_block",
-            },
-          ],
-          "postgresql://test:test@db:5432/test",
-          { throwOnError: true },
-        ),
-      ).rejects.toThrow("Reconciliation failed with status: pg_failed");
-    });
-
-    it("queue handler calls message.retry() (not ack) when PG fails", async () => {
-      mockReconcileStub.mockResolvedValue({ status: "ok" });
-      mockUpdateBudgetSpend.mockRejectedValue(new Error("PG connection refused"));
-
-      const msg = makeMessage(makeBody());
-      await handleReconciliationQueue(makeBatch([msg]), makeEnv());
-
-      expect(msg.retry).toHaveBeenCalledTimes(1);
-      expect(msg.ack).not.toHaveBeenCalled();
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // 2. DO failure → retry triggered
+  // 1. DO failure → retry triggered
   // -----------------------------------------------------------------------
   describe("DO failure → retry triggered", () => {
     it("doBudgetReconcile returns 'error' when DO stub rejects", async () => {
       mockReconcileStub.mockRejectedValue(new Error("DO unavailable"));
-      mockUpdateBudgetSpend.mockResolvedValue(undefined);
 
       const env = makeEnv();
       const status = await doBudgetReconcile(
@@ -185,12 +124,9 @@ describe("Queue retry fix — end-to-end chain", () => {
         "res-123",
         50_000,
         [{ entityType: "api_key", entityId: "key-1" }],
-        "postgresql://test:test@db:5432/test",
       );
 
-      expect(status).toBe("error");
-      // updateBudgetSpend should NOT be called — DO failed before we got there
-      expect(mockUpdateBudgetSpend).not.toHaveBeenCalled();
+      expect(status.status).toBe("error");
     });
 
     it("reconcileBudget with throwOnError throws on DO error", async () => {
@@ -233,12 +169,11 @@ describe("Queue retry fix — end-to-end chain", () => {
   });
 
   // -----------------------------------------------------------------------
-  // 3. Success → ack (not retry)
+  // 2. Success → ack (not retry)
   // -----------------------------------------------------------------------
   describe("Success → ack (not retry)", () => {
-    it("doBudgetReconcile returns 'ok' when both DO and PG succeed", async () => {
-      mockReconcileStub.mockResolvedValue({ status: "ok" });
-      mockUpdateBudgetSpend.mockResolvedValue(undefined);
+    it("doBudgetReconcile returns 'ok' when DO succeeds", async () => {
+      mockReconcileStub.mockResolvedValue({ status: "reconciled", thresholdCrossings: [] });
 
       const env = makeEnv();
       const status = await doBudgetReconcile(
@@ -248,16 +183,13 @@ describe("Queue retry fix — end-to-end chain", () => {
         "res-123",
         50_000,
         [{ entityType: "api_key", entityId: "key-1" }],
-        "postgresql://test:test@db:5432/test",
       );
 
-      expect(status).toBe("ok");
-      expect(mockUpdateBudgetSpend).toHaveBeenCalledTimes(1);
+      expect(status.status).toBe("ok");
     });
 
     it("reconcileBudget does NOT throw on success", async () => {
-      mockReconcileStub.mockResolvedValue({ status: "ok" });
-      mockUpdateBudgetSpend.mockResolvedValue(undefined);
+      mockReconcileStub.mockResolvedValue({ status: "reconciled", thresholdCrossings: [] });
 
       const env = makeEnv();
       await expect(
@@ -281,12 +213,11 @@ describe("Queue retry fix — end-to-end chain", () => {
           "postgresql://test:test@db:5432/test",
           { throwOnError: true },
         ),
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual({ thresholdCrossings: [] });
     });
 
     it("queue handler calls message.ack() (not retry) on success", async () => {
-      mockReconcileStub.mockResolvedValue({ status: "ok" });
-      mockUpdateBudgetSpend.mockResolvedValue(undefined);
+      mockReconcileStub.mockResolvedValue({ status: "reconciled", thresholdCrossings: [] });
 
       const msg = makeMessage(makeBody());
       await handleReconciliationQueue(makeBatch([msg]), makeEnv());
@@ -297,40 +228,9 @@ describe("Queue retry fix — end-to-end chain", () => {
   });
 
   // -----------------------------------------------------------------------
-  // 4. Verify the OLD behavior is gone — without throwOnError,
-  //    reconcileBudget should NOT throw even on failure
+  // 3. Without throwOnError — reconcileBudget should NOT throw on failure
   // -----------------------------------------------------------------------
   describe("Without throwOnError (fallback/direct path)", () => {
-    it("reconcileBudget does NOT throw on pg_failed status", async () => {
-      mockReconcileStub.mockResolvedValue({ status: "ok" });
-      mockUpdateBudgetSpend.mockRejectedValue(new Error("PG connection refused"));
-
-      const env = makeEnv();
-      // No throwOnError option — this is the direct/fallback path
-      await expect(
-        reconcileBudget(
-          env,
-          "user-abc",
-          "org-test",
-          "res-123",
-          50_000,
-          [
-            {
-              entityKey: "{budget}:api_key:key-1",
-              entityType: "api_key",
-              entityId: "key-1",
-              maxBudget: 0,
-              spend: 0,
-              reserved: 0,
-              policy: "strict_block",
-            },
-          ],
-          "postgresql://test:test@db:5432/test",
-          // no options — throwOnError defaults to false
-        ),
-      ).resolves.toBeUndefined();
-    });
-
     it("reconcileBudget does NOT throw on DO error without throwOnError", async () => {
       mockReconcileStub.mockRejectedValue(new Error("DO unavailable"));
 
@@ -355,7 +255,7 @@ describe("Queue retry fix — end-to-end chain", () => {
           ],
           "postgresql://test:test@db:5432/test",
         ),
-      ).resolves.toBeUndefined();
+      ).resolves.toEqual({ thresholdCrossings: [] });
     });
   });
 });

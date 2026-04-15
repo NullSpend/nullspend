@@ -14,9 +14,10 @@ const DEFAULT_THRESHOLDS: readonly number[] = Object.freeze([50, 80, 90, 95]);
  * classified as critical; all others are warning. Thresholds >= 90 are
  * also classified as critical (backward compat for default thresholds).
  *
- * // TODO: KV or DO-based dedup for threshold alerts
- * Currently, concurrent requests may both detect the same crossing.
- * Customer-side dedup by event type + entity is sufficient for launch.
+ * P0-1 FIX: The DO's `reconcile()` now detects threshold crossings atomically
+ * inside `transactionSync()` and returns them via `ReconcileResult.thresholdCrossings`.
+ * Route handlers pass DO-deduped crossings to `dispatchCostEventWebhooks()`.
+ * This function is kept as a fallback for paths without DO access (MCP route).
  */
 export function detectThresholdCrossings(
   budgetEntities: BudgetEntity[],

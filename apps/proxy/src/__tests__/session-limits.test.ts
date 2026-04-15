@@ -229,6 +229,8 @@ function makeCtx(
     webhookDispatcher: null,
     resolvedApiVersion: "2026-04-01",
     requestStartMs: performance.now(),
+    requestLoggingEnabled: false,
+    finalize: false,
     ...overrides,
   };
 }
@@ -308,7 +310,7 @@ describe("Session Limits", () => {
       await checkBudget(env, ctx, 500_000);
 
       expect(mockDoBudgetCheck).toHaveBeenCalledWith(
-        env, "user-1", "key-1", 500_000, "sess-abc-123", [], null,
+        env, "user-1", "key-1", 500_000, "sess-abc-123", [], null, false,
       );
     });
 
@@ -320,7 +322,7 @@ describe("Session Limits", () => {
       await checkBudget(env, ctx, 500_000);
 
       expect(mockDoBudgetCheck).toHaveBeenCalledWith(
-        env, "user-1", "key-1", 500_000, null, [], null,
+        env, "user-1", "key-1", 500_000, null, [], null, false,
       );
     });
 
@@ -545,7 +547,7 @@ describe("Session Limits", () => {
       expect(outcome.status).toBe("approved");
       // sessionId=null is passed to DO — DO skips session check
       expect(mockDoBudgetCheck).toHaveBeenCalledWith(
-        env, "user-1", "key-1", 500_000, null, [], null,
+        env, "user-1", "key-1", 500_000, null, [], null, false,
       );
     });
   });

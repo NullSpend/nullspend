@@ -241,6 +241,13 @@ export interface TrackedFetchOptions {
   enforcement?: boolean;
   /** Per-session spend limit in microdollars. Takes precedence over policy-fetched limit. */
   sessionLimitMicrodollars?: number;
+  /**
+   * Mark this request as a finalization call. When true, the SDK skips
+   * finalization reserve subtraction in direct-mode budget checks and
+   * injects `X-NullSpend-Finalize: 1` in proxy mode so the proxy also
+   * skips the reserve.
+   */
+  finalize?: boolean;
   /** Called when cost tracking encounters a non-fatal error. */
   onCostError?: (error: Error) => void;
   /** Called before throwing BudgetExceededError, MandateViolationError, or SessionLimitExceededError. */
@@ -248,7 +255,7 @@ export interface TrackedFetchOptions {
 }
 
 export type DenialReason =
-  | { type: "budget"; remaining: number; entityType?: string; entityId?: string; limit?: number; spend?: number }
+  | { type: "budget"; remaining: number; entityType?: string; entityId?: string; limit?: number; spend?: number; finalizationReserve?: number; finalizationRemaining?: number }
   | { type: "mandate"; mandate: string; requested: string; allowed: string[] }
   | { type: "session_limit"; sessionSpend: number; sessionLimit: number }
   | { type: "velocity"; retryAfterSeconds?: number; limit?: number; window?: number; current?: number }
@@ -309,6 +316,7 @@ export interface BudgetEntity {
   policy: string;
   resetInterval: string | null;
   currentPeriodStart: string | null;
+  finalizationReserveMicrodollars?: number;
 }
 
 export interface BudgetStatus {

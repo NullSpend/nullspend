@@ -2,9 +2,9 @@ import { describe, it, expect } from "vitest";
 import { calculateAnthropicCost } from "../lib/anthropic-cost-calculator.js";
 
 // ---------------------------------------------------------------------------
-// Pricing rates per million tokens (microdollars) for all Anthropic models.
-// The calculator uses costComponent(tokens, ratePerMTok) = tokens * rate
-// when tokens > 0 and rate > 0, else 0.
+// Pricing rates in integer µ$/MTok for all Anthropic models.
+// The calculator uses costComponent(tokens, ratePerMTok) =
+//   (tokens * rate) / 1_000_000 when tokens > 0 and rate > 0, else 0.
 // Final cost = Math.round(sum of components).
 // ---------------------------------------------------------------------------
 
@@ -17,16 +17,16 @@ interface ModelRates {
 }
 
 const SHORT_NAME_RATES: Record<string, ModelRates> = {
-  "claude-sonnet-4-6":  { in: 3.00, cached: 0.30, w5m: 3.75, w1h: 6.00, out: 15.00 },
-  "claude-haiku-3.5":   { in: 0.80, cached: 0.08, w5m: 1.00, w1h: 1.60, out: 4.00 },
-  "claude-opus-4":      { in: 15.00, cached: 1.50, w5m: 18.75, w1h: 30.00, out: 75.00 },
-  "claude-opus-4-6":    { in: 5.00, cached: 0.50, w5m: 6.25, w1h: 10.00, out: 25.00 },
-  "claude-sonnet-4-5":  { in: 3.00, cached: 0.30, w5m: 3.75, w1h: 6.00, out: 15.00 },
-  "claude-opus-4-5":    { in: 5.00, cached: 0.50, w5m: 6.25, w1h: 10.00, out: 25.00 },
-  "claude-opus-4-1":    { in: 15.00, cached: 1.50, w5m: 18.75, w1h: 30.00, out: 75.00 },
-  "claude-sonnet-4":    { in: 3.00, cached: 0.30, w5m: 3.75, w1h: 6.00, out: 15.00 },
-  "claude-haiku-4-5":   { in: 1.00, cached: 0.10, w5m: 1.25, w1h: 2.00, out: 5.00 },
-  "claude-haiku-3":     { in: 0.25, cached: 0.03, w5m: 0.30, w1h: 0.50, out: 1.25 },
+  "claude-sonnet-4-6":  { in: 3_000_000, cached: 300_000, w5m: 3_750_000, w1h: 6_000_000, out: 15_000_000 },
+  "claude-haiku-3.5":   { in: 800_000, cached: 80_000, w5m: 1_000_000, w1h: 1_600_000, out: 4_000_000 },
+  "claude-opus-4":      { in: 15_000_000, cached: 1_500_000, w5m: 18_750_000, w1h: 30_000_000, out: 75_000_000 },
+  "claude-opus-4-6":    { in: 5_000_000, cached: 500_000, w5m: 6_250_000, w1h: 10_000_000, out: 25_000_000 },
+  "claude-sonnet-4-5":  { in: 3_000_000, cached: 300_000, w5m: 3_750_000, w1h: 6_000_000, out: 15_000_000 },
+  "claude-opus-4-5":    { in: 5_000_000, cached: 500_000, w5m: 6_250_000, w1h: 10_000_000, out: 25_000_000 },
+  "claude-opus-4-1":    { in: 15_000_000, cached: 1_500_000, w5m: 18_750_000, w1h: 30_000_000, out: 75_000_000 },
+  "claude-sonnet-4":    { in: 3_000_000, cached: 300_000, w5m: 3_750_000, w1h: 6_000_000, out: 15_000_000 },
+  "claude-haiku-4-5":   { in: 1_000_000, cached: 100_000, w5m: 1_250_000, w1h: 2_000_000, out: 5_000_000 },
+  "claude-haiku-3":     { in: 250_000, cached: 30_000, w5m: 300_000, w1h: 500_000, out: 1_250_000 },
 };
 
 // Dated/versioned model → alias it maps to (same rates)
@@ -54,7 +54,7 @@ for (const [dated, alias] of Object.entries(DATED_TO_ALIAS)) {
 // ---------------------------------------------------------------------------
 // 1. Every Anthropic model: basic cost (no cache)
 //    1000 input, 500 output, no cache tokens
-//    Expected: Math.round(1000 * in + 500 * out)
+//    Expected: Math.round((1000 * in + 500 * out) / 1_000_000)
 // ---------------------------------------------------------------------------
 describe("every Anthropic model: basic cost (no cache)", () => {
   for (const [model, rates] of Object.entries(ALL_MODEL_RATES)) {
@@ -68,8 +68,8 @@ describe("every Anthropic model: basic cost (no cache)", () => {
         100,
       );
 
-      // cost = Math.round(1000 * inputRate + 500 * outputRate)
-      const expected = Math.round(1000 * rates.in + 500 * rates.out);
+      // cost = Math.round((1000 * inputRate + 500 * outputRate) / 1_000_000)
+      const expected = Math.round((1000 * rates.in + 500 * rates.out) / 1_000_000);
       expect(result.costMicrodollars).toBe(expected);
       expect(result.costMicrodollars).toBeGreaterThan(0);
       expect(result.inputTokens).toBe(1000);
@@ -83,7 +83,7 @@ describe("every Anthropic model: basic cost (no cache)", () => {
 // ---------------------------------------------------------------------------
 // 2. Every Anthropic model: cached input cost
 //    500 input, 200 output, 5000 cache_read
-//    Expected: Math.round(500 * in + 5000 * cached + 200 * out)
+//    Expected: Math.round((500 * in + 5000 * cached + 200 * out) / 1_000_000)
 // ---------------------------------------------------------------------------
 describe("every Anthropic model: cached input cost", () => {
   for (const [model, rates] of Object.entries(SHORT_NAME_RATES)) {
@@ -102,8 +102,8 @@ describe("every Anthropic model: cached input cost", () => {
         100,
       );
 
-      // cost = Math.round(500 * in + 5000 * cached + 200 * out)
-      const expected = Math.round(500 * rates.in + 5000 * rates.cached + 200 * rates.out);
+      // cost = Math.round((500 * in + 5000 * cached + 200 * out) / 1_000_000)
+      const expected = Math.round((500 * rates.in + 5000 * rates.cached + 200 * rates.out) / 1_000_000);
       expect(result.costMicrodollars).toBe(expected);
       expect(result.inputTokens).toBe(500 + 5000); // totalInputTokens
       expect(result.cachedInputTokens).toBe(5000);
@@ -114,7 +114,7 @@ describe("every Anthropic model: cached input cost", () => {
 // ---------------------------------------------------------------------------
 // 3. Every Anthropic model: cache write cost (5m TTL)
 //    100 input, 200 output, 3000 cache_creation, no cacheCreationDetail
-//    Expected: Math.round(100 * in + 3000 * w5m + 200 * out)
+//    Expected: Math.round((100 * in + 3000 * w5m + 200 * out) / 1_000_000)
 // ---------------------------------------------------------------------------
 describe("every Anthropic model: cache write cost (5m TTL)", () => {
   for (const [model, rates] of Object.entries(SHORT_NAME_RATES)) {
@@ -133,8 +133,8 @@ describe("every Anthropic model: cache write cost (5m TTL)", () => {
         100,
       );
 
-      // cost = Math.round(100 * in + 3000 * w5m + 200 * out)
-      const expected = Math.round(100 * rates.in + 3000 * rates.w5m + 200 * rates.out);
+      // cost = Math.round((100 * in + 3000 * w5m + 200 * out) / 1_000_000)
+      const expected = Math.round((100 * rates.in + 3000 * rates.w5m + 200 * rates.out) / 1_000_000);
       expect(result.costMicrodollars).toBe(expected);
       expect(result.inputTokens).toBe(100 + 3000); // totalInputTokens
     });
@@ -185,9 +185,9 @@ describe("price tier groups verify identical rates", () => {
 
       // Verify against manual calculation using the alias rates
       const rates = SHORT_NAME_RATES[alias];
-      // cost = Math.round(750 * in + 2000 * w5m + 8000 * cached + 400 * out)
+      // cost = Math.round((750 * in + 2000 * w5m + 8000 * cached + 400 * out) / 1_000_000)
       const expected = Math.round(
-        750 * rates.in + 2000 * rates.w5m + 8000 * rates.cached + 400 * rates.out,
+        (750 * rates.in + 2000 * rates.w5m + 8000 * rates.cached + 400 * rates.out) / 1_000_000,
       );
       expect(datedResult.costMicrodollars).toBe(expected);
     });
@@ -210,8 +210,8 @@ describe("negative token edge cases", () => {
     );
 
     // Number(-500) || 0 → -500 (truthy), so inputTokens = -500
-    // costComponent(-500, 3.00) → 0 (tokens <= 0)
-    // cost = Math.round(0 + 200 * 15.00) = 3000
+    // costComponent(-500, 3_000_000) → 0 (tokens <= 0)
+    // cost = Math.round(costComponent(200, 15_000_000)) = 3000
     expect(result.costMicrodollars).toBe(3000);
   });
 
@@ -231,8 +231,9 @@ describe("negative token edge cases", () => {
     );
 
     // Number(-1000) || 0 → -1000 (truthy), so cacheCreationTokens = -1000
-    // costComponent(-1000, 3.75) → 0 (tokens <= 0)
-    // cost = Math.round(100 * 3.00 + 0 + 0 + 200 * 15.00) = Math.round(300 + 3000) = 3300
+    // costComponent(-1000, 3_750_000) → 0 (tokens <= 0)
+    // cost = Math.round(costComponent(100, 3_000_000) + 0 + 0 + costComponent(200, 15_000_000))
+    //      = Math.round(300 + 3000) = 3300
     expect(result.costMicrodollars).toBe(3300);
   });
 
@@ -252,8 +253,9 @@ describe("negative token edge cases", () => {
     );
 
     // Number(-5000) || 0 → -5000 (truthy), so cacheReadTokens = -5000
-    // costComponent(-5000, 0.30) → 0 (tokens <= 0)
-    // cost = Math.round(100 * 3.00 + 0 + 0 + 200 * 15.00) = Math.round(300 + 3000) = 3300
+    // costComponent(-5000, 300_000) → 0 (tokens <= 0)
+    // cost = Math.round(costComponent(100, 3_000_000) + 0 + 0 + costComponent(200, 15_000_000))
+    //      = Math.round(300 + 3000) = 3300
     expect(result.costMicrodollars).toBe(3300);
   });
 });

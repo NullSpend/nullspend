@@ -12,7 +12,7 @@ AI agents call LLMs autonomously. Without guardrails, a single runaway loop can 
 ## How It Works
 
 ```
-Your App ──► NullSpend Proxy ──► OpenAI / Anthropic
+Your App ──► NullSpend Proxy ──► OpenAI / Anthropic / Gemini
                 │                       │
                 │  ◄── streams back ────┘
                 │
@@ -45,7 +45,7 @@ Add an `X-NullSpend-Key` header and every request is tracked, budgeted, and visi
 | **[Organizations](features/organizations.md)** | Team collaboration with roles (owner, admin, member, viewer), per-org billing, and invitation management |
 | **[Request logging](features/cost-tracking.md#request--response-body-logging)** | Opt-in capture of full request/response bodies (including streaming) for debugging and audit (Pro/Enterprise) |
 | **[Session replay](features/cost-tracking.md#session-replay)** | Group LLM calls by session ID, view the full chronological timeline, expand to see request/response bodies |
-| **Multi-provider** | OpenAI and Anthropic in a single dashboard with provider breakdown |
+| **Multi-provider** | OpenAI, Anthropic, and Google Gemini in a single dashboard with provider breakdown |
 | **MCP support** | Budget enforcement for Model Context Protocol servers and proxies |
 
 ## Trust Model

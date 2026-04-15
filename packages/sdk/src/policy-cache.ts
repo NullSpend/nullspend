@@ -9,6 +9,8 @@ export interface PolicyBudget {
   period_end: string | null;
   entity_type: string;
   entity_id: string;
+  finalization_reserve_microdollars?: number;
+  policy?: string;
 }
 
 interface CheapestModel {
@@ -43,7 +45,7 @@ export interface PolicyCache {
     allowed_list?: string[];
   };
   /** Check if estimated cost fits within budget. */
-  checkBudget(estimateMicrodollars: number): {
+  checkBudget(estimateMicrodollars: number, options?: { finalize?: boolean }): {
     allowed: boolean;
     remaining?: number;
     entityType?: string;
@@ -53,6 +55,8 @@ export interface PolicyCache {
   };
   /** Get the session limit from cached policy, or null if not set. */
   getSessionLimit(): number | null;
+  /** Get the finalization reserve from cached policy, or null if not set. */
+  getFinalizationReserve(): number | null;
   /** Invalidate cached policy. */
   invalidate(): void;
 }
@@ -136,7 +140,7 @@ export function createPolicyCache(
     return { allowed: true };
   }
 
-  function checkBudget(estimateMicrodollars: number): {
+  function checkBudget(estimateMicrodollars: number, options?: { finalize?: boolean }): {
     allowed: boolean;
     remaining?: number;
     entityType?: string;
@@ -147,18 +151,23 @@ export function createPolicyCache(
     if (!cached || !cached.budget) return { allowed: true };
 
     const b = cached.budget;
-    const remaining = b.remaining_microdollars;
-    if (estimateMicrodollars > remaining) {
+    const reserve = b.finalization_reserve_microdollars ?? 0;
+    const policy = b.policy ?? "strict_block";
+    const skipReserve = options?.finalize || policy !== "strict_block";
+    const effectiveRemaining = skipReserve
+      ? b.remaining_microdollars
+      : Math.max(0, b.remaining_microdollars - reserve);
+    if (estimateMicrodollars > effectiveRemaining) {
       return {
         allowed: false,
-        remaining,
+        remaining: effectiveRemaining,
         entityType: b.entity_type,
         entityId: b.entity_id,
         limit: b.max_microdollars,
         spend: b.spend_microdollars,
       };
     }
-    return { allowed: true, remaining };
+    return { allowed: true, remaining: effectiveRemaining };
   }
 
   function getSessionLimit(): number | null {
@@ -166,10 +175,15 @@ export function createPolicyCache(
     return cached.session_limit_microdollars ?? null;
   }
 
+  function getFinalizationReserve(): number | null {
+    if (!cached || !cached.budget) return null;
+    return cached.budget.finalization_reserve_microdollars ?? null;
+  }
+
   function invalidate(): void {
     cached = null;
     cachedAt = 0;
   }
 
-  return { getPolicy, checkMandate, checkBudget, getSessionLimit, invalidate };
+  return { getPolicy, checkMandate, checkBudget, getSessionLimit, getFinalizationReserve, invalidate };
 }

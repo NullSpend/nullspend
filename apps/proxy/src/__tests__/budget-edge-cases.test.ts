@@ -148,6 +148,8 @@ function makeCtx(
     webhookDispatcher: null,
     resolvedApiVersion: "2026-04-01",
     requestStartMs: performance.now(),
+    requestLoggingEnabled: false,
+    finalize: false,
     ...overrides,
   };
 }
@@ -208,6 +210,7 @@ describe("Budget Edge Cases", () => {
       null,
       [],
       "org-test",
+      false,
     );
   });
 
@@ -253,6 +256,7 @@ describe("Budget Edge Cases", () => {
       null,
       [],
       "org-test",
+      false,
     );
   });
 
@@ -273,7 +277,6 @@ describe("Budget Edge Cases", () => {
       "rsv-spend",
       123_456,
       expect.any(Array),
-      expect.any(String),
     );
   });
 

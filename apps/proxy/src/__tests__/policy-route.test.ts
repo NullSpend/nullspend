@@ -30,10 +30,10 @@ vi.mock("../lib/budget-do-client.js", () => ({
 
 vi.mock("@nullspend/cost-engine", () => ({
   getAllPricing: vi.fn().mockReturnValue({
-    "openai/gpt-4o": { inputPerMTok: 2.5, cachedInputPerMTok: 1.25, outputPerMTok: 10 },
-    "openai/gpt-4o-mini": { inputPerMTok: 0.15, cachedInputPerMTok: 0.075, outputPerMTok: 0.60 },
-    "anthropic/claude-sonnet-4-20250514": { inputPerMTok: 3.0, cachedInputPerMTok: 0.30, outputPerMTok: 15.0 },
-    "anthropic/claude-haiku-4-5-20251001": { inputPerMTok: 0.80, cachedInputPerMTok: 0.08, outputPerMTok: 4.0 },
+    "openai/gpt-4o": { inputPerMTok: 2_500_000, cachedInputPerMTok: 1_250_000, outputPerMTok: 10_000_000 },
+    "openai/gpt-4o-mini": { inputPerMTok: 150_000, cachedInputPerMTok: 75_000, outputPerMTok: 600_000 },
+    "anthropic/claude-sonnet-4-20250514": { inputPerMTok: 3_000_000, cachedInputPerMTok: 300_000, outputPerMTok: 15_000_000 },
+    "anthropic/claude-haiku-4-5-20251001": { inputPerMTok: 1_000_000, cachedInputPerMTok: 100_000, outputPerMTok: 5_000_000 },
   }),
   isKnownModel: vi.fn().mockReturnValue(true),
   getModelPricing: vi.fn(),
@@ -54,6 +54,7 @@ function makeAuth(overrides: Partial<AuthResult> = {}): AuthResult {
     defaultTags: {},
     allowedModels: null,
     allowedProviders: null,
+    allowedCustomers: null,
     ...overrides,
   };
 }

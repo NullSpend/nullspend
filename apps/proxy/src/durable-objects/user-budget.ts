@@ -26,6 +26,9 @@ export interface BudgetRow {
   velocity_cooldown: number;
   threshold_percentages: string | null;
   session_limit: number | null;
+  finalization_reserve: number;
+  avg_recent_cost: number;
+  last_alerted_threshold: number;
 }
 
 export interface CheckedEntity {
@@ -44,6 +47,8 @@ export interface CheckedEntity {
   policy: string;
   thresholdPercentages: number[];
   sessionLimit: number | null;
+  finalizationReserve: number;
+  avgRecentCost: number;
 }
 
 export interface CheckResult {
@@ -74,12 +79,24 @@ export interface CheckResult {
   sessionId?: string;
   sessionSpend?: number;
   sessionLimit?: number;
+  finalizationReserve?: number;
+}
+
+export interface ThresholdCrossing {
+  entityType: string;
+  entityId: string;
+  maxBudget: number;
+  spend: number;
+  threshold: number;
+  isCritical: boolean;
+  requestId: string;
 }
 
 export interface ReconcileResult {
   status: "reconciled" | "not_found";
   spends?: Record<string, number>;
   budgetsMissing?: string[];
+  thresholdCrossings?: ThresholdCrossing[];
 }
 
 export interface VelocityState {
@@ -155,7 +172,8 @@ export function parseThresholds(raw: string | null): number[] {
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.every((v: unknown) => typeof v === "number")) {
-      return parsed;
+      // Deduplicate and sort to prevent duplicate events within a single reconcile
+      return [...new Set(parsed as number[])].sort((a, b) => a - b);
     }
     return [...DEFAULT_THRESHOLDS];
   } catch {
@@ -286,6 +304,19 @@ export class UserBudgetDO extends DurableObject {
       `);
       this.ctx.storage.sql.exec("INSERT OR IGNORE INTO _schema_version(version) VALUES (5)");
     }
+
+    // v6 migration: finalization reserve + avg recent cost for Requests-Remaining header
+    if (version < 6) {
+      try { this.ctx.storage.sql.exec("ALTER TABLE budgets ADD COLUMN finalization_reserve INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec("ALTER TABLE budgets ADD COLUMN avg_recent_cost INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
+      this.ctx.storage.sql.exec("INSERT OR IGNORE INTO _schema_version(version) VALUES (6)");
+    }
+
+    // v7 migration: threshold alert dedup — tracks highest threshold % already alerted per entity
+    if (version < 7) {
+      try { this.ctx.storage.sql.exec("ALTER TABLE budgets ADD COLUMN last_alerted_threshold INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
+      this.ctx.storage.sql.exec("INSERT OR IGNORE INTO _schema_version(version) VALUES (7)");
+    }
   }
 
   // ── RPC Methods ────────────────────────────────────────────────────
@@ -302,6 +333,7 @@ export class UserBudgetDO extends DurableObject {
     sessionId: string | null = null,
     tagEntityIds: string[] = [],
     orgId: string | null = null,
+    finalize: boolean = false,
   ): Promise<CheckResult> {
     if (estimateMicrodollars < 0 || !Number.isFinite(estimateMicrodollars)) {
       return { status: "denied", hasBudgets: false };
@@ -312,6 +344,7 @@ export class UserBudgetDO extends DurableObject {
 
     let result: CheckResult = { status: "approved", hasBudgets: false };
     let reserved = false;
+    let finalizeZoneDenied = false; // CX-1: tracks when finalize=true was denied because entity wasn't in zone
     const periodResets: Array<{ entityType: string; entityId: string; newPeriodStart: number }> = [];
     const checkedEntities: CheckedEntity[] = [];
     const velocityRecovered: Array<{
@@ -367,7 +400,7 @@ export class UserBudgetDO extends DurableObject {
           );
           if (newPeriodStart > row.period_start) {
             this.ctx.storage.sql.exec(
-              `UPDATE budgets SET spend = 0, reserved = 0, period_start = ?
+              `UPDATE budgets SET spend = 0, reserved = 0, last_alerted_threshold = 0, period_start = ?
                WHERE entity_type = ? AND entity_id = ?`,
               newPeriodStart,
               row.entity_type,
@@ -389,6 +422,8 @@ export class UserBudgetDO extends DurableObject {
           policy: row.policy,
           thresholdPercentages: parseThresholds(row.threshold_percentages),
           sessionLimit: row.session_limit ?? null,
+          finalizationReserve: row.finalization_reserve ?? 0,
+          avgRecentCost: row.avg_recent_cost ?? 0,
         });
       }
 
@@ -550,24 +585,35 @@ export class UserBudgetDO extends DurableObject {
         });
       }
 
-      // Phase 2: Check each entity's budget
+      // Phase 2: Check each entity's budget (with finalization reserve)
       for (const row of rows) {
         const remaining = row.max_budget - row.spend - row.reserved;
+        // CX-1: finalize only skips reserve subtraction when the entity is already
+        // in the reserve zone (spend+reserved >= limit-reserve). Prevents callers
+        // from burning through the reserve before reaching the zone.
+        const reserve = row.finalization_reserve ?? 0;
+        const inReserveZone = reserve > 0 && (row.spend + row.reserved) >= (row.max_budget - reserve);
+        const effectiveRemaining = (finalize && inReserveZone) ? remaining : remaining - reserve;
 
         if (
           row.policy === "strict_block" &&
-          estimateMicrodollars > remaining
+          estimateMicrodollars > effectiveRemaining
         ) {
           result = {
             status: "denied",
             hasBudgets: true,
             deniedEntity: `${row.entity_type}:${row.entity_id}`,
-            remaining,
+            remaining: effectiveRemaining,
             maxBudget: row.max_budget,
             spend: row.spend,
+            finalizationReserve: row.finalization_reserve ?? 0,
           };
+          // CX-1 observability: flag when finalize=true was ignored because entity wasn't in zone
+          if (finalize && reserve > 0 && !inReserveZone) {
+            finalizeZoneDenied = true;
+          }
           console.log(
-            `[UserBudgetDO] denied: entity=${row.entity_type}:${row.entity_id} remaining=${remaining} estimate=${estimateMicrodollars}`,
+            `[UserBudgetDO] denied: entity=${row.entity_type}:${row.entity_id} remaining=${effectiveRemaining} estimate=${estimateMicrodollars} finalize=${finalize} inReserveZone=${inReserveZone}`,
           );
           return; // Exit transactionSync — no reservation made
         }
@@ -635,6 +681,11 @@ export class UserBudgetDO extends DurableObject {
       reserved = true;
     });
 
+    // CX-1 observability: emit metric when finalize=true was denied because entity wasn't in reserve zone
+    if (finalizeZoneDenied) {
+      emitMetric("finalization_zone_denied", {});
+    }
+
     // Attach period resets and checkedEntities to result
     if (periodResets.length > 0) {
       result.periodResets = periodResets;
@@ -693,25 +744,71 @@ export class UserBudgetDO extends DurableObject {
     const entityKeys: string[] = JSON.parse(row.entity_keys);
     const spends: Record<string, number> = {};
     const budgetsMissing: string[] = [];
+    const thresholdCrossings: ThresholdCrossing[] = [];
 
     this.ctx.storage.transactionSync(() => {
       for (const key of entityKeys) {
         const [entityType, entityId] = parseEntityKey(key);
 
         if (actualCostMicrodollars > 0) {
-          const rows = this.ctx.storage.sql.exec<{ spend: number }>(
+          const rows = this.ctx.storage.sql.exec<{
+            spend: number;
+            max_budget: number;
+            threshold_percentages: string | null;
+            last_alerted_threshold: number;
+          }>(
             `UPDATE budgets SET
               spend = spend + ?,
               reserved = MAX(0, reserved - ?)
              WHERE entity_type = ? AND entity_id = ?
-             RETURNING spend`,
+             RETURNING spend, max_budget, threshold_percentages, last_alerted_threshold`,
             actualCostMicrodollars,
             row.amount,
             entityType,
             entityId,
           ).toArray();
           if (rows.length > 0) {
-            spends[key] = rows[0].spend;
+            const { spend: newSpend, max_budget, threshold_percentages, last_alerted_threshold } = rows[0];
+            spends[key] = newSpend;
+
+            // P0-1: Atomic threshold crossing detection — dedup via last_alerted_threshold
+            if (max_budget > 0) {
+              const newPercent = Math.floor((newSpend / max_budget) * 100);
+              const thresholds = parseThresholds(threshold_percentages);
+              const lastAlerted = last_alerted_threshold;
+              const lastThreshold = thresholds.length > 0 ? thresholds[thresholds.length - 1] : undefined;
+
+              let highestCrossed = lastAlerted;
+              for (const t of thresholds) {
+                if (t > lastAlerted && t <= newPercent) {
+                  const isCritical = t === lastThreshold || t >= 90;
+                  thresholdCrossings.push({
+                    entityType, entityId, maxBudget: max_budget, spend: newSpend,
+                    threshold: t, isCritical, requestId: reservationId,
+                  });
+                  highestCrossed = Math.max(highestCrossed, t);
+                }
+              }
+
+              if (highestCrossed > lastAlerted) {
+                this.ctx.storage.sql.exec(
+                  "UPDATE budgets SET last_alerted_threshold = ? WHERE entity_type = ? AND entity_id = ?",
+                  highestCrossed, entityType, entityId,
+                );
+              }
+            }
+
+            // EMA update for avg_recent_cost (X-NullSpend-Budget-Requests-Remaining)
+            const emaValue = Math.max(0, Math.round(actualCostMicrodollars * 0.2));
+            if (Number.isFinite(emaValue)) {
+              this.ctx.storage.sql.exec(
+                `UPDATE budgets SET avg_recent_cost = CAST(ROUND(avg_recent_cost * 0.8 + ?) AS INTEGER)
+                 WHERE entity_type = ? AND entity_id = ?`,
+                emaValue,
+                entityType,
+                entityId,
+              );
+            }
           } else {
             budgetsMissing.push(key);
             console.warn(
@@ -792,7 +889,15 @@ export class UserBudgetDO extends DurableObject {
       } catch { /* best-effort — reservation alarm is the fallback */ }
     }
 
-    const result: ReconcileResult = { status: "reconciled", spends };
+    // P0-1: Emit metric for threshold crossings (outside transaction, fire-and-forget)
+    for (const c of thresholdCrossings) {
+      emitMetric("threshold_crossing_detected", {
+        entityType: c.entityType, entityId: c.entityId,
+        threshold: c.threshold, isCritical: c.isCritical,
+      });
+    }
+
+    const result: ReconcileResult = { status: "reconciled", spends, thresholdCrossings };
     if (budgetsMissing.length > 0) {
       result.budgetsMissing = budgetsMissing;
     }
@@ -830,6 +935,7 @@ export class UserBudgetDO extends DurableObject {
     velocityCooldown: number = 60_000,
     thresholdPercentages: number[] = [...DEFAULT_THRESHOLDS],
     sessionLimit: number | null = null,
+    finalizationReserve: number = 0,
   ): Promise<boolean> {
     // Check if entity already exists (for return value)
     const existed = this.ctx.storage.sql.exec<{ cnt: number }>(
@@ -842,8 +948,9 @@ export class UserBudgetDO extends DurableObject {
       this.ctx.storage.sql.exec(
         `INSERT INTO budgets
          (entity_type, entity_id, max_budget, spend, reserved, policy, reset_interval, period_start,
-          velocity_limit, velocity_window, velocity_cooldown, threshold_percentages, session_limit)
-         VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+          velocity_limit, velocity_window, velocity_cooldown, threshold_percentages, session_limit,
+          finalization_reserve)
+         VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(entity_type, entity_id) DO UPDATE SET
            max_budget = excluded.max_budget,
            policy = excluded.policy,
@@ -852,7 +959,11 @@ export class UserBudgetDO extends DurableObject {
            velocity_window = excluded.velocity_window,
            velocity_cooldown = excluded.velocity_cooldown,
            threshold_percentages = excluded.threshold_percentages,
-           session_limit = excluded.session_limit`,
+           last_alerted_threshold = CASE
+             WHEN budgets.threshold_percentages != excluded.threshold_percentages THEN 0
+             ELSE budgets.last_alerted_threshold END,
+           session_limit = excluded.session_limit,
+           finalization_reserve = excluded.finalization_reserve`,
         entityType,
         entityId,
         maxBudget,
@@ -865,6 +976,7 @@ export class UserBudgetDO extends DurableObject {
         velocityCooldown,
         JSON.stringify(thresholdPercentages),
         sessionLimit,
+        finalizationReserve,
       );
 
       // Create/update velocity_state row
@@ -901,7 +1013,7 @@ export class UserBudgetDO extends DurableObject {
   /** Read-only budget state (for dashboard queries or debugging). */
   async getBudgetState(): Promise<BudgetRow[]> {
     return this.ctx.storage.sql.exec<BudgetRow>(
-      "SELECT entity_type, entity_id, max_budget, spend, reserved, policy, reset_interval, period_start, velocity_limit, velocity_window, velocity_cooldown, threshold_percentages, session_limit FROM budgets",
+      "SELECT entity_type, entity_id, max_budget, spend, reserved, policy, reset_interval, period_start, velocity_limit, velocity_window, velocity_cooldown, threshold_percentages, session_limit, finalization_reserve, avg_recent_cost, last_alerted_threshold FROM budgets",
     ).toArray();
   }
 
@@ -1022,10 +1134,10 @@ export class UserBudgetDO extends DurableObject {
         this.ctx.storage.sql.exec("DELETE FROM reservations WHERE id = ?", rsv.id);
       }
 
-      // 3. Reset the target entity (spend=0, reserved=0 — reserved may already be 0
-      //    from step 2, but we set it explicitly to ensure clean state)
+      // 3. Reset the target entity (spend=0, reserved=0, last_alerted_threshold=0
+      //    — reserved may already be 0 from step 2, but set explicitly for clean state)
       this.ctx.storage.sql.exec(
-        `UPDATE budgets SET spend = 0, reserved = 0, period_start = ?
+        `UPDATE budgets SET spend = 0, reserved = 0, last_alerted_threshold = 0, period_start = ?
          WHERE entity_type = ? AND entity_id = ?`,
         Date.now(),
         entityType,

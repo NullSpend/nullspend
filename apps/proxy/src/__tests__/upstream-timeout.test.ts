@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
+import { DEFAULT_UPSTREAM_TIMEOUT_MS, resolveUpstreamTimeoutMs } from "../lib/constants.js";
 
 beforeAll(() => {
   if (!crypto.subtle.timingSafeEqual) {
@@ -184,7 +185,6 @@ describe("upstream timeout / error — reservation cleanup", () => {
       "rsv-timeout",
       0,
       expect.any(Array),
-      "postgresql://postgres:postgres@db.example.com:5432/postgres",
     );
   });
 
@@ -213,7 +213,6 @@ describe("upstream timeout / error — reservation cleanup", () => {
       "rsv-timeout",
       0,
       expect.any(Array),
-      "postgresql://postgres:postgres@db.example.com:5432/postgres",
     );
   });
 
@@ -259,7 +258,6 @@ describe("upstream timeout / error — reservation cleanup", () => {
       "rsv-4xx",
       0,
       expect.any(Array),
-      "postgresql://postgres:postgres@db.example.com:5432/postgres",
     );
   });
 
@@ -289,7 +287,6 @@ describe("upstream timeout / error — reservation cleanup", () => {
       "rsv-5xx",
       0,
       expect.any(Array),
-      "postgresql://postgres:postgres@db.example.com:5432/postgres",
     );
   });
 
@@ -328,7 +325,41 @@ describe("upstream timeout / error — reservation cleanup", () => {
       "rsv-success",
       75_000,
       expect.any(Array),
-      "postgresql://postgres:postgres@db.example.com:5432/postgres",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveUpstreamTimeoutMs — consolidated constant (P1-6 / P2-12)
+// ---------------------------------------------------------------------------
+
+describe("resolveUpstreamTimeoutMs", () => {
+  it("returns default 120_000 when env var is not set", () => {
+    expect(resolveUpstreamTimeoutMs({})).toBe(120_000);
+    expect(resolveUpstreamTimeoutMs({})).toBe(DEFAULT_UPSTREAM_TIMEOUT_MS);
+  });
+
+  it("returns custom timeout from env when set", () => {
+    expect(resolveUpstreamTimeoutMs({ UPSTREAM_TIMEOUT_MS: 60_000 })).toBe(60_000);
+  });
+
+  it("parses string env values", () => {
+    expect(resolveUpstreamTimeoutMs({ UPSTREAM_TIMEOUT_MS: "90000" })).toBe(90_000);
+  });
+
+  it("falls back to default for non-finite values", () => {
+    expect(resolveUpstreamTimeoutMs({ UPSTREAM_TIMEOUT_MS: "not-a-number" })).toBe(DEFAULT_UPSTREAM_TIMEOUT_MS);
+    expect(resolveUpstreamTimeoutMs({ UPSTREAM_TIMEOUT_MS: NaN })).toBe(DEFAULT_UPSTREAM_TIMEOUT_MS);
+    expect(resolveUpstreamTimeoutMs({ UPSTREAM_TIMEOUT_MS: Infinity })).toBe(DEFAULT_UPSTREAM_TIMEOUT_MS);
+  });
+
+  it("falls back to default for zero or negative values", () => {
+    expect(resolveUpstreamTimeoutMs({ UPSTREAM_TIMEOUT_MS: 0 })).toBe(DEFAULT_UPSTREAM_TIMEOUT_MS);
+    expect(resolveUpstreamTimeoutMs({ UPSTREAM_TIMEOUT_MS: -1 })).toBe(DEFAULT_UPSTREAM_TIMEOUT_MS);
+  });
+
+  it("falls back to default for null / undefined", () => {
+    expect(resolveUpstreamTimeoutMs({ UPSTREAM_TIMEOUT_MS: null })).toBe(DEFAULT_UPSTREAM_TIMEOUT_MS);
+    expect(resolveUpstreamTimeoutMs({ UPSTREAM_TIMEOUT_MS: undefined })).toBe(DEFAULT_UPSTREAM_TIMEOUT_MS);
   });
 });

@@ -48,6 +48,7 @@ curl https://nullspend.dev/api/budgets \
       "velocityWindowSeconds": 60,
       "velocityCooldownSeconds": 300,
       "sessionLimitMicrodollars": 100000,
+      "finalizationReserveMicrodollars": 0,
       "createdAt": "2026-02-15T10:00:00.000Z",
       "updatedAt": "2026-03-20T14:30:00.000Z"
     },
@@ -65,6 +66,7 @@ curl https://nullspend.dev/api/budgets \
       "velocityWindowSeconds": null,
       "velocityCooldownSeconds": null,
       "sessionLimitMicrodollars": null,
+      "finalizationReserveMicrodollars": 0,
       "createdAt": "2026-03-01T09:00:00.000Z",
       "updatedAt": "2026-03-10T12:00:00.000Z"
     }
@@ -106,6 +108,7 @@ Session (dashboard)
 | `velocityWindowSeconds` | body | integer | No | Velocity window duration. 10–3600. |
 | `velocityCooldownSeconds` | body | integer | No | Cooldown after velocity breach. 10–3600. |
 | `sessionLimitMicrodollars` | body | integer \| null | No | Per-session spending limit. `null` removes the limit. |
+| `finalizationReserveMicrodollars` | body | integer \| null | No | Portion of budget held back for graceful shutdown. Must be less than `maxBudgetMicrodollars`. `null` removes the reserve. |
 
 ### Request
 
@@ -142,6 +145,7 @@ curl -X POST https://nullspend.dev/api/budgets \
   "velocityWindowSeconds": null,
   "velocityCooldownSeconds": null,
   "sessionLimitMicrodollars": null,
+  "finalizationReserveMicrodollars": 0,
   "createdAt": "2026-03-20T14:30:00.000Z",
   "updatedAt": "2026-03-20T14:30:00.000Z"
 }
@@ -154,6 +158,7 @@ Side effect: invalidates the proxy cache so enforcement picks up the new budget 
 | Code | HTTP | When |
 |---|---|---|
 | `validation_error` | 400 | Invalid fields (e.g., non-positive budget, thresholds not ascending) |
+| `invalid_input` | 400 | Finalization reserve >= budget limit |
 | `spend_cap_exceeded` | 400 | Budget exceeds the tier-based spending cap |
 | `forbidden` | 403 | Entity not owned by user, unsupported entity type, or budget count limit for tier |
 | `authentication_required` | 401 | No valid session |
@@ -248,6 +253,7 @@ curl -X POST https://nullspend.dev/api/budgets/ns_bgt_aabbccdd-eeff-0011-2233-44
   "velocityWindowSeconds": 60,
   "velocityCooldownSeconds": 300,
   "sessionLimitMicrodollars": 100000,
+  "finalizationReserveMicrodollars": 0,
   "createdAt": "2026-02-15T10:00:00.000Z",
   "updatedAt": "2026-03-20T15:00:00.000Z"
 }
@@ -316,7 +322,8 @@ curl https://nullspend.dev/api/budgets/status \
       "velocityLimitMicrodollars": 500000,
       "velocityWindowSeconds": 60,
       "velocityCooldownSeconds": 300,
-      "sessionLimitMicrodollars": 100000
+      "sessionLimitMicrodollars": 100000,
+      "finalizationReserveMicrodollars": 0
     },
     {
       "entityType": "api_key",
@@ -331,7 +338,8 @@ curl https://nullspend.dev/api/budgets/status \
       "velocityLimitMicrodollars": null,
       "velocityWindowSeconds": null,
       "velocityCooldownSeconds": null,
-      "sessionLimitMicrodollars": null
+      "sessionLimitMicrodollars": null,
+      "finalizationReserveMicrodollars": 0
     }
   ]
 }

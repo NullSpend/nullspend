@@ -23,15 +23,13 @@ vi.mock("../lib/auth.js", () => ({
   authenticateRequest: (...args: unknown[]) => mockAuthenticateRequest(...args),
 }));
 
-vi.mock("../routes/openai.js", () => ({
-  handleChatCompletions: vi.fn().mockResolvedValue(
-    Response.json({ id: "test", choices: [] }, { status: 200 }),
-  ),
+vi.mock("../providers/registry.js", () => ({
+  matchProviderRoute: vi.fn().mockReturnValue({ provider: "openai" }),
 }));
 
-vi.mock("../routes/anthropic.js", () => ({
-  handleAnthropicMessages: vi.fn().mockResolvedValue(
-    Response.json({ id: "test", content: [] }, { status: 200 }),
+vi.mock("../routes/provider-handler.js", () => ({
+  handleProviderRequest: vi.fn().mockResolvedValue(
+    Response.json({ id: "test", choices: [] }, { status: 200 }),
   ),
 }));
 

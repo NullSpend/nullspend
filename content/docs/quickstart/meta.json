@@ -1,4 +1,4 @@
 {
   "title": "Quickstart",
-  "pages": ["openai", "anthropic", "claude-code"]
+  "pages": ["openai", "anthropic", "gemini", "claude-code"]
 }

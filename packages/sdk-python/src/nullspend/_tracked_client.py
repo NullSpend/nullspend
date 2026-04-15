@@ -192,6 +192,8 @@ def _dispatch_denial(
 
     if code == "budget_exceeded":
         remaining = _to_finite_number(details.get("remaining_microdollars")) or 0
+        fin_reserve = _to_finite_number(details.get("finalization_reserve_microdollars"))
+        fin_remaining = _to_finite_number(details.get("finalization_remaining_microdollars"))
         _safe_denied(on_denied, {
             "type": "budget",
             "remaining": remaining,
@@ -199,6 +201,8 @@ def _dispatch_denial(
             "entity_id": details.get("entity_id"),
             "limit": _to_finite_number(details.get("budget_limit_microdollars")),
             "spend": _to_finite_number(details.get("budget_spend_microdollars")),
+            "finalizationReserve": fin_reserve,
+            "finalizationRemaining": fin_remaining,
         }, on_cost_error)
         raise BudgetExceededError(
             remaining_microdollars=remaining,
@@ -207,10 +211,14 @@ def _dispatch_denial(
             limit_microdollars=_to_finite_number(details.get("budget_limit_microdollars")),
             spend_microdollars=_to_finite_number(details.get("budget_spend_microdollars")),
             upgrade_url=upgrade_url,
+            finalization_reserve_microdollars=fin_reserve,
+            finalization_remaining_microdollars=fin_remaining,
         )
 
     elif code == "customer_budget_exceeded":
         remaining = _to_finite_number(details.get("remaining_microdollars")) or 0
+        fin_reserve = _to_finite_number(details.get("finalization_reserve_microdollars"))
+        fin_remaining = _to_finite_number(details.get("finalization_remaining_microdollars"))
         _safe_denied(on_denied, {
             "type": "budget",
             "remaining": remaining,
@@ -218,6 +226,8 @@ def _dispatch_denial(
             "entity_id": details.get("customer_id"),
             "limit": _to_finite_number(details.get("budget_limit_microdollars")),
             "spend": _to_finite_number(details.get("budget_spend_microdollars")),
+            "finalizationReserve": fin_reserve,
+            "finalizationRemaining": fin_remaining,
         }, on_cost_error)
         raise BudgetExceededError(
             remaining_microdollars=remaining,
@@ -226,6 +236,8 @@ def _dispatch_denial(
             limit_microdollars=_to_finite_number(details.get("budget_limit_microdollars")),
             spend_microdollars=_to_finite_number(details.get("budget_spend_microdollars")),
             upgrade_url=upgrade_url,
+            finalization_reserve_microdollars=fin_reserve,
+            finalization_remaining_microdollars=fin_remaining,
         )
 
     elif code == "velocity_exceeded":
@@ -424,6 +436,7 @@ class TrackedTransport(httpx.BaseTransport):
         trace_id: str | None = None,
         action_id: str | None = None,
         enforcement: bool = False,
+        finalize: bool = False,
         session_limit_microdollars: int | None = None,
         policy_cache: Any | None = None,
         queue_cost: Callable[[CostEventInput], None] | None = None,
@@ -441,6 +454,7 @@ class TrackedTransport(httpx.BaseTransport):
         self._trace_id = trace_id
         self._action_id = action_id
         self._enforcement = enforcement
+        self._finalize = finalize
         self._session_limit = session_limit_microdollars
         self._policy_cache = policy_cache
         self._queue_cost = queue_cost
@@ -473,6 +487,8 @@ class TrackedTransport(httpx.BaseTransport):
             request.headers["x-nullspend-traceid"] = self._trace_id
         if self._action_id:
             request.headers["x-nullspend-actionid"] = self._action_id
+        if self._finalize:
+            request.headers["x-nullspend-finalize"] = "1"
 
         # Check if this is a tracked route
         if not _is_tracked_route(self._provider, url, method):
@@ -515,7 +531,9 @@ class TrackedTransport(httpx.BaseTransport):
 
                 # Budget estimate check
                 estimate = _estimate_cost_microdollars(self._provider, model, body)
-                budget_result = self._policy_cache.check_budget(estimate)
+                budget_result = self._policy_cache.check_budget(
+                    estimate, finalize=self._finalize,
+                )
                 if not budget_result.allowed:
                     _safe_denied(self._on_denied, {
                         "type": "budget",
@@ -700,6 +718,7 @@ def create_tracked_client(
     trace_id: str | None = None,
     action_id: str | None = None,
     enforcement: bool = False,
+    finalize: bool = False,
     session_limit_microdollars: int | None = None,
     policy_cache: Any | None = None,
     queue_cost: Callable[[CostEventInput], None] | None = None,
@@ -728,6 +747,7 @@ def create_tracked_client(
         trace_id=trace_id,
         action_id=action_id,
         enforcement=enforcement,
+        finalize=finalize,
         session_limit_microdollars=session_limit_microdollars,
         policy_cache=policy_cache,
         queue_cost=queue_cost,

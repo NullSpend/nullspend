@@ -14,7 +14,7 @@ describe("realistic API call scenarios", () => {
       { tokens: 500, rate: p.inputPerMTok },
       { tokens: 150, rate: p.outputPerMTok },
     ]);
-    // 500*2.5 + 150*10 = 1250 + 1500 = 2750 microdollars = $0.00275
+    // costComponent(500, 2_500_000) + costComponent(150, 10_000_000) = 1250 + 1500 = 2750 µ$ = $0.00275
     expect(cost).toBe(2750);
   });
 
@@ -24,7 +24,7 @@ describe("realistic API call scenarios", () => {
       { tokens: 3000, rate: p.inputPerMTok },
       { tokens: 800, rate: p.outputPerMTok },
     ]);
-    // 3000*2.0 + 800*8.0 = 6000 + 6400 = 12400
+    // costComponent(3000, 2_000_000) + costComponent(800, 8_000_000) = 6000 + 6400 = 12400
     expect(cost).toBe(12400);
   });
 
@@ -35,7 +35,7 @@ describe("realistic API call scenarios", () => {
       { tokens: 50, rate: p.outputPerMTok },
     ]);
     const total = perCall * 10;
-    // per call: 200*0.15 + 50*0.6 = 30 + 30 = 60 → ×10 = 600
+    // per call: costComponent(200, 150_000) + costComponent(50, 600_000) = 30 + 30 = 60 → ×10 = 600
     expect(perCall).toBe(60);
     expect(total).toBe(600);
   });
@@ -47,7 +47,7 @@ describe("realistic API call scenarios", () => {
       { tokens: 5_000, rate: p.inputPerMTok },
       { tokens: 2_000, rate: p.outputPerMTok },
     ]);
-    // 80000*0.30 + 5000*3.00 + 2000*15.00 = 24000 + 15000 + 30000 = 69000
+    // costComponent(80000, 300_000) + costComponent(5000, 3_000_000) + costComponent(2000, 15_000_000) = 24000 + 15000 + 30000 = 69000
     expect(cost).toBe(69_000);
     expect(cost / 1_000_000).toBeCloseTo(0.069, 3);
   });
@@ -58,7 +58,7 @@ describe("realistic API call scenarios", () => {
       { tokens: 128_000, rate: p.inputPerMTok },
       { tokens: 8_000, rate: p.outputPerMTok },
     ]);
-    // 128000*15 + 8000*75 = 1,920,000 + 600,000 = 2,520,000
+    // costComponent(128000, 15_000_000) + costComponent(8000, 75_000_000) = 1,920,000 + 600,000 = 2,520,000
     expect(cost).toBe(2_520_000);
     expect(cost / 1_000_000).toBeCloseTo(2.52, 2);
   });
@@ -70,7 +70,7 @@ describe("realistic API call scenarios", () => {
       { tokens: 5_000, rate: p.inputPerMTok },
       { tokens: 1_000, rate: p.outputPerMTok },
     ]);
-    // 10000*3.75 + 5000*3.00 + 1000*15.00 = 37500 + 15000 + 15000 = 67500
+    // costComponent(10000, 3_750_000) + costComponent(5000, 3_000_000) + costComponent(1000, 15_000_000) = 37500 + 15000 + 15000 = 67500
     expect(cost).toBe(67_500);
   });
 
@@ -81,7 +81,7 @@ describe("realistic API call scenarios", () => {
       { tokens: 5_000, rate: p.inputPerMTok },
       { tokens: 1_000, rate: p.outputPerMTok },
     ]);
-    // 10000*6.00 + 5000*3.00 + 1000*15.00 = 60000 + 15000 + 15000 = 90000
+    // costComponent(10000, 6_000_000) + costComponent(5000, 3_000_000) + costComponent(1000, 15_000_000) = 60000 + 15000 + 15000 = 90000
     expect(cost).toBe(90_000);
   });
 
@@ -92,9 +92,9 @@ describe("realistic API call scenarios", () => {
       { tokens: 500, rate: p.outputPerMTok },
     ]);
     const total = perCall * 50;
-    // per call: 1000*0.15 + 500*0.60 = 150 + 300 = 450 → ×50 = 22500
-    expect(perCall).toBe(450);
-    expect(total).toBe(22_500);
+    // per call: costComponent(1000, 300_000) + costComponent(500, 2_500_000) = 300 + 1250 = 1550 → ×50 = 77500
+    expect(perCall).toBe(1_550);
+    expect(total).toBe(77_500);
   });
 
   it("Gemini Pro with cached context: 50K cached + 2K fresh + 4K out", () => {
@@ -104,8 +104,8 @@ describe("realistic API call scenarios", () => {
       { tokens: 2_000, rate: p.inputPerMTok },
       { tokens: 4_000, rate: p.outputPerMTok },
     ]);
-    // 50000*0.3125 + 2000*1.25 + 4000*10.00 = 15625 + 2500 + 40000 = 58125
-    expect(cost).toBe(58_125);
+    // costComponent(50000, 125_000) + costComponent(2000, 1_250_000) + costComponent(4000, 10_000_000) = 6250 + 2500 + 40000 = 48750
+    expect(cost).toBe(48_750);
   });
 });
 
@@ -134,11 +134,11 @@ describe("multi-provider budget tracking simulation", () => {
       { tokens: 2000, rate: flash.outputPerMTok },
     ]);
 
-    // GPT-4o: 2000*2.5 + 500*10 = 5000+5000 = 10000
-    // Sonnet: 3000*3.0 + 1000*15 = 9000+15000 = 24000
-    // Flash: 5000*0.15 + 2000*0.6 = 750+1200 = 1950
-    expect(totalSpend).toBe(10_000 + 24_000 + 1_950);
-    expect(totalSpend).toBe(35_950);
+    // GPT-4o: costComponent(2000, 2_500_000) + costComponent(500, 10_000_000) = 5000+5000 = 10000
+    // Sonnet: costComponent(3000, 3_000_000) + costComponent(1000, 15_000_000) = 9000+15000 = 24000
+    // Flash: costComponent(5000, 300_000) + costComponent(2000, 2_500_000) = 1500+5000 = 6500
+    expect(totalSpend).toBe(10_000 + 24_000 + 6_500);
+    expect(totalSpend).toBe(40_500);
   });
 
   it("budget enforcement: detects when cumulative spend exceeds limit", () => {
@@ -170,7 +170,7 @@ describe("multi-provider budget tracking simulation", () => {
       spent += callCost;
     }
 
-    // Each call: 1000*2.5 + 500*10 = 2500+5000 = 7500
+    // Each call: costComponent(1000, 2_500_000) + costComponent(500, 10_000_000) = 2500+5000 = 7500
     // 6 calls = 45000 (under 50000), 7th = 52500 (over)
     expect(blocked).toBe(true);
     expect(spent).toBe(45_000);

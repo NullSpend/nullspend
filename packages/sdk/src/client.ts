@@ -44,6 +44,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const API_KEY_HEADER = "x-nullspend-key";
 const MAX_RETRIES_CEILING = 10;
 const SDK_API_VERSION = "2026-04-01";
+const SDK_VERSION = "0.2.1";
 
 function toFiniteInt(value: number | undefined, fallback: number): number {
   const v = value ?? fallback;
@@ -200,6 +201,11 @@ export class NullSpend {
   /**
    * Create a tracked fetch function for a specific LLM provider.
    * Automatically tracks cost events for OpenAI and Anthropic API calls.
+   *
+   * **Nesting safety:** If a tracked fetch is called from within another
+   * tracked fetch (e.g., your code wraps a library that also uses NullSpend),
+   * the inner call passes through without double-counting costs. Only the
+   * outermost wrapper tracks and reports the cost event.
    *
    * ```ts
    * const openai = new OpenAI({ fetch: ns.createTrackedFetch("openai") });
@@ -526,6 +532,7 @@ export class NullSpend {
     const headers: Record<string, string> = {
       [API_KEY_HEADER]: this.apiKey,
       "NullSpend-Version": this.apiVersion,
+      "X-NullSpend-SDK": `typescript/${SDK_VERSION}`,
       Accept: "application/json",
     };
 

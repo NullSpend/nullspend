@@ -497,7 +497,7 @@ describe("calculateAnthropicCost — multi-model pricing verification", () => {
       );
 
       const expectedCost = Math.round(
-        1000 * pricing.inputPerMTok + 500 * pricing.outputPerMTok,
+        (1000 * pricing.inputPerMTok + 500 * pricing.outputPerMTok) / 1_000_000,
       );
       expect(result.costMicrodollars).toBe(expectedCost);
       expect(result.costMicrodollars).toBeGreaterThan(0);

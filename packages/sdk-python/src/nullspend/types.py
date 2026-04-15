@@ -241,6 +241,7 @@ class BudgetEntity:
     policy: str
     reset_interval: str | None
     current_period_start: str | None
+    finalization_reserve_microdollars: int = 0
 
 
 @dataclass
@@ -263,8 +264,9 @@ class BudgetRecord:
     velocity_window_seconds: int | None
     velocity_cooldown_seconds: int | None
     session_limit_microdollars: int | None
-    created_at: str
-    updated_at: str
+    finalization_reserve_microdollars: int = 0
+    created_at: str = ""
+    updated_at: str = ""
 
 
 @dataclass

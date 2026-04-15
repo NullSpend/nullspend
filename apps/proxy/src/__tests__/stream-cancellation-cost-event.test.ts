@@ -466,7 +466,6 @@ describe("Stream Cancellation Cost Event", () => {
       "rsv-reconcile-1",
       500_000, // estimate
       expect.any(Array),
-      expect.any(String),
     );
   });
 
@@ -503,7 +502,6 @@ describe("Stream Cancellation Cost Event", () => {
       "rsv-fail-1",
       500_000, // estimate, NOT 0
       expect.any(Array),
-      expect.any(String),
     );
   });
 
@@ -538,7 +536,6 @@ describe("Stream Cancellation Cost Event", () => {
       "rsv-anth-fail-1",
       500_000, // estimate, NOT 0
       expect.any(Array),
-      expect.any(String),
     );
   });
 

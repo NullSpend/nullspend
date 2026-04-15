@@ -61,6 +61,7 @@ describe("lookupBudgetsForDO", () => {
       velocityCooldown: 60_000,
       thresholdPercentages: [50, 80, 90, 95],
       sessionLimit: null,
+      finalizationReserve: 0,
     });
   });
 

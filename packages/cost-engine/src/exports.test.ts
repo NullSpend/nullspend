@@ -19,34 +19,34 @@ describe("cost-engine public API surface", () => {
     expect(typeof costEngine.getAllPricing).toBe("function");
   });
 
-  it("exports exactly 4 runtime values", () => {
+  it("exports exactly 5 runtime values", () => {
     const runtimeExports = Object.keys(costEngine).filter(
       (k) => typeof (costEngine as Record<string, unknown>)[k] !== "undefined",
     );
-    expect(runtimeExports).toHaveLength(4);
-    expect(runtimeExports.sort()).toEqual(["costComponent", "getAllPricing", "getModelPricing", "isKnownModel"]);
+    expect(runtimeExports).toHaveLength(5);
+    expect(runtimeExports.sort()).toEqual(["RATE_SCALE", "costComponent", "getAllPricing", "getModelPricing", "isKnownModel"]);
   });
 });
 
 describe("type contract stability", () => {
-  it("ModelPricing has expected shape", () => {
+  it("ModelPricing has expected shape (integer µ$/MTok rates)", () => {
     const pricing: ModelPricing = {
-      inputPerMTok: 1,
-      cachedInputPerMTok: 0.5,
-      outputPerMTok: 2,
+      inputPerMTok: 1_000_000,
+      cachedInputPerMTok: 500_000,
+      outputPerMTok: 2_000_000,
     };
-    expect(pricing.inputPerMTok).toBe(1);
+    expect(pricing.inputPerMTok).toBe(1_000_000);
   });
 
   it("ModelPricing with Anthropic cache fields", () => {
     const pricing: ModelPricing = {
-      inputPerMTok: 3,
-      cachedInputPerMTok: 0.3,
-      outputPerMTok: 15,
-      cacheWrite5mPerMTok: 3.75,
-      cacheWrite1hPerMTok: 6,
+      inputPerMTok: 3_000_000,
+      cachedInputPerMTok: 300_000,
+      outputPerMTok: 15_000_000,
+      cacheWrite5mPerMTok: 3_750_000,
+      cacheWrite1hPerMTok: 6_000_000,
     };
-    expect(pricing.cacheWrite5mPerMTok).toBe(3.75);
+    expect(pricing.cacheWrite5mPerMTok).toBe(3_750_000);
   });
 
   it("CostEvent has expected shape", () => {

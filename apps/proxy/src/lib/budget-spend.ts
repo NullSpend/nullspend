@@ -57,19 +57,21 @@ export async function updateBudgetSpend(
             AND org_id = ${orgId}
         `;
         // C2: Detect missing budget row (dedup succeeded but nothing to update).
-        // Codex #2 fix: Delete the dedup record so the alarm can retry later
-        // when the budget row may exist (race between budget creation and first request).
+        // Delete the dedup record so a future attempt can retry, then throw
+        // so the caller (alarm handler) knows this was NOT a success and should
+        // NOT ack the outbox entry. Without the throw, the alarm acks + deletes
+        // the outbox, permanently losing the PG sync for this entity.
         if (updated.count === 0) {
           await tx`
             DELETE FROM reconciled_requests
             WHERE request_id = ${requestId} AND entity_type = ${entity.entityType} AND entity_id = ${entity.entityId}
           `;
-          console.error("[budget-spend] Budget row missing — dedup record removed for retry", {
-            requestId, entityType: entity.entityType, entityId: entity.entityId, orgId,
-          });
           emitMetric("reconcile_budget_row_missing", {
             entityType: entity.entityType, entityId: entity.entityId,
           });
+          throw new Error(
+            `[budget-spend] Budget row missing for ${entity.entityType}:${entity.entityId} in org ${orgId} — dedup removed, will retry`,
+          );
         }
       } else {
         // C10: Dedup hit — check for cost mismatch (corruption signal)

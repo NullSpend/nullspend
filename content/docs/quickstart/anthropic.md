@@ -114,6 +114,7 @@ This gives you accurate cost attribution even with heavy caching.
 - **[Add tags](../features/tags.md)** — Attribute costs to teams or features with the [`X-NullSpend-Tags`](../api-reference/custom-headers.md#x-nullspend-tags) header.
 - **[Configure webhooks](../webhooks/overview.md)** — Get notified on cost events, budget thresholds, and velocity alerts.
 - **OpenAI too?** — [OpenAI Quickstart](openai.md)
+- **Google Gemini?** — [Gemini Quickstart](gemini.md)
 - **Claude Agent SDK?** — [Claude Code Quickstart](claude-code.md)
 
 ## Troubleshooting

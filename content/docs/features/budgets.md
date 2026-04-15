@@ -20,6 +20,8 @@ Request arrives
     │
     ├─ 4. Velocity check ──────── tripped? ───► 429 velocity_exceeded + Retry-After
     │
+    ├─ 4.5 Finalization reserve ── finalize header + in zone? ► unlock reserve
+    │
     ├─ 5. Budget check ────────── exceeds? ──► 429 budget_exceeded
     │
     ├─ 6. Reserve estimated cost (30s TTL)
@@ -56,6 +58,7 @@ A single request can match multiple budgets (e.g., a user budget + an API key bu
 | `velocityWindowSeconds` | integer | Sliding window size. Range: 10–3600. Default: 60. |
 | `velocityCooldownSeconds` | integer | Block duration after velocity trip. Range: 10–3600. Default: 60. |
 | `sessionLimitMicrodollars` | integer or null | Per-session spending cap. See [Session Limits](#session-limits). |
+| `finalizationReserveMicrodollars` | integer or null | Portion of budget held back for graceful agent shutdown. When set, normal requests are denied when they'd eat into the reserve. Requests with `X-NullSpend-Finalize: 1` can use the reserve once spend reaches the reserve zone. See [Finalization Reserve](#finalization-reserve). |
 
 ## Enforcement Lifecycle
 
@@ -102,11 +105,21 @@ After the provider responds, the proxy calculates the actual cost and reconciles
 {
   "error": {
     "code": "budget_exceeded",
-    "message": "Request blocked: estimated cost exceeds remaining budget",
-    "details": null
+    "message": "Request blocked: estimated cost exceeds remaining budget.",
+    "details": {
+      "entity_type": "user",
+      "entity_id": "ns_usr_...",
+      "budget_limit_microdollars": 100000000,
+      "budget_spend_microdollars": 95000000,
+      "estimated_cost_microdollars": 8000000,
+      "finalization_reserve_microdollars": 10000000,
+      "finalization_remaining_microdollars": 0
+    }
   }
 }
 ```
+
+The `finalization_reserve_microdollars` and `finalization_remaining_microdollars` fields are only present when the budget has a finalization reserve configured. `finalization_remaining_microdollars` is the budget remaining after subtracting both spend and reserve.
 
 ### Velocity Exceeded
 
@@ -206,6 +219,47 @@ Session limits cap how much a single agent conversation can spend, regardless of
 
 For the full reference — session tracking internals, header usage, and webhook payloads — see [Session Limits](session-limits.md).
 
+## Finalization Reserve
+
+When an agent is near its budget limit, it gets hard-killed mid-task with a `429`. Finalization reserve holds back a configurable portion of the budget so the agent can finish gracefully.
+
+**How it works:**
+
+1. You set a `finalizationReserveMicrodollars` on the budget (e.g., $5 reserve on a $100 budget)
+2. Normal requests are denied when `spend + reservations + estimate > limit - reserve` (effective limit = $95)
+3. When the agent detects it's near the wall (via response headers), it sets `X-NullSpend-Finalize: 1` on its final request
+4. The proxy checks if the entity is in the "reserve zone" (spend + reservations >= limit - reserve). If yes, the reserve is unlocked for that request
+5. If the entity is NOT in the reserve zone, the finalize header is ignored (prevents premature reserve spending)
+
+**Key behaviors:**
+
+- **Server-enforced zone gate.** The `X-NullSpend-Finalize` header only works when the entity has actually reached the reserve zone. Setting it on every request does nothing until you're near the limit.
+- **Only applies to `strict_block` budgets.** `soft_block` and `warn` budgets don't enforce the reserve (they don't enforce limits at all).
+- **Response headers show remaining.** Every response includes `X-NullSpend-Budget-Effective-Remaining` and `X-NullSpend-Budget-Finalization-Reserve` headers when a reserve is configured.
+- **Requests-Remaining estimate.** `X-NullSpend-Budget-Requests-Remaining` shows approximately how many more requests fit in the effective remaining, based on a rolling average of recent request costs.
+
+**Dashboard:**
+
+The budget form includes a collapsible "Finalization reserve" section. When set, the budget list shows a two-zone progress bar: green for normal spend and amber for the reserve zone. A shield icon indicates budgets with active reserves.
+
+**SDK support:**
+
+Both the TypeScript and Python SDKs support finalization reserve:
+
+```typescript
+// TypeScript: finalize a request via the proxy
+const trackedFetch = ns.createTrackedFetch("openai", {
+  finalize: true,  // Injects X-NullSpend-Finalize: 1
+});
+```
+
+```python
+# Python: finalize a request via the proxy
+tracked = ns.create_tracked_client("openai", finalize=True)
+```
+
+The SDK's cooperative budget check also subtracts the reserve from remaining (for `strict_block` budgets only), and skips the subtraction when `finalize: true`.
+
 ## Threshold Alerts
 
 When spend crosses a threshold percentage, a webhook fires:
@@ -224,7 +278,7 @@ See [Webhook Event Types](../webhooks/event-types.md#budgetthresholdwarning) for
 1. Go to **Budgets** → **Set Budget**
 2. Choose entity (your account or a specific API key)
 3. Set the spending ceiling
-4. Optionally configure reset interval, velocity limits, session limits, and alert thresholds
+4. Optionally configure reset interval, velocity limits, session limits, finalization reserve, and alert thresholds
 5. Click **Set Budget** — takes effect immediately
 
 ### API
@@ -257,6 +311,7 @@ To check budget status programmatically (with an API key), use [`GET /api/budget
 - **Use session limits for multi-step agents.** Cap each task's cost so a single stuck agent can't consume the entire budget.
 - **Monitor before enforcing.** Use the analytics dashboard to understand spending patterns before setting tight ceilings.
 - **Combine velocity + session limits.** Velocity catches sudden spikes; session limits catch slow accumulation over a long conversation.
+- **Use finalization reserve for multi-step agents.** Set a reserve large enough for one cleanup request so agents can save state, send notifications, or close connections before shutting down.
 
 ## Related
 

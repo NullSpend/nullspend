@@ -137,7 +137,7 @@ Fires when a request is denied because the session spend cap is reached. Key fie
 | `session_spend_microdollars` | Current session spend at denial time |
 | `session_limit_microdollars` | Configured session limit |
 | `model` | Model of the denied request |
-| `provider` | `openai` or `anthropic` |
+| `provider` | `openai`, `anthropic`, or `google` |
 | `blocked_at` | ISO 8601 timestamp |
 
 See [Event Types](../webhooks/event-types.md) for the full JSON example.

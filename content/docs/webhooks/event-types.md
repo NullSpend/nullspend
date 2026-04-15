@@ -62,7 +62,7 @@ Fires when a cost event is recorded — once per proxied request.
 |---|---|---|
 | `request_id` | string | Unique request identifier |
 | `event_type` | string | Request type: `"llm"` (LLM API call), `"tool"` (MCP tool invocation), or `"custom"` (SDK-reported) |
-| `provider` | string | `"openai"` or `"anthropic"` |
+| `provider` | string | `"openai"`, `"anthropic"`, or `"google"` |
 | `model` | string | Model name (e.g., `gpt-4o`) |
 | `input_tokens` | integer | Total input tokens |
 | `output_tokens` | integer | Output tokens |

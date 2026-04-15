@@ -63,25 +63,33 @@ class TestPricingData:
 
 class TestCostComponent:
     def test_basic(self):
-        # 1000 tokens at $2.50/MTok = 2500 microdollars (since 1000 * 2.5 = 2500)
-        assert cost_component(1000, 2.5) == 2500.0
+        # 1000 tokens × 2_500_000 µ$/MTok / 1_000_000 = 2500 microdollars
+        assert cost_component(1000, 2_500_000) == 2500.0
 
     def test_zero_tokens(self):
-        assert cost_component(0, 2.5) == 0.0
+        assert cost_component(0, 2_500_000) == 0.0
 
     def test_negative_tokens(self):
-        assert cost_component(-100, 2.5) == 0.0
+        assert cost_component(-100, 2_500_000) == 0.0
 
     def test_zero_rate(self):
         assert cost_component(1000, 0) == 0.0
 
     def test_negative_rate(self):
-        assert cost_component(1000, -1.0) == 0.0
+        assert cost_component(1000, -1_000_000) == 0.0
 
     def test_large_values(self):
-        # 1M tokens at $10/MTok = 10M microdollars = $10
-        result = cost_component(1_000_000, 10.0)
+        # 1M tokens × 10_000_000 µ$/MTok / 1_000_000 = 10M microdollars = $10
+        result = cost_component(1_000_000, 10_000_000)
         assert result == 10_000_000.0
+
+    def test_integer_multiplication_is_exact(self):
+        """Verify that tokens * int_rate uses Python arbitrary precision."""
+        # In Python, int * int is exact (arbitrary precision), so the only
+        # float error comes from the final / 1_000_000 division.
+        result = cost_component(7, 37_500)
+        # 7 * 37500 = 262500 (exact int), / 1M ≈ 0.2625
+        assert abs(result - 0.2625) < 1e-10
 
 
 # ---- Rounding residual ----
@@ -121,7 +129,7 @@ class TestOpenAICostBasic:
         assert result.cost_microdollars > 0
         assert result.cost_breakdown is not None
         assert result.event_type == "llm"
-        # Verify math: 1000 * 2.5 + 500 * 10.0 = 2500 + 5000 = 7500
+        # Verify math: costComponent(1000, 2_500_000) + costComponent(500, 10_000_000) = 2500 + 5000 = 7500
         assert result.cost_microdollars == 7500
 
     def test_with_cached_tokens(self):
@@ -132,7 +140,7 @@ class TestOpenAICostBasic:
         })
         assert result.cached_input_tokens == 400
         # Normal input: 600, cached: 400
-        # 600 * 2.5 + 400 * 1.25 + 500 * 10.0 = 1500 + 500 + 5000 = 7000
+        # costComponent(600, 2_500_000) + costComponent(400, 1_250_000) + costComponent(500, 10_000_000) = 1500 + 500 + 5000 = 7000
         assert result.cost_microdollars == 7000
 
     def test_with_reasoning_tokens(self):
@@ -288,8 +296,8 @@ class TestAnthropicCostBasic:
             "input_tokens": 200_000,
             "output_tokens": 100,
         })
-        # Should use base rate: 200000 * input_rate + 100 * output_rate
-        expected = round(200_000 * pricing["inputPerMTok"] + 100 * pricing["outputPerMTok"])
+        # Should use base rate: costComponent(200000, input_rate) + costComponent(100, output_rate)
+        expected = round((200_000 * pricing["inputPerMTok"] + 100 * pricing["outputPerMTok"]) / 1_000_000)
         assert result.cost_microdollars == expected
 
     def test_unknown_model(self):
@@ -528,8 +536,8 @@ class TestLongContextMath:
             "input_tokens": 200_001,
             "output_tokens": 0,
         })
-        # Expected: 200001 * inputPerMTok * 2
-        expected = round(200_001 * pricing["inputPerMTok"] * 2.0)
+        # Expected: costComponent(200001, inputPerMTok * 2)
+        expected = round(200_001 * pricing["inputPerMTok"] * 2 / 1_000_000)
         assert result.cost_microdollars == expected
 
     def test_anthropic_1_5x_output_multiplier(self):
@@ -539,8 +547,8 @@ class TestLongContextMath:
             "input_tokens": 200_001,
             "output_tokens": 10_000,
         })
-        input_cost = round(200_001 * pricing["inputPerMTok"] * 2.0)
-        output_cost = round(10_000 * pricing["outputPerMTok"] * 1.5)
+        input_cost = round(200_001 * pricing["inputPerMTok"] * 2 / 1_000_000)
+        output_cost = round(10_000 * pricing["outputPerMTok"] * 1.5 / 1_000_000)
         expected = input_cost + output_cost
         # Allow +-1 for rounding
         assert abs(result.cost_microdollars - expected) <= 1

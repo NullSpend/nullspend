@@ -2,9 +2,14 @@ import { waitUntil } from "cloudflare:workers";
 import type { RequestContext } from "./context.js";
 import type { BudgetEntity } from "./budget-do-lookup.js";
 import { doBudgetCheck, doBudgetReconcile } from "./budget-do-client.js";
+import type { ThresholdCrossing } from "../durable-objects/user-budget.js";
 import { resetBudgetPeriod } from "./budget-spend.js";
-import { enqueueReconciliation } from "./reconciliation-queue.js";
+import { optionalBinding } from "./env.js";
 import { emitMetric } from "./metrics.js";
+
+export interface ReconcileOutcome {
+  thresholdCrossings?: ThresholdCrossing[];
+}
 
 interface BudgetCheckOutcome {
   status: "approved" | "denied" | "skipped";
@@ -37,6 +42,7 @@ interface BudgetCheckOutcome {
   tagBudgetDenied?: boolean;
   tagKey?: string;
   tagValue?: string;
+  finalizationReserve?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -47,12 +53,13 @@ export async function checkBudget(
   env: Env,
   ctx: RequestContext,
   estimateMicrodollars: number,
+  finalize: boolean = false,
 ): Promise<BudgetCheckOutcome> {
   if (!ctx.auth.hasBudgets) {
     emitMetric("budget_check_skipped", { ownerId: ctx.ownerId });
     return { status: "skipped", reservationId: null, budgetEntities: [] };
   }
-  return checkBudgetDO(env, ctx.connectionString, ctx.auth.keyId, ctx.ownerId, ctx.auth.orgId, estimateMicrodollars, ctx.sessionId, ctx.tags);
+  return checkBudgetDO(env, ctx.connectionString, ctx.auth.keyId, ctx.ownerId, ctx.auth.orgId, estimateMicrodollars, ctx.sessionId, ctx.tags, finalize);
 }
 
 // ---------------------------------------------------------------------------
@@ -68,22 +75,24 @@ export async function reconcileBudget(
   budgetEntities: BudgetEntity[],
   connectionString: string,
   options?: { throwOnError?: boolean },
-): Promise<void> {
+): Promise<ReconcileOutcome> {
   try {
     if (reservationId && ownerId && orgId) {
       const entities = budgetEntities.map((e) => ({
         entityType: e.entityType,
         entityId: e.entityId,
       }));
-      const status = await doBudgetReconcile(env, ownerId, orgId, reservationId, actualCost, entities, connectionString);
-      if (options?.throwOnError && status !== "ok") {
-        throw new Error(`Reconciliation failed with status: ${status}`);
+      const result = await doBudgetReconcile(env, ownerId, orgId, reservationId, actualCost, entities);
+      if (options?.throwOnError && result.status !== "ok") {
+        throw new Error(`Reconciliation failed with status: ${result.status}`);
       }
+      return { thresholdCrossings: result.thresholdCrossings };
     }
   } catch (err) {
     console.error("[budget-orchestrator] Reconciliation failed:", err);
     if (options?.throwOnError) throw err;
   }
+  return {};
 }
 
 /**
@@ -91,18 +100,23 @@ export async function reconcileBudget(
  * The binding is not in the generated Env type (optional infra).
  */
 export function getReconcileQueue(env: Env): Queue | undefined {
-  return (env as Record<string, unknown>).RECONCILE_QUEUE as Queue | undefined;
+  return optionalBinding(env, "RECONCILE_QUEUE");
 }
 
 /**
- * Queue-aware reconciliation: attempts to enqueue to Cloudflare Queues first,
- * falls back to direct reconciliation if the queue binding is absent or send fails.
+ * Reconcile via the DO directly — always calls the DO for atomic threshold
+ * dedup (P0-1 fix). The DO's PXY-2 outbox handles Postgres sync via alarm.
  *
- * When the queue is available, reconciliation is decoupled from the request
- * lifecycle (no 30s waitUntil limit). The consumer retries with DLQ.
+ * Previously this enqueued to RECONCILE_QUEUE, but that deferred the DO call
+ * and caused duplicate threshold webhooks under concurrency. Strategy E
+ * removed the optimistic PG write too — the DO RPC takes ~10ms, well within
+ * the waitUntil budget. The alarm handler writes to PG in ~1-5s.
+ *
+ * The queue consumer (queue-handler.ts) is kept for draining in-flight
+ * messages from before this change.
  */
 export async function reconcileBudgetQueued(
-  queue: Queue | undefined,
+  _queue: Queue | undefined,
   env: Env,
   ownerId: string | null,
   orgId: string | null,
@@ -110,29 +124,9 @@ export async function reconcileBudgetQueued(
   actualCost: number,
   budgetEntities: BudgetEntity[],
   connectionString: string,
-): Promise<void> {
-  if (queue && reservationId) {
-    try {
-      await enqueueReconciliation(queue, {
-        type: "reconcile",
-        reservationId,
-        actualCostMicrodollars: actualCost,
-        budgetEntities: budgetEntities.map((e) => ({
-          entityKey: e.entityKey,
-          entityType: e.entityType,
-          entityId: e.entityId,
-        })),
-        ownerId,
-        orgId,
-        enqueuedAt: Date.now(),
-      });
-      return;
-    } catch (err) {
-      console.error("[budget-orchestrator] Queue send failed, falling back to direct:", err);
-    }
-  }
-  // Fallback: direct reconciliation (current behavior)
-  await reconcileBudget(env, ownerId, orgId, reservationId, actualCost, budgetEntities, connectionString);
+): Promise<ReconcileOutcome> {
+  // Always direct — DO provides atomic threshold crossing dedup
+  return reconcileBudget(env, ownerId, orgId, reservationId, actualCost, budgetEntities, connectionString);
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +142,7 @@ async function checkBudgetDO(
   estimateMicrodollars: number,
   sessionId: string | null = null,
   tags: Record<string, string>,
+  finalize: boolean = false,
 ): Promise<BudgetCheckOutcome> {
   if (!ownerId) {
     return { status: "skipped", reservationId: null, budgetEntities: [] };
@@ -157,7 +152,7 @@ async function checkBudgetDO(
   const tagEntityIds = Object.entries(tags).map(([k, v]) => `${k}=${v}`);
 
   // Single DO RPC — no Postgres lookup, no cache
-  const checkResult = await doBudgetCheck(env, ownerId, keyId, estimateMicrodollars, sessionId, tagEntityIds, orgId);
+  const checkResult = await doBudgetCheck(env, ownerId, keyId, estimateMicrodollars, sessionId, tagEntityIds, orgId, finalize);
 
   if (!checkResult.hasBudgets) {
     // Auth cache said hasBudgets=true (we got here), but DO says false — stale cache
@@ -189,6 +184,8 @@ async function checkBudgetDO(
     reserved: e.reserved,
     policy: e.policy,
     thresholdPercentages: e.thresholdPercentages ?? [50, 80, 90, 95],
+    finalizationReserve: e.finalizationReserve ?? 0,
+    avgRecentCost: e.avgRecentCost ?? 0,
   }));
 
   if (checkResult.status === "denied") {
@@ -260,6 +257,7 @@ async function checkBudgetDO(
       maxBudget: checkResult.maxBudget,
       spend: checkResult.spend,
       reserved,
+      finalizationReserve: checkResult.finalizationReserve,
     };
   }
 

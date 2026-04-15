@@ -26,7 +26,7 @@ const TEST_USER_ID = "user-abc-123";
 const TEST_KEY_ID = "550e8400-e29b-41d4-a716-446655440000";
 const TEST_CONNECTION_STRING = "postgresql://postgres:postgres@db.example.com:5432/postgres";
 
-const validRow = { id: TEST_KEY_ID, user_id: TEST_USER_ID, has_webhooks: false, has_budgets: false, org_id: null, api_version: "2026-04-01", default_tags: {}, request_logging_enabled: false };
+const validRow = { id: TEST_KEY_ID, user_id: TEST_USER_ID, has_webhooks: false, has_budgets: false, org_id: null, api_version: "2026-04-01", default_tags: {}, request_logging_enabled: false, require_customer_id: false };
 
 describe("hashApiKey", () => {
   it("produces the same hex output as Node.js crypto.createHash('sha256')", async () => {
@@ -69,7 +69,7 @@ describe("authenticateApiKey", () => {
 
     const result = await authenticateApiKey(TEST_RAW_KEY, TEST_CONNECTION_STRING);
 
-    expect(result).toEqual({ userId: TEST_USER_ID, keyId: TEST_KEY_ID, hasWebhooks: false, hasBudgets: false, orgId: null, apiVersion: "2026-04-01", defaultTags: {}, requestLoggingEnabled: false, allowedModels: null, allowedProviders: null, orgUpgradeUrl: null });
+    expect(result).toEqual({ userId: TEST_USER_ID, keyId: TEST_KEY_ID, hasWebhooks: false, hasBudgets: false, orgId: null, apiVersion: "2026-04-01", defaultTags: {}, requestLoggingEnabled: false, allowedModels: null, allowedProviders: null, allowedCustomers: null, requireCustomerId: false, orgUpgradeUrl: null });
     expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
@@ -77,7 +77,7 @@ describe("authenticateApiKey", () => {
     mockSql.mockResolvedValueOnce([validRow]);
 
     const result1 = await authenticateApiKey(TEST_RAW_KEY, TEST_CONNECTION_STRING);
-    expect(result1).toEqual({ userId: TEST_USER_ID, keyId: TEST_KEY_ID, hasWebhooks: false, hasBudgets: false, orgId: null, apiVersion: "2026-04-01", defaultTags: {}, requestLoggingEnabled: false, allowedModels: null, allowedProviders: null, orgUpgradeUrl: null });
+    expect(result1).toEqual({ userId: TEST_USER_ID, keyId: TEST_KEY_ID, hasWebhooks: false, hasBudgets: false, orgId: null, apiVersion: "2026-04-01", defaultTags: {}, requestLoggingEnabled: false, allowedModels: null, allowedProviders: null, allowedCustomers: null, requireCustomerId: false, orgUpgradeUrl: null });
     expect(mockSql).toHaveBeenCalledTimes(1);
 
     // Second call — cache hit, no DB call
@@ -155,12 +155,12 @@ describe("authenticateApiKey", () => {
       { id: "key-0", user_id: "user-0", has_webhooks: false, has_budgets: false, org_id: null, api_version: "2026-04-01", default_tags: {}, request_logging_enabled: false },
     ]);
     const result = await authenticateApiKey("ns_live_sk_key_0", TEST_CONNECTION_STRING);
-    expect(result).toEqual({ userId: "user-0", keyId: "key-0", hasWebhooks: false, hasBudgets: false, orgId: null, apiVersion: "2026-04-01", defaultTags: {}, requestLoggingEnabled: false, allowedModels: null, allowedProviders: null, orgUpgradeUrl: null });
+    expect(result).toEqual({ userId: "user-0", keyId: "key-0", hasWebhooks: false, hasBudgets: false, orgId: null, apiVersion: "2026-04-01", defaultTags: {}, requestLoggingEnabled: false, allowedModels: null, allowedProviders: null, allowedCustomers: null, requireCustomerId: false, orgUpgradeUrl: null });
     expect(mockSql).toHaveBeenCalledTimes(258);
 
     // key_2 should still be cached
     const result2 = await authenticateApiKey("ns_live_sk_key_2", TEST_CONNECTION_STRING);
-    expect(result2).toEqual({ userId: "user-2", keyId: "key-2", hasWebhooks: false, hasBudgets: false, orgId: null, apiVersion: "2026-04-01", defaultTags: {}, requestLoggingEnabled: false, allowedModels: null, allowedProviders: null, orgUpgradeUrl: null });
+    expect(result2).toEqual({ userId: "user-2", keyId: "key-2", hasWebhooks: false, hasBudgets: false, orgId: null, apiVersion: "2026-04-01", defaultTags: {}, requestLoggingEnabled: false, allowedModels: null, allowedProviders: null, allowedCustomers: null, requireCustomerId: false, orgUpgradeUrl: null });
     expect(mockSql).toHaveBeenCalledTimes(258); // No additional DB call
 
     vi.restoreAllMocks();
@@ -178,7 +178,7 @@ describe("authenticateApiKey", () => {
 
     // Second call — retries DB (not negative-cached), succeeds
     const result2 = await authenticateApiKey(TEST_RAW_KEY, TEST_CONNECTION_STRING);
-    expect(result2).toEqual({ userId: TEST_USER_ID, keyId: TEST_KEY_ID, hasWebhooks: false, hasBudgets: false, orgId: null, apiVersion: "2026-04-01", defaultTags: {}, requestLoggingEnabled: false, allowedModels: null, allowedProviders: null, orgUpgradeUrl: null });
+    expect(result2).toEqual({ userId: TEST_USER_ID, keyId: TEST_KEY_ID, hasWebhooks: false, hasBudgets: false, orgId: null, apiVersion: "2026-04-01", defaultTags: {}, requestLoggingEnabled: false, allowedModels: null, allowedProviders: null, allowedCustomers: null, requireCustomerId: false, orgUpgradeUrl: null });
     expect(mockSql).toHaveBeenCalledTimes(2); // Both calls hit DB
   });
 
@@ -506,6 +506,83 @@ describe("authenticateApiKey allowedModels/allowedProviders", () => {
     const result2 = await authenticateApiKey(TEST_RAW_KEY, TEST_CONNECTION_STRING);
     expect(result2!.allowedModels).toEqual(["gpt-4o"]);
     expect(result2!.allowedProviders).toEqual(["openai", "anthropic"]);
+    expect(mockSql).toHaveBeenCalledTimes(1); // Only one DB call
+  });
+});
+
+describe("authenticateApiKey allowedCustomers", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    _resetCaches();
+  });
+
+  afterEach(() => {
+    _resetCaches();
+  });
+
+  it("returns allowedCustomers from DB when allowed_customers is a non-empty array", async () => {
+    mockSql.mockResolvedValueOnce([
+      { ...validRow, allowed_customers: ["acme-corp", "globex"] },
+    ]);
+
+    const result = await authenticateApiKey(TEST_RAW_KEY, TEST_CONNECTION_STRING);
+    expect(result!.allowedCustomers).toEqual(["acme-corp", "globex"]);
+  });
+
+  it("returns empty array when allowed_customers is empty (deny all customers)", async () => {
+    mockSql.mockResolvedValueOnce([
+      { ...validRow, allowed_customers: [] },
+    ]);
+
+    const result = await authenticateApiKey(TEST_RAW_KEY, TEST_CONNECTION_STRING);
+    expect(result!.allowedCustomers).toEqual([]);
+  });
+
+  it("returns null when allowed_customers is null (unrestricted)", async () => {
+    mockSql.mockResolvedValueOnce([
+      { ...validRow, allowed_customers: null },
+    ]);
+
+    const result = await authenticateApiKey(TEST_RAW_KEY, TEST_CONNECTION_STRING);
+    expect(result!.allowedCustomers).toBeNull();
+  });
+
+  it("returns null when allowed_customers is absent from row", async () => {
+    mockSql.mockResolvedValueOnce([validRow]); // validRow has no allowed_customers field
+
+    const result = await authenticateApiKey(TEST_RAW_KEY, TEST_CONNECTION_STRING);
+    expect(result!.allowedCustomers).toBeNull();
+  });
+
+  it("parses allowed_customers from Postgres text array literal string (Hyperdrive/fetch_types:false)", async () => {
+    mockSql.mockResolvedValueOnce([
+      { ...validRow, allowed_customers: "{acme-corp,globex}" },
+    ]);
+
+    const result = await authenticateApiKey(TEST_RAW_KEY, TEST_CONNECTION_STRING);
+    expect(result!.allowedCustomers).toEqual(["acme-corp", "globex"]);
+  });
+
+  it("parses empty Postgres text array literal string as empty array", async () => {
+    mockSql.mockResolvedValueOnce([
+      { ...validRow, allowed_customers: "{}" },
+    ]);
+
+    const result = await authenticateApiKey(TEST_RAW_KEY, TEST_CONNECTION_STRING);
+    expect(result!.allowedCustomers).toEqual([]);
+  });
+
+  it("allowedCustomers is cached in positive cache entry", async () => {
+    mockSql.mockResolvedValueOnce([
+      { ...validRow, allowed_customers: ["acme-corp"] },
+    ]);
+
+    const result1 = await authenticateApiKey(TEST_RAW_KEY, TEST_CONNECTION_STRING);
+    expect(result1!.allowedCustomers).toEqual(["acme-corp"]);
+
+    const result2 = await authenticateApiKey(TEST_RAW_KEY, TEST_CONNECTION_STRING);
+    expect(result2!.allowedCustomers).toEqual(["acme-corp"]);
     expect(mockSql).toHaveBeenCalledTimes(1); // Only one DB call
   });
 });

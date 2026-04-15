@@ -96,7 +96,7 @@ The circuit breaker has three states:
 
 When a request is denied by velocity enforcement, the proxy returns a `429` with the provider-appropriate error shape.
 
-Both OpenAI and Anthropic routes return the same NullSpend error shape:
+All provider routes (OpenAI, Anthropic, Gemini) return the same NullSpend error shape:
 
 ```json
 {
@@ -136,7 +136,7 @@ Fires when the circuit breaker trips. Key fields in `data.object`:
 | `velocity_current_microdollars` | Estimated spend at trip time |
 | `cooldown_seconds` | How long the breaker stays open |
 | `model` | Model of the request that tripped it |
-| `provider` | `openai` or `anthropic` |
+| `provider` | `openai`, `anthropic`, or `google` |
 | `blocked_at` | ISO 8601 timestamp |
 
 ### `velocity.recovered`

@@ -12,6 +12,7 @@ import {
   buildBudgetExceededPayload,
   buildCostEventPayload,
   buildThinCostEventPayload,
+  buildThresholdPayload,
   CURRENT_API_VERSION,
 } from "../lib/webhook-events.js";
 import { dispatchToEndpoints } from "../lib/webhook-dispatch.js";
@@ -19,7 +20,7 @@ import { detectThresholdCrossings } from "../lib/webhook-thresholds.js";
 import { expireRotatedSecrets } from "../lib/webhook-expiry.js";
 import { emitMetric } from "../lib/metrics.js";
 
-export type Provider = "openai" | "anthropic" | "mcp";
+export type Provider = "openai" | "anthropic" | "google" | "mcp";
 
 export type Attribution = { userId: string | null; apiKeyId: string | null; actionId: string | null };
 
@@ -56,7 +57,7 @@ export type Attribution = { userId: string | null; apiKeyId: string | null; acti
  *   pass `0` on denied responses (no reservation landed).
  */
 export function buildBudgetHeaders(
-  budgetEntities: Pick<BudgetEntity, "entityType" | "entityId" | "maxBudget" | "spend" | "reserved">[],
+  budgetEntities: Pick<BudgetEntity, "entityType" | "entityId" | "maxBudget" | "spend" | "reserved" | "finalizationReserve" | "avgRecentCost">[],
   reservedForThisRequest: number,
 ): Record<string, string> {
   if (budgetEntities.length === 0) return {};
@@ -86,13 +87,28 @@ export function buildBudgetHeaders(
     }
   }
 
+  const reserve = tightest.finalizationReserve ?? 0;
+  const avgCost = tightest.avgRecentCost ?? 0;
   const spent = tightest.spend + tightest.reserved + reservedForThisRequest;
-  return {
+  const effectiveRemaining = Math.max(0, tightestRemaining - reserve);
+
+  const headers: Record<string, string> = {
     "X-NullSpend-Budget-Limit": String(tightest.maxBudget),
     "X-NullSpend-Budget-Spent": String(spent),
     "X-NullSpend-Budget-Remaining": String(tightestRemaining),
     "X-NullSpend-Budget-Entity": `${tightest.entityType}:${tightest.entityId}`,
   };
+
+  if (reserve > 0) {
+    headers["X-NullSpend-Budget-Finalization-Reserve"] = String(reserve);
+    headers["X-NullSpend-Budget-Effective-Remaining"] = String(effectiveRemaining);
+  }
+
+  if (avgCost > 0 && effectiveRemaining > 0) {
+    headers["X-NullSpend-Budget-Requests-Remaining"] = `~${Math.floor(effectiveRemaining / avgCost)}`;
+  }
+
+  return headers;
 }
 
 export interface EnrichmentFields {
@@ -350,6 +366,11 @@ export async function handleBudgetDenials(
             customer_id: outcome.deniedEntityId ?? null,
             budget_limit_microdollars: outcome.maxBudget ?? 0,
             budget_spend_microdollars: (outcome.spend ?? 0) + (outcome.reserved ?? 0),
+            // CX-9: Include finalization reserve details on customer denials (parity with budget_exceeded)
+            ...(outcome.finalizationReserve ? {
+              finalization_reserve_microdollars: outcome.finalizationReserve,
+              finalization_remaining_microdollars: Math.max(0, (outcome.maxBudget ?? 0) - (outcome.spend ?? 0) - (outcome.reserved ?? 0) - (outcome.finalizationReserve ?? 0)),
+            } : {}),
           },
         },
       }),
@@ -408,6 +429,10 @@ export async function handleBudgetDenials(
             budget_limit_microdollars: budgetLimit,
             budget_spend_microdollars: budgetSpend,
             estimated_cost_microdollars: estimate,
+            ...(outcome.finalizationReserve ? {
+              finalization_reserve_microdollars: outcome.finalizationReserve,
+              finalization_remaining_microdollars: Math.max(0, budgetLimit - budgetSpend - (outcome.finalizationReserve ?? 0)),
+            } : {}),
           },
         },
       }),
@@ -472,6 +497,7 @@ export async function dispatchCostEventWebhooks(
   enrichment: { traceId: string; [key: string]: unknown },
   budgetEntities: BudgetEntity[],
   toolCallsRequested: unknown,
+  preComputedCrossings?: import("../durable-objects/user-budget.js").ThresholdCrossing[],
 ): Promise<void> {
   if (!ctx.webhookDispatcher || !ctx.auth.hasWebhooks) return;
   const logPrefix = `[${provider}-route]`;
@@ -495,7 +521,26 @@ export async function dispatchCostEventWebhooks(
         }
       }
 
-      if (budgetEntities.length > 0) {
+      // P0-1: Use DO-deduped threshold crossings when available.
+      // undefined = not available (fallback to stale detection)
+      // [] = DO confirmed zero crossings (don't fire any)
+      // [...] = use these deduped crossings
+      if (preComputedCrossings !== undefined) {
+        const epVersion = endpoints[0]?.apiVersion ?? CURRENT_API_VERSION;
+        for (const c of preComputedCrossings) {
+          const event = buildThresholdPayload({
+            budgetEntityType: c.entityType,
+            budgetEntityId: c.entityId,
+            budgetLimitMicrodollars: c.maxBudget,
+            budgetSpendMicrodollars: c.spend,
+            thresholdPercent: c.threshold,
+            triggeredByRequestId: c.requestId,
+            isCritical: c.isCritical,
+          }, epVersion);
+          await dispatchToEndpoints(ctx.webhookDispatcher!, endpoints, event);
+        }
+      } else if (budgetEntities.length > 0) {
+        // Fallback: stale-data detection (MCP route, backward compat)
         const epVersion = endpoints[0]?.apiVersion ?? CURRENT_API_VERSION;
         const thresholdEvents = detectThresholdCrossings(budgetEntities, costEvent.costMicrodollars, costEvent.requestId, epVersion);
         for (const te of thresholdEvents) {

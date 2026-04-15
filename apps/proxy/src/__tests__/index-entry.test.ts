@@ -304,6 +304,102 @@ describe("Worker entry point routing", () => {
       const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
       expect(res.status).toBe(404);
     });
+
+    it("POST /v1beta/models/{model}:generateContent reaches Gemini handler", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            candidates: [{ content: { role: "model", parts: [{ text: "Hello" }] }, finishReason: "STOP" }],
+            usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 },
+            modelVersion: "gemini-2.5-flash",
+            responseId: "resp_test",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      );
+
+      const req = new Request("http://localhost/v1beta/models/gemini-2.5-flash:generateContent", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer google-api-key-test",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: "hi" }] }],
+        }),
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(200);
+      expect(res.headers.get("X-NullSpend-Trace-Id")).toBeTruthy();
+      const body = await res.json();
+      expect(body.candidates[0].content.parts[0].text).toBe("Hello");
+
+      // Verify upstream was called with x-goog-api-key (not Bearer)
+      const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      const upstreamUrl = fetchCall[0] as string;
+      expect(upstreamUrl).toContain("generativelanguage.googleapis.com");
+      expect(upstreamUrl).toContain("models/gemini-2.5-flash:generateContent");
+      const upstreamHeaders = fetchCall[1].headers;
+      expect(upstreamHeaders.get("x-goog-api-key")).toBe("google-api-key-test");
+    });
+
+    it("POST /v1beta/models/{model}:streamGenerateContent reaches Gemini streaming handler", async () => {
+      const encoder = new TextEncoder();
+      const sseStream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({
+            candidates: [{ content: { parts: [{ text: "hi" }] }, finishReason: "STOP" }],
+            usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 1, totalTokenCount: 6 },
+            modelVersion: "gemini-2.5-flash",
+            responseId: "r1",
+          })}\n\n`));
+          controller.close();
+        },
+      });
+
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(sseStream, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      );
+
+      const req = new Request("http://localhost/v1beta/models/gemini-2.5-flash:streamGenerateContent", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer google-api-key-test",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ contents: [{ parts: [{ text: "hi" }] }] }),
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(200);
+      expect(res.body).toBeInstanceOf(ReadableStream);
+
+      // Verify upstream URL includes ?alt=sse
+      const fetchCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      const upstreamUrl = fetchCall[0] as string;
+      expect(upstreamUrl).toContain("?alt=sse");
+    });
+
+    it("POST /v1beta/models/{model}:countTokens returns 404 (unsupported Gemini method)", async () => {
+      const req = new Request("http://localhost/v1beta/models/gemini-2.5-flash:countTokens", {
+        method: "POST",
+        body: JSON.stringify({ contents: [{ parts: [{ text: "hi" }] }] }),
+      });
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error.code).toBe("not_found");
+    });
+
+    it("GET /v1beta/models/{model}:generateContent returns 404 (POST only)", async () => {
+      const req = new Request("http://localhost/v1beta/models/gemini-2.5-flash:generateContent", { method: "GET" });
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(404);
+    });
   });
 
   describe("fail-closed behavior", () => {
@@ -547,6 +643,337 @@ describe("Worker entry point routing", () => {
       expect(res.status).toBe(200);
       const effectiveTags = JSON.parse(res.headers.get("X-NullSpend-Effective-Tags")!);
       expect(effectiveTags.customer).toBe("acme-corp");
+    });
+  });
+
+  describe("allowedCustomers enforcement (CX-2)", () => {
+    it("allows request when allowedCustomers is null (unrestricted)", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ choices: [], model: "gpt-4o-mini" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        userId: "user-1",
+        keyId: "key-1",
+        hasWebhooks: false,
+        hasBudgets: false,
+        orgId: null,
+        apiVersion: "2026-04-01",
+        defaultTags: {},
+        allowedCustomers: null,
+        requireCustomerId: false,
+      });
+
+      const req = new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer sk-test",
+          "Content-Type": "application/json",
+          "X-NullSpend-Customer": "any-customer",
+        },
+        body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(200);
+    });
+
+    it("allows request when customer is in the allowlist", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ choices: [], model: "gpt-4o-mini" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        userId: "user-1",
+        keyId: "key-1",
+        hasWebhooks: false,
+        hasBudgets: false,
+        orgId: null,
+        apiVersion: "2026-04-01",
+        defaultTags: {},
+        allowedCustomers: ["acme-corp", "globex"],
+        requireCustomerId: false,
+      });
+
+      const req = new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer sk-test",
+          "Content-Type": "application/json",
+          "X-NullSpend-Customer": "acme-corp",
+        },
+        body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(200);
+    });
+
+    it("denies request when customer is not in the allowlist", async () => {
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        userId: "user-1",
+        keyId: "key-1",
+        hasWebhooks: false,
+        hasBudgets: false,
+        orgId: null,
+        apiVersion: "2026-04-01",
+        defaultTags: {},
+        allowedCustomers: ["acme-corp", "globex"],
+        requireCustomerId: false,
+      });
+
+      const req = new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer sk-test",
+          "Content-Type": "application/json",
+          "X-NullSpend-Customer": "evil-corp",
+        },
+        body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error.code).toBe("customer_not_allowed");
+      // Generic message — doesn't echo the customer ID (information disclosure)
+      expect(body.error.message).toBe("Customer ID not authorized for this API key");
+      expect(body.error.message).not.toContain("evil-corp");
+    });
+
+    it("denies request when allowedCustomers is empty array (deny all customers)", async () => {
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        userId: "user-1",
+        keyId: "key-1",
+        hasWebhooks: false,
+        hasBudgets: false,
+        orgId: null,
+        apiVersion: "2026-04-01",
+        defaultTags: {},
+        allowedCustomers: [],
+        requireCustomerId: false,
+      });
+
+      const req = new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer sk-test",
+          "Content-Type": "application/json",
+          "X-NullSpend-Customer": "any-customer",
+        },
+        body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error.code).toBe("customer_not_allowed");
+    });
+
+    it("allows request when no customer header is sent (even with allowedCustomers set)", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ choices: [], model: "gpt-4o-mini" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        userId: "user-1",
+        keyId: "key-1",
+        hasWebhooks: false,
+        hasBudgets: false,
+        orgId: null,
+        apiVersion: "2026-04-01",
+        defaultTags: {},
+        allowedCustomers: ["acme-corp"],
+        requireCustomerId: false,
+      });
+
+      const req = new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer sk-test",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(200);
+    });
+
+    it("denies when customer from tags violates allowedCustomers", async () => {
+      mockAuthenticateRequest.mockResolvedValueOnce({
+        userId: "user-1",
+        keyId: "key-1",
+        hasWebhooks: false,
+        hasBudgets: false,
+        orgId: null,
+        apiVersion: "2026-04-01",
+        defaultTags: {},
+        allowedCustomers: ["good-corp"],
+        requireCustomerId: false,
+      });
+
+      const req = new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer sk-test",
+          "Content-Type": "application/json",
+          // No X-NullSpend-Customer header — customer comes from tags
+          "X-NullSpend-Tags": '{"customer":"evil-corp"}',
+        },
+        body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error.code).toBe("customer_not_allowed");
+    });
+  });
+
+  describe("requireCustomerId enforcement (CX-4)", () => {
+    it("returns 400 when requireCustomerId=true and no customer header", async () => {
+      mockAuthenticateRequest.mockResolvedValue({
+        userId: "user-1",
+        keyId: "key-1",
+        requestLoggingEnabled: false,
+        hasWebhooks: false,
+        hasBudgets: false,
+        orgId: null,
+        apiVersion: "2026-04-01",
+        defaultTags: {},
+        allowedCustomers: null,
+        requireCustomerId: true,
+        orgUpgradeUrl: null,
+      });
+
+      const req = new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "x-nullspend-key": "ns_live_sk_test",
+          "content-type": "application/json",
+          // No x-nullspend-customer header
+        },
+        body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error.code).toBe("customer_required");
+      expect(body.error.message).toContain("X-NullSpend-Customer");
+    });
+
+    it("returns 400 when requireCustomerId=true and customer header is malformed", async () => {
+      mockAuthenticateRequest.mockResolvedValue({
+        userId: "user-1",
+        keyId: "key-1",
+        requestLoggingEnabled: false,
+        hasWebhooks: false,
+        hasBudgets: false,
+        orgId: null,
+        apiVersion: "2026-04-01",
+        defaultTags: {},
+        allowedCustomers: null,
+        requireCustomerId: true,
+        orgUpgradeUrl: null,
+      });
+
+      const req = new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "x-nullspend-key": "ns_live_sk_test",
+          "content-type": "application/json",
+          "x-nullspend-customer": "invalid chars!@#$",
+        },
+        body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error.code).toBe("customer_required");
+    });
+
+    it("allows request when requireCustomerId=true and valid customer header", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ choices: [], model: "gpt-4o-mini" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+      mockAuthenticateRequest.mockResolvedValue({
+        userId: "user-1",
+        keyId: "key-1",
+        requestLoggingEnabled: false,
+        hasWebhooks: false,
+        hasBudgets: false,
+        orgId: null,
+        apiVersion: "2026-04-01",
+        defaultTags: {},
+        allowedCustomers: null,
+        requireCustomerId: true,
+        orgUpgradeUrl: null,
+      });
+
+      const req = new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "x-nullspend-key": "ns_live_sk_test",
+          "content-type": "application/json",
+          "x-nullspend-customer": "valid-customer",
+        },
+        body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(200); // passes through to upstream
+    });
+
+    it("does not enforce when requireCustomerId=false (default)", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ choices: [], model: "gpt-4o-mini" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+
+      mockAuthenticateRequest.mockResolvedValue({
+        userId: "user-1",
+        keyId: "key-1",
+        requestLoggingEnabled: false,
+        hasWebhooks: false,
+        hasBudgets: false,
+        orgId: null,
+        apiVersion: "2026-04-01",
+        defaultTags: {},
+        allowedCustomers: null,
+        requireCustomerId: false,
+        orgUpgradeUrl: null,
+      });
+
+      const req = new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "x-nullspend-key": "ns_live_sk_test",
+          "content-type": "application/json",
+          // No customer header — should be fine
+        },
+        body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(200);
     });
   });
 

@@ -804,7 +804,6 @@ class TestQueueCostDirectLogging:
             return_value=httpx.Response(500, json={"error": {"message": "Internal"}})
         )
         ns = NullSpend(api_key="key")
-        NullSpend._direct_cost_error_logged = False  # Reset class-level flag
         with caplog.at_level(logging.WARNING, logger="nullspend"):
             ns._queue_cost_direct(CostEventInput(
                 provider="openai", model="gpt-4o",
@@ -812,4 +811,367 @@ class TestQueueCostDirectLogging:
             ))
         assert any("Failed to report cost event" in r.message for r in caplog.records)
         ns.close()
-        NullSpend._direct_cost_error_logged = False  # Clean up
+
+
+# ---- Finalization Reserve ----
+
+
+class TestFinalizationReservePolicyCache:
+    """Tests for finalization_reserve_microdollars in PolicyCache."""
+
+    def test_check_budget_strict_block_subtracts_reserve(self):
+        """strict_block policy subtracts reserve from remaining."""
+        pc = PolicyCache(fetch_fn=lambda: {
+            "budget": {
+                "remaining_microdollars": 10_000,
+                "max_microdollars": 100_000,
+                "spend_microdollars": 90_000,
+                "period_end": None,
+                "entity_type": "org",
+                "entity_id": "org-1",
+                "finalization_reserve_microdollars": 3_000,
+                "policy": "strict_block",
+            },
+        }, ttl_s=60.0)
+        pc.get_policy()
+        # effective remaining = 10_000 - 3_000 = 7_000
+        result = pc.check_budget(7_000)
+        assert result.allowed is True
+        assert result.remaining == 7_000
+
+        # 8_000 > 7_000 effective → denied
+        result2 = pc.check_budget(8_000)
+        assert result2.allowed is False
+        assert result2.remaining == 7_000
+
+    def test_check_budget_soft_block_no_subtraction(self):
+        """soft_block policy does NOT subtract reserve."""
+        pc = PolicyCache(fetch_fn=lambda: {
+            "budget": {
+                "remaining_microdollars": 10_000,
+                "max_microdollars": 100_000,
+                "spend_microdollars": 90_000,
+                "period_end": None,
+                "entity_type": "org",
+                "entity_id": "org-1",
+                "finalization_reserve_microdollars": 3_000,
+                "policy": "soft_block",
+            },
+        }, ttl_s=60.0)
+        pc.get_policy()
+        # effective remaining = 10_000 (no subtraction for soft_block)
+        result = pc.check_budget(10_000)
+        assert result.allowed is True
+        assert result.remaining == 10_000
+
+    def test_check_budget_finalize_true_skips_reserve(self):
+        """finalize=True bypasses reserve subtraction even on strict_block."""
+        pc = PolicyCache(fetch_fn=lambda: {
+            "budget": {
+                "remaining_microdollars": 10_000,
+                "max_microdollars": 100_000,
+                "spend_microdollars": 90_000,
+                "period_end": None,
+                "entity_type": "org",
+                "entity_id": "org-1",
+                "finalization_reserve_microdollars": 3_000,
+                "policy": "strict_block",
+            },
+        }, ttl_s=60.0)
+        pc.get_policy()
+
+        # Without finalize, effective = 7_000 → 10_000 exceeds
+        denied = pc.check_budget(10_000)
+        assert denied.allowed is False
+
+        # With finalize, effective = 10_000 → exactly fits
+        allowed = pc.check_budget(10_000, finalize=True)
+        assert allowed.allowed is True
+        assert allowed.remaining == 10_000
+
+    def test_check_budget_no_reserve_unchanged(self):
+        """When reserve is 0, behavior is unchanged."""
+        pc = PolicyCache(fetch_fn=lambda: {
+            "budget": {
+                "remaining_microdollars": 5_000,
+                "max_microdollars": 100_000,
+                "spend_microdollars": 95_000,
+                "period_end": None,
+                "entity_type": "org",
+                "entity_id": "org-1",
+                "finalization_reserve_microdollars": 0,
+                "policy": "strict_block",
+            },
+        }, ttl_s=60.0)
+        pc.get_policy()
+        result = pc.check_budget(5_000)
+        assert result.allowed is True
+        assert result.remaining == 5_000
+
+    def test_get_finalization_reserve_returns_value(self):
+        pc = PolicyCache(fetch_fn=lambda: {
+            "budget": {
+                "remaining_microdollars": 10_000,
+                "max_microdollars": 100_000,
+                "spend_microdollars": 90_000,
+                "period_end": None,
+                "entity_type": "org",
+                "entity_id": "org-1",
+                "finalization_reserve_microdollars": 3_000,
+                "policy": "strict_block",
+            },
+        }, ttl_s=60.0)
+        pc.get_policy()
+        assert pc.get_finalization_reserve() == 3_000
+
+    def test_get_finalization_reserve_returns_none_no_budget(self):
+        pc = PolicyCache(fetch_fn=lambda: {}, ttl_s=60.0)
+        pc.get_policy()
+        assert pc.get_finalization_reserve() is None
+
+    def test_get_finalization_reserve_returns_none_no_cache(self):
+        pc = PolicyCache(fetch_fn=lambda: {}, ttl_s=60.0)
+        # Don't call get_policy — cache is None
+        assert pc.get_finalization_reserve() is None
+
+    def test_parse_policy_response_with_finalization_reserve(self):
+        """_parse_policy_response correctly parses finalization_reserve_microdollars and policy."""
+        policy = _parse_policy_response({
+            "budget": {
+                "remaining_microdollars": 5_000,
+                "max_microdollars": 100_000,
+                "spend_microdollars": 95_000,
+                "period_end": None,
+                "entity_type": "org",
+                "entity_id": "org-1",
+                "finalization_reserve_microdollars": 2_000,
+                "policy": "soft_block",
+            },
+        })
+        assert policy.budget is not None
+        assert policy.budget.finalization_reserve_microdollars == 2_000
+        assert policy.budget.policy == "soft_block"
+
+    def test_parse_policy_response_defaults(self):
+        """Missing finalization_reserve defaults to 0, missing policy defaults to strict_block."""
+        policy = _parse_policy_response({
+            "budget": {
+                "remaining_microdollars": 5_000,
+                "max_microdollars": 100_000,
+                "spend_microdollars": 95_000,
+                "period_end": None,
+                "entity_type": "org",
+                "entity_id": "org-1",
+            },
+        })
+        assert policy.budget is not None
+        assert policy.budget.finalization_reserve_microdollars == 0
+        assert policy.budget.policy == "strict_block"
+
+
+class TestFinalizationReserveTrackedTransport:
+    """Tests for finalize option in TrackedTransport."""
+
+    def _make_transport(self, handler, provider="openai", **kwargs):
+        mock_transport = httpx.MockTransport(handler)
+        return TrackedTransport(
+            transport=mock_transport,
+            provider=provider,
+            **kwargs,
+        )
+
+    def test_finalize_true_injects_header_in_proxy_mode(self):
+        """finalize=True injects X-NullSpend-Finalize: 1 header."""
+        captured = {}
+        def handler(request):
+            captured.update(dict(request.headers))
+            return httpx.Response(200, json={
+                "id": "msg_1",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            })
+
+        transport = self._make_transport(
+            handler,
+            proxy_url="https://api.openai.com",
+            finalize=True,
+        )
+        client = httpx.Client(transport=transport)
+        client.post("https://api.openai.com/v1/chat/completions",
+                     json={"model": "gpt-4o", "messages": []})
+        assert captured.get("x-nullspend-finalize") == "1"
+        client.close()
+
+    def test_finalize_false_no_header(self):
+        """finalize=False does NOT inject X-NullSpend-Finalize header."""
+        captured = {}
+        def handler(request):
+            captured.update(dict(request.headers))
+            return httpx.Response(200, json={
+                "id": "msg_1",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            })
+
+        transport = self._make_transport(
+            handler,
+            proxy_url="https://api.openai.com",
+            finalize=False,
+        )
+        client = httpx.Client(transport=transport)
+        client.post("https://api.openai.com/v1/chat/completions",
+                     json={"model": "gpt-4o", "messages": []})
+        assert "x-nullspend-finalize" not in captured
+        client.close()
+
+    def test_finalize_default_no_header(self):
+        """Default (no finalize) does NOT inject X-NullSpend-Finalize header."""
+        captured = {}
+        def handler(request):
+            captured.update(dict(request.headers))
+            return httpx.Response(200, json={
+                "id": "msg_1",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            })
+
+        transport = self._make_transport(handler)
+        client = httpx.Client(transport=transport)
+        client.post("https://api.openai.com/v1/chat/completions",
+                     json={"model": "gpt-4o", "messages": []})
+        assert "x-nullspend-finalize" not in captured
+        client.close()
+
+    def test_finalize_true_direct_mode_passes_to_check_budget(self):
+        """finalize=True in direct mode passes finalize to policy_cache.check_budget.
+
+        The gpt-4o cost estimate is ~43.5B microdollars (tokens * perMTok rates,
+        not divided by 1M — this is a known pre-existing scale in the estimate).
+        We set remaining just above the estimate so the reserve makes the difference.
+        """
+        from nullspend._policy_cache import PolicyCache
+
+        # gpt-4o estimate ≈ 43_460_000_000
+        # Set remaining = 44_000_000_000 with reserve = 1_000_000_000
+        # → effective without finalize = 43_000_000_000 < estimate → denied
+        # → effective with finalize = 44_000_000_000 > estimate → allowed
+        pc = PolicyCache(fetch_fn=lambda: {
+            "budget": {
+                "remaining_microdollars": 44_000_000_000,
+                "max_microdollars": 100_000_000_000,
+                "spend_microdollars": 56_000_000_000,
+                "period_end": None,
+                "entity_type": "org",
+                "entity_id": "org-1",
+                "finalization_reserve_microdollars": 1_000_000_000,
+                "policy": "strict_block",
+            },
+        }, ttl_s=60.0)
+        pc.get_policy()
+
+        def handler(request):
+            return httpx.Response(200, json={
+                "model": "gpt-4o",
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            })
+
+        # Without finalize, effective = 43B < ~43.46B estimate → denied
+        transport_no_fin = self._make_transport(
+            handler,
+            enforcement=True,
+            policy_cache=pc,
+        )
+        client = httpx.Client(transport=transport_no_fin)
+        with pytest.raises(BudgetExceededError):
+            client.post("https://api.openai.com/v1/chat/completions",
+                         json={"model": "gpt-4o", "messages": []})
+        client.close()
+
+        # With finalize, effective = 44B > ~43.46B estimate → allowed
+        transport_fin = self._make_transport(
+            handler,
+            enforcement=True,
+            finalize=True,
+            policy_cache=pc,
+        )
+        client2 = httpx.Client(transport=transport_fin)
+        resp = client2.post("https://api.openai.com/v1/chat/completions",
+                             json={"model": "gpt-4o", "messages": []})
+        assert resp.status_code == 200
+        client2.close()
+
+
+class TestFinalizationReserveDenialParsing:
+    """Tests for finalization fields in denial parsing."""
+
+    def test_budget_exceeded_with_finalization_fields(self):
+        """Denial with finalization fields populates BudgetExceededError."""
+        with pytest.raises(BudgetExceededError) as exc_info:
+            _dispatch_denial({
+                "code": "budget_exceeded",
+                "details": {
+                    "remaining_microdollars": 0,
+                    "entity_type": "org",
+                    "entity_id": "org-1",
+                    "budget_limit_microdollars": 100_000,
+                    "budget_spend_microdollars": 100_000,
+                    "finalization_reserve_microdollars": 3_000,
+                    "finalization_remaining_microdollars": 7_000,
+                },
+                "upgrade_url": None,
+                "retry_after_seconds": None,
+            }, None, None)
+        err = exc_info.value
+        assert err.finalization_reserve_microdollars == 3_000
+        assert err.finalization_remaining_microdollars == 7_000
+
+    def test_customer_budget_exceeded_with_finalization_fields(self):
+        """Customer denial with finalization fields populates BudgetExceededError."""
+        with pytest.raises(BudgetExceededError) as exc_info:
+            _dispatch_denial({
+                "code": "customer_budget_exceeded",
+                "details": {
+                    "remaining_microdollars": 500,
+                    "customer_id": "cust-1",
+                    "budget_limit_microdollars": 50_000,
+                    "budget_spend_microdollars": 49_500,
+                    "finalization_reserve_microdollars": 5_000,
+                    "finalization_remaining_microdollars": 10_000,
+                },
+                "upgrade_url": None,
+                "retry_after_seconds": None,
+            }, None, None)
+        err = exc_info.value
+        assert err.entity_type == "customer"
+        assert err.finalization_reserve_microdollars == 5_000
+        assert err.finalization_remaining_microdollars == 10_000
+
+    def test_budget_exceeded_without_finalization_fields_defaults_none(self):
+        """Denial without finalization fields: None (backward compat)."""
+        with pytest.raises(BudgetExceededError) as exc_info:
+            _dispatch_denial({
+                "code": "budget_exceeded",
+                "details": {
+                    "remaining_microdollars": 0,
+                },
+                "upgrade_url": None,
+                "retry_after_seconds": None,
+            }, None, None)
+        err = exc_info.value
+        assert err.finalization_reserve_microdollars is None
+        assert err.finalization_remaining_microdollars is None
+
+    def test_denial_on_denied_callback_gets_finalization_fields(self):
+        """on_denied callback receives finalization fields in reason dict."""
+        reasons = []
+        with pytest.raises(BudgetExceededError):
+            _dispatch_denial({
+                "code": "budget_exceeded",
+                "details": {
+                    "remaining_microdollars": 0,
+                    "finalization_reserve_microdollars": 2_000,
+                    "finalization_remaining_microdollars": 8_000,
+                },
+                "upgrade_url": None,
+                "retry_after_seconds": None,
+            }, lambda r: reasons.append(r), None)
+        assert len(reasons) == 1
+        assert reasons[0]["finalizationReserve"] == 2_000
+        assert reasons[0]["finalizationRemaining"] == 8_000

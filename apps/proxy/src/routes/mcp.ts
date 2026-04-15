@@ -4,9 +4,9 @@ import { errorResponse } from "../lib/errors.js";
 import { lookupBudgetsForDO, lookupCustomerUpgradeUrl, type BudgetEntity } from "../lib/budget-do-lookup.js";
 import { logCostEventsBatchQueued, getCostEventQueue } from "../lib/cost-event-queue.js";
 import { checkBudget, reconcileBudgetQueued, getReconcileQueue } from "../lib/budget-orchestrator.js";
+import type { ThresholdCrossing } from "../durable-objects/user-budget.js";
 import { getWebhookEndpoints, getWebhookEndpointsWithSecrets } from "../lib/webhook-cache.js";
-import { buildCostEventPayload, buildThinCostEventPayload, buildVelocityExceededPayload, buildSessionLimitExceededPayload, buildTagBudgetExceededPayload, buildCustomerBudgetExceededPayload, buildBudgetExceededPayload } from "../lib/webhook-events.js";
-import { detectThresholdCrossings } from "../lib/webhook-thresholds.js";
+import { buildCostEventPayload, buildThinCostEventPayload, buildThresholdPayload, buildVelocityExceededPayload, buildSessionLimitExceededPayload, buildTagBudgetExceededPayload, buildCustomerBudgetExceededPayload, buildBudgetExceededPayload } from "../lib/webhook-events.js";
 import { dispatchToEndpoints } from "../lib/webhook-dispatch.js";
 import { expireRotatedSecrets } from "../lib/webhook-expiry.js";
 import { UUID_RE } from "../lib/validation.js";
@@ -60,7 +60,7 @@ export async function handleMcpBudgetCheck(
 
   try {
     const budgetStartMs = performance.now();
-    const outcome = await checkBudget(env, ctx, parsed.estimateMicrodollars);
+    const outcome = await checkBudget(env, ctx, parsed.estimateMicrodollars, ctx.finalize);
     if (ctx.stepTiming) ctx.stepTiming.budgetCheckMs = Math.round(performance.now() - budgetStartMs);
 
     // On denial we don't reserve against the DO, so budget headers reflect
@@ -254,6 +254,10 @@ export async function handleMcpBudgetCheck(
               customer_id: outcome.deniedEntityId ?? null,
               budget_limit_microdollars: outcome.maxBudget ?? 0,
               budget_spend_microdollars: (outcome.spend ?? 0) + (outcome.reserved ?? 0),
+              ...(outcome.finalizationReserve ? {
+                finalization_reserve_microdollars: outcome.finalizationReserve,
+                finalization_remaining_microdollars: Math.max(0, (outcome.maxBudget ?? 0) - (outcome.spend ?? 0) - (outcome.reserved ?? 0) - (outcome.finalizationReserve ?? 0)),
+              } : {}),
             },
           },
         }),
@@ -313,6 +317,10 @@ export async function handleMcpBudgetCheck(
               budget_limit_microdollars: budgetLimit,
               budget_spend_microdollars: budgetSpend,
               estimated_cost_microdollars: parsed.estimateMicrodollars,
+              ...(outcome.finalizationReserve ? {
+                finalization_reserve_microdollars: outcome.finalizationReserve,
+                finalization_remaining_microdollars: Math.max(0, budgetLimit - budgetSpend - (outcome.finalizationReserve ?? 0)),
+              } : {}),
             },
           },
         }),
@@ -482,10 +490,14 @@ export async function handleMcpEvents(
       }
 
       let reconcileFailures = 0;
+      const allCrossings: ThresholdCrossing[] = [];
       if (budgetEntities.length > 0 && eventsWithReservations.length > 0) {
         for (const event of eventsWithReservations) {
           try {
-            await reconcileBudgetQueued(getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, event.reservationId!, event.costMicrodollars, budgetEntities, ctx.connectionString);
+            const result = await reconcileBudgetQueued(getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, event.reservationId!, event.costMicrodollars, budgetEntities, ctx.connectionString);
+            if (result.thresholdCrossings) {
+              allCrossings.push(...result.thresholdCrossings);
+            }
           } catch (err) {
             reconcileFailures++;
             console.error("[mcp-events] Failed to reconcile reservation:", { reservationId: event.reservationId, error: err });
@@ -512,15 +524,20 @@ export async function handleMcpEvents(
               }
             }
 
-            // Threshold detection (aligned with OpenAI/Anthropic routes)
-            if (budgetEntities.length > 0) {
+            // P0-1: Use DO-deduped threshold crossings from reconcile results
+            if (allCrossings.length > 0) {
               const epVersion = endpoints[0]?.apiVersion ?? ctx.auth.apiVersion;
-              const totalCost = costEventRows.reduce((sum, r) => sum + r.costMicrodollars, 0);
-              if (totalCost > 0) {
-                const thresholdEvents = detectThresholdCrossings(budgetEntities, totalCost, costEventRows[0].requestId, epVersion);
-                for (const te of thresholdEvents) {
-                  await dispatchToEndpoints(ctx.webhookDispatcher!, endpoints, te);
-                }
+              for (const c of allCrossings) {
+                const event = buildThresholdPayload({
+                  budgetEntityType: c.entityType,
+                  budgetEntityId: c.entityId,
+                  budgetLimitMicrodollars: c.maxBudget,
+                  budgetSpendMicrodollars: c.spend,
+                  thresholdPercent: c.threshold,
+                  triggeredByRequestId: c.requestId,
+                  isCritical: c.isCritical,
+                }, epVersion);
+                await dispatchToEndpoints(ctx.webhookDispatcher!, endpoints, event);
               }
             }
 

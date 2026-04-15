@@ -112,7 +112,7 @@ Every request produces a **cost event** with these fields:
 | Field | Type | Description |
 |---|---|---|
 | `requestId` | string | Unique request identifier |
-| `provider` | string | `"openai"` or `"anthropic"` |
+| `provider` | string | `"openai"`, `"anthropic"`, or `"google"` |
 | `model` | string | Model used (e.g., `gpt-4o`, `claude-sonnet-4-5`) |
 | `inputTokens` | integer | Total input tokens (OpenAI: prompt_tokens; Anthropic: input + cache creation + cache read) |
 | `outputTokens` | integer | Output/completion tokens |
@@ -218,7 +218,7 @@ The estimate uses the pre-request estimation formula. These events are included 
 
 ## Related
 
-- [Supported Models](../reference/supported-models.md) — full pricing table for all 38 models
+- [Supported Models](../reference/supported-models.md) — full pricing table for all 56 models
 - [Tracing](tracing.md) — correlate requests across a multi-step agent run
 - [Tags](tags.md) — attribute costs to teams, environments, and features
 - [Budgets](budgets.md) — enforce spending ceilings based on cost tracking

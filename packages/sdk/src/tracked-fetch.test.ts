@@ -37,6 +37,40 @@ function makeAnthropicBody(model = "claude-sonnet-4-20250514", stream = false): 
   return JSON.stringify({ model, stream, messages: [{ role: "user", content: "Hi" }] });
 }
 
+function makeOpenAIBodyWithArrayContent(model = "gpt-4o", stream = false): string {
+  return JSON.stringify({
+    model,
+    stream,
+    messages: [{ role: "user", content: [{ type: "text", text: "Hello world from array content" }] }],
+  });
+}
+
+function makeAnthropicBodyWithArrayContent(model = "claude-sonnet-4-20250514", stream = false): string {
+  return JSON.stringify({
+    model,
+    stream,
+    messages: [{ role: "user", content: [{ type: "text", text: "Hello world from array content" }] }],
+  });
+}
+
+function makeAnthropicBodyWithSystemPromptArray(model = "claude-sonnet-4-20250514", stream = false): string {
+  return JSON.stringify({
+    model,
+    stream,
+    system: [{ type: "text", text: "You are a helpful assistant with extensive knowledge" }],
+    messages: [{ role: "user", content: "Hi" }],
+  });
+}
+
+function makeAnthropicBodyWithSystemPrompt(model = "claude-sonnet-4-20250514", stream = false): string {
+  return JSON.stringify({
+    model,
+    stream,
+    system: "You are a helpful assistant with extensive knowledge",
+    messages: [{ role: "user", content: "Hi" }],
+  });
+}
+
 function mockFetchJsonResponse(
   body: unknown,
   status = 200,
@@ -121,6 +155,7 @@ function createMockPolicyCache(overrides: Partial<PolicyCache> = {}): PolicyCach
     checkMandate: vi.fn().mockReturnValue({ allowed: true }),
     checkBudget: vi.fn().mockReturnValue({ allowed: true }),
     getSessionLimit: vi.fn().mockReturnValue(null),
+    getFinalizationReserve: vi.fn().mockReturnValue(null),
     invalidate: vi.fn(),
     ...overrides,
   };
@@ -1293,13 +1328,14 @@ describe("buildTrackedFetch", () => {
     it("accumulates cost from non-streaming responses and denies Nth request", async () => {
       const policyCache = createMockPolicyCache();
 
-      // Estimate: 1000 * 2.5 + 4096 * 10 = 43,460 microdollars (with mocked pricing)
+      // Estimate: 1 * 2.5 + 4096 * 10 = 40,962.5 → 40,963 microdollars (with mocked pricing)
+      // ("Hi" = 2 chars → ceil(2/4) = 1 input token)
       // Actual cost per request: 100 * 2.5 + 50 * 10 = 750 microdollars
-      // Set limit so first request passes (0 + 43460 < 44000) but second fails
-      // (750 + 43460 = 44210 > 44000)
+      // Set limit so first request passes (0 + 40963 < 41000) but second fails
+      // (750 + 40963 = 41713 > 41000)
       const trackedFetch = buildTrackedFetch(
         "openai",
-        { enforcement: true, sessionId: "sess-1", sessionLimitMicrodollars: 44_000 },
+        { enforcement: true, sessionId: "sess-1", sessionLimitMicrodollars: 41_000 },
         queueCost,
         policyCache,
       );
@@ -1327,10 +1363,10 @@ describe("buildTrackedFetch", () => {
       const policyCache = createMockPolicyCache();
 
       // Same math as non-streaming accumulation test:
-      // Estimate ~43,460 microdollars, actual cost ~750 microdollars per request
+      // Estimate ~40,963 microdollars, actual cost ~750 microdollars per request
       const trackedFetch = buildTrackedFetch(
         "openai",
-        { enforcement: true, sessionId: "sess-1", sessionLimitMicrodollars: 44_000 },
+        { enforcement: true, sessionId: "sess-1", sessionLimitMicrodollars: 41_000 },
         queueCost,
         policyCache,
       );
@@ -1533,14 +1569,15 @@ describe("buildTrackedFetch", () => {
     it("Anthropic streaming accumulates and denies subsequent request", async () => {
       const policyCache = createMockPolicyCache();
 
+      // Estimate ~40,963 microdollars, actual cost ~750 microdollars per request
       const trackedFetch = buildTrackedFetch(
         "anthropic",
-        { enforcement: true, sessionId: "sess-1", sessionLimitMicrodollars: 44_000 },
+        { enforcement: true, sessionId: "sess-1", sessionLimitMicrodollars: 41_000 },
         queueCost,
         policyCache,
       );
 
-      // First streaming request succeeds
+      // First streaming request succeeds (0 + 40963 < 41000)
       mockFetch.mockResolvedValue(mockFetchStreamResponse(anthropicStreamChunks()));
       const response = await trackedFetch(ANTHROPIC_URL, {
         method: "POST",
@@ -1551,7 +1588,7 @@ describe("buildTrackedFetch", () => {
 
       expect(queueCost).toHaveBeenCalledTimes(1);
 
-      // Second request denied (accumulated cost + estimate > limit)
+      // Second request denied (750 + 40963 = 41713 > 41000)
       mockFetch.mockResolvedValue(anthropicJsonResponse());
       await expect(
         trackedFetch(ANTHROPIC_URL, { method: "POST", body: makeAnthropicBody() }),
@@ -1808,6 +1845,94 @@ describe("buildTrackedFetch", () => {
       ).rejects.toThrow(SessionLimitExceededError);
 
       expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it("estimates input tokens from array content blocks (OpenAI)", async () => {
+      const policyCache = createMockPolicyCache();
+      // "Hello world from array content" = 30 chars → ceil(30/4) = 8 tokens
+      // Estimate: 8 * 2.5 + 4096 * 10 = 40,980
+      // With old hardcoded 1000: 1000 * 2.5 + 4096 * 10 = 43,460
+      // Set limit between: allows new estimate, would block old estimate
+      const trackedFetch = buildTrackedFetch(
+        "openai",
+        { enforcement: true, sessionId: "sess-arr-oai", sessionLimitMicrodollars: 42_000 },
+        queueCost,
+        policyCache,
+      );
+
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+      // This should NOT throw — the new estimate (40,980) is under the limit (42,000)
+      const response = await trackedFetch(OPENAI_URL, {
+        method: "POST",
+        body: makeOpenAIBodyWithArrayContent(),
+      });
+      expect(response.status).toBe(200);
+    });
+
+    it("estimates input tokens from array content blocks (Anthropic)", async () => {
+      const policyCache = createMockPolicyCache();
+      // "Hello world from array content" = 30 chars → ceil(30/4) = 8 tokens
+      // Estimate: 8 * 2.5 + 4096 * 10 = 40,980
+      // With old hardcoded 1000: 1000 * 2.5 + 4096 * 10 = 43,460
+      // Set limit between: allows new estimate, would block old estimate
+      const trackedFetch = buildTrackedFetch(
+        "anthropic",
+        { enforcement: true, sessionId: "sess-arr-ant", sessionLimitMicrodollars: 42_000 },
+        queueCost,
+        policyCache,
+      );
+
+      mockFetch.mockResolvedValue(anthropicJsonResponse());
+      // This should NOT throw — the new estimate (40,980) is under the limit (42,000)
+      const response = await trackedFetch(ANTHROPIC_URL, {
+        method: "POST",
+        body: makeAnthropicBodyWithArrayContent(),
+      });
+      expect(response.status).toBe(200);
+    });
+
+    it("estimates input tokens from Anthropic system prompt", async () => {
+      const policyCache = createMockPolicyCache();
+      // system = "You are a helpful assistant with extensive knowledge" = 52 chars
+      // messages content = "Hi" = 2 chars
+      // Total = 54 chars → ceil(54/4) = 14 tokens
+      // Estimate: 14 * 2.5 + 4096 * 10 = 40,995
+      // With old hardcoded 1000: 1000 * 2.5 + 4096 * 10 = 43,460
+      // Set limit between: allows new estimate, would block old estimate
+      const trackedFetch = buildTrackedFetch(
+        "anthropic",
+        { enforcement: true, sessionId: "sess-sys", sessionLimitMicrodollars: 42_000 },
+        queueCost,
+        policyCache,
+      );
+
+      mockFetch.mockResolvedValue(anthropicJsonResponse());
+      // This should NOT throw — the new estimate (40,995) is under the limit (42,000)
+      const response = await trackedFetch(ANTHROPIC_URL, {
+        method: "POST",
+        body: makeAnthropicBodyWithSystemPrompt(),
+      });
+      expect(response.status).toBe(200);
+    });
+
+    it("estimates input tokens from Anthropic system prompt as TextBlockParam array", async () => {
+      const policyCache = createMockPolicyCache();
+      // system = [{type:"text",text:"You are a helpful assistant with extensive knowledge"}] = 52 chars
+      // messages content = "Hi" = 2 chars → same math as string system prompt test
+      // Estimate: ceil(54/4) = 14 tokens → 14 * 2.5 + 4096 * 10 = 40,995
+      const trackedFetch = buildTrackedFetch(
+        "anthropic",
+        { enforcement: true, sessionId: "sess-sys-arr", sessionLimitMicrodollars: 42_000 },
+        queueCost,
+        policyCache,
+      );
+
+      mockFetch.mockResolvedValue(anthropicJsonResponse());
+      const response = await trackedFetch(ANTHROPIC_URL, {
+        method: "POST",
+        body: makeAnthropicBodyWithSystemPromptArray(),
+      });
+      expect(response.status).toBe(200);
     });
   });
 
@@ -3571,6 +3696,309 @@ describe("buildTrackedFetch", () => {
 
         expect(response.status).toBe(429);
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Nested tracking prevention (CX-3)
+  // -------------------------------------------------------------------------
+
+  describe("nested tracking prevention (CX-3)", () => {
+    it("inner trackedFetch passes through without double-counting", async () => {
+      const outerQueueCost = vi.fn();
+      const innerQueueCost = vi.fn();
+
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+
+      // Build inner fetch first — uses globalThis.fetch (mockFetch) as its doFetch
+      const innerFetch = buildTrackedFetch("openai", {}, innerQueueCost, null);
+
+      // Build outer fetch using innerFetch as its fetchFn — when outer calls
+      // doFetch it invokes innerFetch, which should detect the nesting context
+      // and pass through to raw fetch without tracking cost
+      const outerFetch = buildTrackedFetch("openai", {}, outerQueueCost, null, undefined, innerFetch);
+
+      const response = await outerFetch(OPENAI_URL, {
+        method: "POST",
+        body: makeOpenAIBody(),
+      });
+
+      expect(response.status).toBe(200);
+      // Outer should track cost
+      expect(outerQueueCost).toHaveBeenCalledTimes(1);
+      // Inner should NOT track cost (nested — passed through)
+      expect(innerQueueCost).not.toHaveBeenCalled();
+    });
+
+    it("independent (non-nested) calls both track costs", async () => {
+      const queueCost1 = vi.fn();
+      const queueCost2 = vi.fn();
+
+      const fetch1 = buildTrackedFetch("openai", {}, queueCost1, null);
+      const fetch2 = buildTrackedFetch("openai", {}, queueCost2, null);
+
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+
+      // Two independent calls — NOT nested
+      await fetch1(OPENAI_URL, { method: "POST", body: makeOpenAIBody() });
+
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+
+      await fetch2(OPENAI_URL, { method: "POST", body: makeOpenAIBody() });
+
+      // Both should track cost independently
+      expect(queueCost1).toHaveBeenCalledTimes(1);
+      expect(queueCost2).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Finalization reserve
+  // -------------------------------------------------------------------------
+
+  describe("finalize option", () => {
+    const PROXY_URL = "https://proxy.example.com";
+    const PROXY_REQUEST_URL = "https://proxy.example.com/v1/chat/completions";
+
+    it("finalize: true in proxy mode injects X-NullSpend-Finalize: 1 header", async () => {
+      const policyCache = createMockPolicyCache();
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+
+      const trackedFetch = buildTrackedFetch(
+        "openai",
+        { finalize: true },
+        queueCost,
+        policyCache,
+        PROXY_URL,
+      );
+
+      await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+
+      const callInit = mockFetch.mock.calls[0][1] as RequestInit;
+      const headers = new Headers(callInit.headers);
+      expect(headers.get("X-NullSpend-Finalize")).toBe("1");
+    });
+
+    it("finalize: false does NOT inject X-NullSpend-Finalize header", async () => {
+      const policyCache = createMockPolicyCache();
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+
+      const trackedFetch = buildTrackedFetch(
+        "openai",
+        { finalize: false },
+        queueCost,
+        policyCache,
+        PROXY_URL,
+      );
+
+      await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+
+      const callInit = mockFetch.mock.calls[0][1] as RequestInit;
+      const headers = new Headers(callInit.headers ?? {});
+      expect(headers.has("X-NullSpend-Finalize")).toBe(false);
+    });
+
+    it("finalize: undefined (default) does NOT inject X-NullSpend-Finalize header", async () => {
+      const policyCache = createMockPolicyCache();
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+
+      const trackedFetch = buildTrackedFetch(
+        "openai",
+        {},
+        queueCost,
+        policyCache,
+        PROXY_URL,
+      );
+
+      await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+
+      const callInit = mockFetch.mock.calls[0][1] as RequestInit;
+      const headers = new Headers(callInit.headers ?? {});
+      expect(headers.has("X-NullSpend-Finalize")).toBe(false);
+    });
+
+    it("budget_exceeded denial with finalization fields populates BudgetExceededError", async () => {
+      const policyCache = createMockPolicyCache();
+
+      const trackedFetch = buildTrackedFetch(
+        "openai",
+        { enforcement: true },
+        queueCost,
+        policyCache,
+        PROXY_URL,
+      );
+
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "budget_exceeded",
+          message: "Budget exceeded",
+          details: {
+            entity_type: "api_key",
+            entity_id: "key-1",
+            budget_limit_microdollars: 5_000_000,
+            budget_spend_microdollars: 4_900_000,
+            finalization_reserve_microdollars: 50_000,
+            finalization_remaining_microdollars: 50_000,
+          },
+        },
+      }, 429, DENIED_HEADERS));
+
+      try {
+        await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(BudgetExceededError);
+        const budgetErr = err as InstanceType<typeof BudgetExceededError>;
+        expect(budgetErr.finalizationReserveMicrodollars).toBe(50_000);
+        expect(budgetErr.finalizationRemainingMicrodollars).toBe(50_000);
+      }
+    });
+
+    it("budget_exceeded denial without finalization fields: fields are undefined (backward compat)", async () => {
+      const policyCache = createMockPolicyCache();
+
+      const trackedFetch = buildTrackedFetch(
+        "openai",
+        { enforcement: true },
+        queueCost,
+        policyCache,
+        PROXY_URL,
+      );
+
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "budget_exceeded",
+          message: "Budget exceeded",
+          details: {
+            entity_type: "api_key",
+            entity_id: "key-1",
+            budget_limit_microdollars: 5_000_000,
+            budget_spend_microdollars: 4_900_000,
+          },
+        },
+      }, 429, DENIED_HEADERS));
+
+      try {
+        await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(BudgetExceededError);
+        const budgetErr = err as InstanceType<typeof BudgetExceededError>;
+        expect(budgetErr.finalizationReserveMicrodollars).toBeUndefined();
+        expect(budgetErr.finalizationRemainingMicrodollars).toBeUndefined();
+      }
+    });
+
+    it("customer_budget_exceeded denial with finalization fields populates BudgetExceededError", async () => {
+      const policyCache = createMockPolicyCache();
+
+      const trackedFetch = buildTrackedFetch(
+        "openai",
+        { enforcement: true, customer: "acme-corp" },
+        queueCost,
+        policyCache,
+        PROXY_URL,
+      );
+
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "customer_budget_exceeded",
+          message: "Customer budget exceeded",
+          details: {
+            customer_id: "acme-corp",
+            budget_limit_microdollars: 1_000_000,
+            budget_spend_microdollars: 999_000,
+            finalization_reserve_microdollars: 10_000,
+            finalization_remaining_microdollars: 1_000,
+          },
+        },
+      }, 429, DENIED_HEADERS));
+
+      try {
+        await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(BudgetExceededError);
+        const budgetErr = err as InstanceType<typeof BudgetExceededError>;
+        expect(budgetErr.finalizationReserveMicrodollars).toBe(10_000);
+        expect(budgetErr.finalizationRemainingMicrodollars).toBe(1_000);
+      }
+    });
+
+    it("onDenied receives finalizationReserve and finalizationRemaining for budget_exceeded", async () => {
+      const policyCache = createMockPolicyCache();
+      const onDenied = vi.fn();
+
+      const trackedFetch = buildTrackedFetch(
+        "openai",
+        { enforcement: true, onDenied },
+        queueCost,
+        policyCache,
+        PROXY_URL,
+      );
+
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "budget_exceeded",
+          message: "Budget exceeded",
+          details: {
+            entity_type: "api_key",
+            entity_id: "key-1",
+            budget_limit_microdollars: 5_000_000,
+            budget_spend_microdollars: 4_900_000,
+            finalization_reserve_microdollars: 50_000,
+            finalization_remaining_microdollars: 50_000,
+          },
+        },
+      }, 429, DENIED_HEADERS));
+
+      await expect(
+        trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() }),
+      ).rejects.toThrow(BudgetExceededError);
+
+      expect(onDenied).toHaveBeenCalledTimes(1);
+      const reason = onDenied.mock.calls[0][0] as DenialReason;
+      expect(reason.type).toBe("budget");
+      if (reason.type === "budget") {
+        expect(reason.finalizationReserve).toBe(50_000);
+        expect(reason.finalizationRemaining).toBe(50_000);
+      }
+    });
+
+    it("finalize: true in direct mode passes finalize option to checkBudget", async () => {
+      const checkBudget = vi.fn().mockReturnValue({ allowed: true, remaining: 100_000 });
+      const policyCache = createMockPolicyCache({ checkBudget });
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+
+      const trackedFetch = buildTrackedFetch(
+        "openai",
+        { enforcement: true, finalize: true },
+        queueCost,
+        policyCache,
+      );
+
+      await trackedFetch(OPENAI_URL, { method: "POST", body: makeOpenAIBody() });
+
+      expect(checkBudget).toHaveBeenCalledTimes(1);
+      expect(checkBudget.mock.calls[0][1]).toEqual({ finalize: true });
+    });
+
+    it("finalize: false in direct mode passes finalize=false to checkBudget", async () => {
+      const checkBudget = vi.fn().mockReturnValue({ allowed: true, remaining: 100_000 });
+      const policyCache = createMockPolicyCache({ checkBudget });
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+
+      const trackedFetch = buildTrackedFetch(
+        "openai",
+        { enforcement: true, finalize: false },
+        queueCost,
+        policyCache,
+      );
+
+      await trackedFetch(OPENAI_URL, { method: "POST", body: makeOpenAIBody() });
+
+      expect(checkBudget).toHaveBeenCalledTimes(1);
+      expect(checkBudget.mock.calls[0][1]).toEqual({ finalize: false });
     });
   });
 });

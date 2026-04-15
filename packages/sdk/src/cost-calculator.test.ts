@@ -9,7 +9,7 @@ vi.mock("@nullspend/cost-engine", () => ({
   getModelPricing: vi.fn(),
   costComponent: vi.fn((tokens: number, rate: number) => {
     if (tokens <= 0 || rate <= 0) return 0;
-    return tokens * rate;
+    return (tokens * rate) / 1_000_000;
   }),
 }));
 
@@ -26,9 +26,9 @@ describe("calculateOpenAICostEvent — OpenAI", () => {
 
   it("calculates correct cost for a known model with pricing", () => {
     mockedGetModelPricing.mockReturnValue({
-      inputPerMTok: 2.5,
-      outputPerMTok: 10,
-      cachedInputPerMTok: 1.25,
+      inputPerMTok: 2_500_000,
+      outputPerMTok: 10_000_000,
+      cachedInputPerMTok: 1_250_000,
     } as ReturnType<typeof getModelPricing>);
 
     const result = calculateOpenAICostEvent(
@@ -68,9 +68,9 @@ describe("calculateOpenAICostEvent — OpenAI", () => {
 
   it("reduces input cost with cached tokens", () => {
     mockedGetModelPricing.mockReturnValue({
-      inputPerMTok: 2.5,
-      outputPerMTok: 10,
-      cachedInputPerMTok: 1.25,
+      inputPerMTok: 2_500_000,
+      outputPerMTok: 10_000_000,
+      cachedInputPerMTok: 1_250_000,
     } as ReturnType<typeof getModelPricing>);
 
     const result = calculateOpenAICostEvent(
@@ -85,7 +85,7 @@ describe("calculateOpenAICostEvent — OpenAI", () => {
     );
 
     // normalInputTokens = 1000 - 800 = 200
-    // costComponent called with (200, 2.5), (800, 1.25), (100, 10)
+    // costComponent called with (200, 2_500_000), (800, 1_250_000), (100, 10_000_000)
     expect(result.cachedInputTokens).toBe(800);
     expect(result.costBreakdown).toBeDefined();
     expect(result.costBreakdown!.cached).toBeGreaterThan(0);
@@ -93,9 +93,9 @@ describe("calculateOpenAICostEvent — OpenAI", () => {
 
   it("tracks reasoning tokens as subset of output", () => {
     mockedGetModelPricing.mockReturnValue({
-      inputPerMTok: 15,
-      outputPerMTok: 60,
-      cachedInputPerMTok: 7.5,
+      inputPerMTok: 15_000_000,
+      outputPerMTok: 60_000_000,
+      cachedInputPerMTok: 7_500_000,
     } as ReturnType<typeof getModelPricing>);
 
     const result = calculateOpenAICostEvent(
@@ -116,9 +116,9 @@ describe("calculateOpenAICostEvent — OpenAI", () => {
 
   it("handles zero tokens with zero cost", () => {
     mockedGetModelPricing.mockReturnValue({
-      inputPerMTok: 2.5,
-      outputPerMTok: 10,
-      cachedInputPerMTok: 1.25,
+      inputPerMTok: 2_500_000,
+      outputPerMTok: 10_000_000,
+      cachedInputPerMTok: 1_250_000,
     } as ReturnType<typeof getModelPricing>);
 
     const result = calculateOpenAICostEvent(
@@ -155,9 +155,9 @@ describe("calculateOpenAICostEvent — OpenAI", () => {
   it("distributes rounding residual to largest component", () => {
     // Construct a scenario where rounding creates a residual
     mockedGetModelPricing.mockReturnValue({
-      inputPerMTok: 3,
-      outputPerMTok: 7,
-      cachedInputPerMTok: 1,
+      inputPerMTok: 3_000_000,
+      outputPerMTok: 7_000_000,
+      cachedInputPerMTok: 1_000_000,
     } as ReturnType<typeof getModelPricing>);
 
     // costComponent mock: input=300*3=900, cached=0, output=100*7=700
@@ -187,9 +187,9 @@ describe("calculateOpenAICostEvent — OpenAI", () => {
 
   it("does not include reasoning in costBreakdown when reasoningTokens is 0", () => {
     mockedGetModelPricing.mockReturnValue({
-      inputPerMTok: 2.5,
-      outputPerMTok: 10,
-      cachedInputPerMTok: 1.25,
+      inputPerMTok: 2_500_000,
+      outputPerMTok: 10_000_000,
+      cachedInputPerMTok: 1_250_000,
     } as ReturnType<typeof getModelPricing>);
 
     const result = calculateOpenAICostEvent(
@@ -215,10 +215,10 @@ describe("calculateAnthropicCostEvent — Anthropic", () => {
 
   it("calculates correct cost for a known model", () => {
     mockedGetModelPricing.mockReturnValue({
-      inputPerMTok: 3,
-      outputPerMTok: 15,
-      cachedInputPerMTok: 0.3,
-      cacheWrite5mPerMTok: 3.75,
+      inputPerMTok: 3_000_000,
+      outputPerMTok: 15_000_000,
+      cachedInputPerMTok: 300_000,
+      cacheWrite5mPerMTok: 3_750_000,
       cacheWrite1hPerMTok: undefined,
     } as unknown as ReturnType<typeof getModelPricing>);
 
@@ -241,11 +241,11 @@ describe("calculateAnthropicCostEvent — Anthropic", () => {
 
   it("calculates cache write cost with TTL detail (ephemeral breakdown)", () => {
     mockedGetModelPricing.mockReturnValue({
-      inputPerMTok: 3,
-      outputPerMTok: 15,
-      cachedInputPerMTok: 0.3,
-      cacheWrite5mPerMTok: 3.75,
-      cacheWrite1hPerMTok: 30,
+      inputPerMTok: 3_000_000,
+      outputPerMTok: 15_000_000,
+      cachedInputPerMTok: 300_000,
+      cacheWrite5mPerMTok: 3_750_000,
+      cacheWrite1hPerMTok: 30_000_000,
     } as unknown as ReturnType<typeof getModelPricing>);
 
     const usage = {
@@ -276,11 +276,11 @@ describe("calculateAnthropicCostEvent — Anthropic", () => {
 
   it("defaults to 5m rate when cache detail is absent", () => {
     mockedGetModelPricing.mockReturnValue({
-      inputPerMTok: 3,
-      outputPerMTok: 15,
-      cachedInputPerMTok: 0.3,
-      cacheWrite5mPerMTok: 3.75,
-      cacheWrite1hPerMTok: 30,
+      inputPerMTok: 3_000_000,
+      outputPerMTok: 15_000_000,
+      cachedInputPerMTok: 300_000,
+      cacheWrite5mPerMTok: 3_750_000,
+      cacheWrite1hPerMTok: 30_000_000,
     } as unknown as ReturnType<typeof getModelPricing>);
 
     const usage = {
@@ -299,17 +299,17 @@ describe("calculateAnthropicCostEvent — Anthropic", () => {
 
     // Without detail, uses cacheWrite5mRate for all cache_creation_input_tokens
     expect(result.costMicrodollars).toBeGreaterThan(0);
-    // costComponent should have been called with (200, 3.75) for cache write
-    expect(costComponent).toHaveBeenCalledWith(200, 3.75);
+    // costComponent should have been called with (200, 3_750_000) for cache write
+    expect(costComponent).toHaveBeenCalledWith(200, 3_750_000);
   });
 
   it("doubles input rates and 1.5x output for long context (>200K tokens)", () => {
     mockedGetModelPricing.mockReturnValue({
-      inputPerMTok: 3,
-      outputPerMTok: 15,
-      cachedInputPerMTok: 0.3,
-      cacheWrite5mPerMTok: 3.75,
-      cacheWrite1hPerMTok: 30,
+      inputPerMTok: 3_000_000,
+      outputPerMTok: 15_000_000,
+      cachedInputPerMTok: 300_000,
+      cacheWrite5mPerMTok: 3_750_000,
+      cacheWrite1hPerMTok: 30_000_000,
     } as unknown as ReturnType<typeof getModelPricing>);
 
     const usage = {
@@ -326,16 +326,16 @@ describe("calculateAnthropicCostEvent — Anthropic", () => {
     );
 
     // totalInputTokens = 210000, > 200K so long context
-    // inputRate = 3 * 2 = 6, outputRate = 15 * 1.5 = 22.5
-    expect(costComponent).toHaveBeenCalledWith(210_000, 6); // doubled input
-    expect(costComponent).toHaveBeenCalledWith(1000, 22.5); // 1.5x output
+    // inputRate = 3_000_000 * 2 = 6_000_000, outputRate = 15_000_000 * 1.5 = 22_500_000
+    expect(costComponent).toHaveBeenCalledWith(210_000, 6_000_000); // doubled input
+    expect(costComponent).toHaveBeenCalledWith(1000, 22_500_000); // 1.5x output
   });
 
   it("handles zero tokens with zero cost", () => {
     mockedGetModelPricing.mockReturnValue({
-      inputPerMTok: 3,
-      outputPerMTok: 15,
-      cachedInputPerMTok: 0.3,
+      inputPerMTok: 3_000_000,
+      outputPerMTok: 15_000_000,
+      cachedInputPerMTok: 300_000,
     } as unknown as ReturnType<typeof getModelPricing>);
 
     const result = calculateAnthropicCostEvent(

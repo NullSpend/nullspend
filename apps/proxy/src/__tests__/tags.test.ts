@@ -1,9 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+const mockEmitMetric = vi.fn();
+vi.mock("../lib/metrics.js", () => ({
+  emitMetric: (...args: unknown[]) => mockEmitMetric(...args),
+}));
+
 import { parseTags, mergeTags } from "../lib/tags.js";
 
 describe("parseTags", () => {
   beforeEach(() => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockEmitMetric.mockClear();
   });
 
   it("returns empty object for null header", () => {
@@ -112,11 +119,49 @@ describe("parseTags", () => {
     const result = parseTags('{"_n":"ok","_ns":"ok","_ns_bad":"no","ns_ok":"ok"}');
     expect(result).toEqual({ _n: "ok", _ns: "ok", ns_ok: "ok" });
   });
+
+  // CX-4: observability metrics for malformed tag headers
+  it("CX-4: emits tags_header_malformed metric with reason invalid_json on bad JSON", () => {
+    parseTags("{not json}");
+    expect(mockEmitMetric).toHaveBeenCalledWith("tags_header_malformed", { reason: "invalid_json" });
+  });
+
+  it("CX-4: emits tags_header_malformed metric with reason not_object for array", () => {
+    parseTags('["a","b"]');
+    expect(mockEmitMetric).toHaveBeenCalledWith("tags_header_malformed", { reason: "not_object" });
+  });
+
+  it("CX-4: emits tags_header_malformed metric with reason not_object for string primitive", () => {
+    parseTags('"hello"');
+    expect(mockEmitMetric).toHaveBeenCalledWith("tags_header_malformed", { reason: "not_object" });
+  });
+
+  it("CX-4: emits tags_header_malformed metric with reason not_object for number primitive", () => {
+    parseTags("42");
+    expect(mockEmitMetric).toHaveBeenCalledWith("tags_header_malformed", { reason: "not_object" });
+  });
+
+  it("CX-4: emits tags_header_malformed metric with reason not_object for boolean primitive", () => {
+    parseTags("true");
+    expect(mockEmitMetric).toHaveBeenCalledWith("tags_header_malformed", { reason: "not_object" });
+  });
+
+  it("CX-4: does not emit metric for null or empty header", () => {
+    parseTags(null);
+    parseTags("");
+    expect(mockEmitMetric).not.toHaveBeenCalled();
+  });
+
+  it("CX-4: does not emit metric for valid JSON object with dropped entries", () => {
+    parseTags('{"valid":"ok","invalid key":"no"}');
+    expect(mockEmitMetric).not.toHaveBeenCalledWith("tags_header_malformed", expect.anything());
+  });
 });
 
 describe("mergeTags", () => {
   beforeEach(() => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockEmitMetric.mockClear();
   });
 
   it("returns request tags only when defaults are empty", () => {

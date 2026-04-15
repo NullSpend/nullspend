@@ -20,6 +20,7 @@ export interface RequestContext {
   requestStartMs: number;       // performance.now() at request entry
   stepTiming?: StepTiming;      // per-step latency for Server-Timing header
   requestLoggingEnabled: boolean; // pro/enterprise tier — enables R2 body capture
+  finalize: boolean;             // from x-nullspend-finalize: "1" — unlocks finalization reserve
 }
 
 export type RouteHandler = (

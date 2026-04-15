@@ -34,16 +34,32 @@ export function getAllPricing(): Readonly<Record<string, ModelPricing>> {
 }
 
 /**
+ * Scale factor for pricing rates stored in pricing-data.json.
+ *
+ * Rates are stored as **integer microdollars per million tokens** (µ$/MTok).
+ * Example: $2.50/MTok → 2,500,000 µ$/MTok.
+ *
+ * This eliminates IEEE 754 float imprecision in the multiplication step:
+ * `tokens * intRate` is exact (integer × integer), and the single division
+ * by RATE_SCALE introduces at most 1 ULP of error.
+ */
+export const RATE_SCALE = 1_000_000;
+
+/**
  * Compute a single cost component in **unrounded microdollars** (float).
  *
- * Dimensional analysis:
- *   tokens × ($/MTok) = tokens × ($ / 10^6 tokens) × 10^6 µ$/$ = microdollars
+ * Pricing rates are integer µ$/MTok (see {@link RATE_SCALE}). The formula:
+ *   microdollars = tokens × rateMicroPerMTok / RATE_SCALE
  *
- * The caller sums all components and calls `Math.round()` once to get the
- * final integer microdollar value. Rounding once at the end avoids
- * accumulating per-component rounding errors.
+ * The multiplication `tokens × rate` is exact (both integers), and the
+ * single division introduces at most 1 ULP of error. The caller sums all
+ * components and calls `Math.round()` once to get the final integer
+ * microdollar value.
+ *
+ * Overflow safety: 10M tokens × 180,000,000 µ$/MTok = 1.8×10¹⁵, within
+ * Number.MAX_SAFE_INTEGER (9×10¹⁵).
  */
-export function costComponent(tokens: number, ratePerMTok: number): number {
-  if (tokens <= 0 || ratePerMTok <= 0) return 0;
-  return tokens * ratePerMTok;
+export function costComponent(tokens: number, rateMicroPerMTok: number): number {
+  if (tokens <= 0 || rateMicroPerMTok <= 0) return 0;
+  return (tokens * rateMicroPerMTok) / RATE_SCALE;
 }

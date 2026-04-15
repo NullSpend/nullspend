@@ -98,6 +98,7 @@ Open the [NullSpend dashboard](https://nullspend.dev/app/analytics). Cost events
 - **[Add tags](../features/tags.md)** — Attribute costs to teams or features with the [`X-NullSpend-Tags`](../api-reference/custom-headers.md#x-nullspend-tags) header.
 - **[Configure webhooks](../webhooks/overview.md)** — Get notified on cost events, budget thresholds, and velocity alerts.
 - **Anthropic too?** — [Anthropic Quickstart](anthropic.md)
+- **Google Gemini?** — [Gemini Quickstart](gemini.md)
 - **Claude Agent SDK?** — [Claude Code Quickstart](claude-code.md)
 
 ## Troubleshooting

@@ -1,281 +1,326 @@
 {
   "openai/gpt-5.4": {
-    "inputPerMTok": 2.50,
-    "cachedInputPerMTok": 0.25,
-    "outputPerMTok": 15.00
+    "inputPerMTok": 2500000,
+    "cachedInputPerMTok": 250000,
+    "outputPerMTok": 15000000
   },
   "openai/gpt-5.4-mini": {
-    "inputPerMTok": 0.75,
-    "cachedInputPerMTok": 0.075,
-    "outputPerMTok": 4.50
+    "inputPerMTok": 750000,
+    "cachedInputPerMTok": 75000,
+    "outputPerMTok": 4500000
   },
   "openai/gpt-5.4-nano": {
-    "inputPerMTok": 0.20,
-    "cachedInputPerMTok": 0.02,
-    "outputPerMTok": 1.25
+    "inputPerMTok": 200000,
+    "cachedInputPerMTok": 20000,
+    "outputPerMTok": 1250000
   },
   "openai/gpt-5.4-pro": {
-    "inputPerMTok": 30.00,
-    "cachedInputPerMTok": 30.00,
-    "outputPerMTok": 180.00
+    "inputPerMTok": 30000000,
+    "cachedInputPerMTok": 30000000,
+    "outputPerMTok": 180000000
   },
-  "openai/gpt-5.3-chat-latest": {
-    "inputPerMTok": 1.75,
-    "cachedInputPerMTok": 0.175,
-    "outputPerMTok": 14.00
+  "openai/gpt-5.2-pro": {
+    "inputPerMTok": 21000000,
+    "cachedInputPerMTok": 21000000,
+    "outputPerMTok": 168000000
   },
-  "openai/gpt-5.3-codex": {
-    "inputPerMTok": 1.75,
-    "cachedInputPerMTok": 0.175,
-    "outputPerMTok": 14.00
+  "openai/gpt-5-pro": {
+    "inputPerMTok": 15000000,
+    "cachedInputPerMTok": 15000000,
+    "outputPerMTok": 120000000
   },
   "openai/o3-deep-research": {
-    "inputPerMTok": 5.00,
-    "cachedInputPerMTok": 5.00,
-    "outputPerMTok": 20.00
+    "inputPerMTok": 10000000,
+    "cachedInputPerMTok": 2500000,
+    "outputPerMTok": 40000000
   },
   "openai/o4-mini-deep-research": {
-    "inputPerMTok": 1.00,
-    "cachedInputPerMTok": 1.00,
-    "outputPerMTok": 4.00
+    "inputPerMTok": 2000000,
+    "cachedInputPerMTok": 500000,
+    "outputPerMTok": 8000000
   },
   "openai/computer-use-preview": {
-    "inputPerMTok": 1.50,
-    "cachedInputPerMTok": 1.50,
-    "outputPerMTok": 6.00
+    "inputPerMTok": 3000000,
+    "cachedInputPerMTok": 3000000,
+    "outputPerMTok": 12000000
+  },
+  "openai/o3-pro": {
+    "inputPerMTok": 20000000,
+    "cachedInputPerMTok": 20000000,
+    "outputPerMTok": 80000000
+  },
+  "openai/o1-pro": {
+    "inputPerMTok": 150000000,
+    "cachedInputPerMTok": 150000000,
+    "outputPerMTok": 600000000
+  },
+  "openai/o1-mini": {
+    "inputPerMTok": 1100000,
+    "cachedInputPerMTok": 550000,
+    "outputPerMTok": 4400000
   },
   "openai/gpt-4o": {
-    "inputPerMTok": 2.50,
-    "cachedInputPerMTok": 1.25,
-    "outputPerMTok": 10.00
+    "inputPerMTok": 2500000,
+    "cachedInputPerMTok": 1250000,
+    "outputPerMTok": 10000000
   },
   "openai/gpt-4o-mini": {
-    "inputPerMTok": 0.15,
-    "cachedInputPerMTok": 0.075,
-    "outputPerMTok": 0.60
+    "inputPerMTok": 150000,
+    "cachedInputPerMTok": 75000,
+    "outputPerMTok": 600000
   },
   "openai/gpt-4.1": {
-    "inputPerMTok": 2.00,
-    "cachedInputPerMTok": 0.50,
-    "outputPerMTok": 8.00
+    "inputPerMTok": 2000000,
+    "cachedInputPerMTok": 500000,
+    "outputPerMTok": 8000000
   },
   "openai/gpt-4.1-mini": {
-    "inputPerMTok": 0.40,
-    "cachedInputPerMTok": 0.10,
-    "outputPerMTok": 1.60
+    "inputPerMTok": 400000,
+    "cachedInputPerMTok": 100000,
+    "outputPerMTok": 1600000
   },
   "openai/gpt-4.1-nano": {
-    "inputPerMTok": 0.10,
-    "cachedInputPerMTok": 0.025,
-    "outputPerMTok": 0.40
+    "inputPerMTok": 100000,
+    "cachedInputPerMTok": 25000,
+    "outputPerMTok": 400000
   },
   "openai/o4-mini": {
-    "inputPerMTok": 1.10,
-    "cachedInputPerMTok": 0.275,
-    "outputPerMTok": 4.40
+    "inputPerMTok": 1100000,
+    "cachedInputPerMTok": 275000,
+    "outputPerMTok": 4400000
   },
   "openai/o3": {
-    "inputPerMTok": 2.00,
-    "cachedInputPerMTok": 0.50,
-    "outputPerMTok": 8.00
+    "inputPerMTok": 2000000,
+    "cachedInputPerMTok": 500000,
+    "outputPerMTok": 8000000
   },
   "openai/o3-mini": {
-    "inputPerMTok": 1.10,
-    "cachedInputPerMTok": 0.55,
-    "outputPerMTok": 4.40
+    "inputPerMTok": 1100000,
+    "cachedInputPerMTok": 550000,
+    "outputPerMTok": 4400000
   },
   "openai/o1": {
-    "inputPerMTok": 15.00,
-    "cachedInputPerMTok": 7.50,
-    "outputPerMTok": 60.00
+    "inputPerMTok": 15000000,
+    "cachedInputPerMTok": 7500000,
+    "outputPerMTok": 60000000
   },
   "openai/gpt-5": {
-    "inputPerMTok": 1.25,
-    "cachedInputPerMTok": 0.125,
-    "outputPerMTok": 10.00
+    "inputPerMTok": 1250000,
+    "cachedInputPerMTok": 125000,
+    "outputPerMTok": 10000000
   },
   "openai/gpt-5-mini": {
-    "inputPerMTok": 0.25,
-    "cachedInputPerMTok": 0.025,
-    "outputPerMTok": 2.00
+    "inputPerMTok": 250000,
+    "cachedInputPerMTok": 25000,
+    "outputPerMTok": 2000000
   },
   "openai/gpt-5-nano": {
-    "inputPerMTok": 0.05,
-    "cachedInputPerMTok": 0.005,
-    "outputPerMTok": 0.40
+    "inputPerMTok": 50000,
+    "cachedInputPerMTok": 5000,
+    "outputPerMTok": 400000
   },
   "openai/gpt-5.1": {
-    "inputPerMTok": 1.25,
-    "cachedInputPerMTok": 0.125,
-    "outputPerMTok": 10.00
+    "inputPerMTok": 1250000,
+    "cachedInputPerMTok": 125000,
+    "outputPerMTok": 10000000
   },
   "openai/gpt-5.2": {
-    "inputPerMTok": 1.75,
-    "cachedInputPerMTok": 0.175,
-    "outputPerMTok": 14.00
+    "inputPerMTok": 1750000,
+    "cachedInputPerMTok": 175000,
+    "outputPerMTok": 14000000
   },
   "anthropic/claude-sonnet-4-6": {
-    "inputPerMTok": 3.00,
-    "cachedInputPerMTok": 0.30,
-    "cacheWrite5mPerMTok": 3.75,
-    "cacheWrite1hPerMTok": 6.00,
-    "outputPerMTok": 15.00
+    "inputPerMTok": 3000000,
+    "cachedInputPerMTok": 300000,
+    "cacheWrite5mPerMTok": 3750000,
+    "cacheWrite1hPerMTok": 6000000,
+    "outputPerMTok": 15000000
   },
   "anthropic/claude-haiku-3.5": {
-    "inputPerMTok": 0.80,
-    "cachedInputPerMTok": 0.08,
-    "cacheWrite5mPerMTok": 1.00,
-    "cacheWrite1hPerMTok": 1.60,
-    "outputPerMTok": 4.00
+    "inputPerMTok": 800000,
+    "cachedInputPerMTok": 80000,
+    "cacheWrite5mPerMTok": 1000000,
+    "cacheWrite1hPerMTok": 1600000,
+    "outputPerMTok": 4000000
   },
   "anthropic/claude-opus-4": {
-    "inputPerMTok": 15.00,
-    "cachedInputPerMTok": 1.50,
-    "cacheWrite5mPerMTok": 18.75,
-    "cacheWrite1hPerMTok": 30.00,
-    "outputPerMTok": 75.00
+    "inputPerMTok": 15000000,
+    "cachedInputPerMTok": 1500000,
+    "cacheWrite5mPerMTok": 18750000,
+    "cacheWrite1hPerMTok": 30000000,
+    "outputPerMTok": 75000000
   },
   "anthropic/claude-opus-4-6": {
-    "inputPerMTok": 5.00,
-    "cachedInputPerMTok": 0.50,
-    "cacheWrite5mPerMTok": 6.25,
-    "cacheWrite1hPerMTok": 10.00,
-    "outputPerMTok": 25.00
+    "inputPerMTok": 5000000,
+    "cachedInputPerMTok": 500000,
+    "cacheWrite5mPerMTok": 6250000,
+    "cacheWrite1hPerMTok": 10000000,
+    "outputPerMTok": 25000000
   },
   "anthropic/claude-sonnet-4-5": {
-    "inputPerMTok": 3.00,
-    "cachedInputPerMTok": 0.30,
-    "cacheWrite5mPerMTok": 3.75,
-    "cacheWrite1hPerMTok": 6.00,
-    "outputPerMTok": 15.00
+    "inputPerMTok": 3000000,
+    "cachedInputPerMTok": 300000,
+    "cacheWrite5mPerMTok": 3750000,
+    "cacheWrite1hPerMTok": 6000000,
+    "outputPerMTok": 15000000
   },
   "anthropic/claude-opus-4-5": {
-    "inputPerMTok": 5.00,
-    "cachedInputPerMTok": 0.50,
-    "cacheWrite5mPerMTok": 6.25,
-    "cacheWrite1hPerMTok": 10.00,
-    "outputPerMTok": 25.00
+    "inputPerMTok": 5000000,
+    "cachedInputPerMTok": 500000,
+    "cacheWrite5mPerMTok": 6250000,
+    "cacheWrite1hPerMTok": 10000000,
+    "outputPerMTok": 25000000
   },
   "anthropic/claude-opus-4-1": {
-    "inputPerMTok": 15.00,
-    "cachedInputPerMTok": 1.50,
-    "cacheWrite5mPerMTok": 18.75,
-    "cacheWrite1hPerMTok": 30.00,
-    "outputPerMTok": 75.00
+    "inputPerMTok": 15000000,
+    "cachedInputPerMTok": 1500000,
+    "cacheWrite5mPerMTok": 18750000,
+    "cacheWrite1hPerMTok": 30000000,
+    "outputPerMTok": 75000000
   },
   "anthropic/claude-sonnet-4": {
-    "inputPerMTok": 3.00,
-    "cachedInputPerMTok": 0.30,
-    "cacheWrite5mPerMTok": 3.75,
-    "cacheWrite1hPerMTok": 6.00,
-    "outputPerMTok": 15.00
+    "inputPerMTok": 3000000,
+    "cachedInputPerMTok": 300000,
+    "cacheWrite5mPerMTok": 3750000,
+    "cacheWrite1hPerMTok": 6000000,
+    "outputPerMTok": 15000000
   },
   "anthropic/claude-haiku-4-5": {
-    "inputPerMTok": 1.00,
-    "cachedInputPerMTok": 0.10,
-    "cacheWrite5mPerMTok": 1.25,
-    "cacheWrite1hPerMTok": 2.00,
-    "outputPerMTok": 5.00
+    "inputPerMTok": 1000000,
+    "cachedInputPerMTok": 100000,
+    "cacheWrite5mPerMTok": 1250000,
+    "cacheWrite1hPerMTok": 2000000,
+    "outputPerMTok": 5000000
   },
   "anthropic/claude-haiku-3": {
-    "inputPerMTok": 0.25,
-    "cachedInputPerMTok": 0.03,
-    "cacheWrite5mPerMTok": 0.30,
-    "cacheWrite1hPerMTok": 0.50,
-    "outputPerMTok": 1.25
+    "inputPerMTok": 250000,
+    "cachedInputPerMTok": 30000,
+    "cacheWrite5mPerMTok": 300000,
+    "cacheWrite1hPerMTok": 500000,
+    "outputPerMTok": 1250000
   },
   "anthropic/claude-opus-4-6-20260205": {
-    "inputPerMTok": 5.00,
-    "cachedInputPerMTok": 0.50,
-    "cacheWrite5mPerMTok": 6.25,
-    "cacheWrite1hPerMTok": 10.00,
-    "outputPerMTok": 25.00
+    "inputPerMTok": 5000000,
+    "cachedInputPerMTok": 500000,
+    "cacheWrite5mPerMTok": 6250000,
+    "cacheWrite1hPerMTok": 10000000,
+    "outputPerMTok": 25000000
   },
   "anthropic/claude-sonnet-4-6-20260217": {
-    "inputPerMTok": 3.00,
-    "cachedInputPerMTok": 0.30,
-    "cacheWrite5mPerMTok": 3.75,
-    "cacheWrite1hPerMTok": 6.00,
-    "outputPerMTok": 15.00
+    "inputPerMTok": 3000000,
+    "cachedInputPerMTok": 300000,
+    "cacheWrite5mPerMTok": 3750000,
+    "cacheWrite1hPerMTok": 6000000,
+    "outputPerMTok": 15000000
   },
   "anthropic/claude-sonnet-4-5-20250929": {
-    "inputPerMTok": 3.00,
-    "cachedInputPerMTok": 0.30,
-    "cacheWrite5mPerMTok": 3.75,
-    "cacheWrite1hPerMTok": 6.00,
-    "outputPerMTok": 15.00
+    "inputPerMTok": 3000000,
+    "cachedInputPerMTok": 300000,
+    "cacheWrite5mPerMTok": 3750000,
+    "cacheWrite1hPerMTok": 6000000,
+    "outputPerMTok": 15000000
   },
   "anthropic/claude-opus-4-5-20251101": {
-    "inputPerMTok": 5.00,
-    "cachedInputPerMTok": 0.50,
-    "cacheWrite5mPerMTok": 6.25,
-    "cacheWrite1hPerMTok": 10.00,
-    "outputPerMTok": 25.00
+    "inputPerMTok": 5000000,
+    "cachedInputPerMTok": 500000,
+    "cacheWrite5mPerMTok": 6250000,
+    "cacheWrite1hPerMTok": 10000000,
+    "outputPerMTok": 25000000
   },
   "anthropic/claude-haiku-4-5-20251001": {
-    "inputPerMTok": 1.00,
-    "cachedInputPerMTok": 0.10,
-    "cacheWrite5mPerMTok": 1.25,
-    "cacheWrite1hPerMTok": 2.00,
-    "outputPerMTok": 5.00
+    "inputPerMTok": 1000000,
+    "cachedInputPerMTok": 100000,
+    "cacheWrite5mPerMTok": 1250000,
+    "cacheWrite1hPerMTok": 2000000,
+    "outputPerMTok": 5000000
   },
   "anthropic/claude-opus-4-1-20250805": {
-    "inputPerMTok": 15.00,
-    "cachedInputPerMTok": 1.50,
-    "cacheWrite5mPerMTok": 18.75,
-    "cacheWrite1hPerMTok": 30.00,
-    "outputPerMTok": 75.00
+    "inputPerMTok": 15000000,
+    "cachedInputPerMTok": 1500000,
+    "cacheWrite5mPerMTok": 18750000,
+    "cacheWrite1hPerMTok": 30000000,
+    "outputPerMTok": 75000000
   },
   "anthropic/claude-opus-4-20250514": {
-    "inputPerMTok": 15.00,
-    "cachedInputPerMTok": 1.50,
-    "cacheWrite5mPerMTok": 18.75,
-    "cacheWrite1hPerMTok": 30.00,
-    "outputPerMTok": 75.00
+    "inputPerMTok": 15000000,
+    "cachedInputPerMTok": 1500000,
+    "cacheWrite5mPerMTok": 18750000,
+    "cacheWrite1hPerMTok": 30000000,
+    "outputPerMTok": 75000000
   },
   "anthropic/claude-sonnet-4-20250514": {
-    "inputPerMTok": 3.00,
-    "cachedInputPerMTok": 0.30,
-    "cacheWrite5mPerMTok": 3.75,
-    "cacheWrite1hPerMTok": 6.00,
-    "outputPerMTok": 15.00
+    "inputPerMTok": 3000000,
+    "cachedInputPerMTok": 300000,
+    "cacheWrite5mPerMTok": 3750000,
+    "cacheWrite1hPerMTok": 6000000,
+    "outputPerMTok": 15000000
   },
   "anthropic/claude-3-5-haiku-20241022": {
-    "inputPerMTok": 0.80,
-    "cachedInputPerMTok": 0.08,
-    "cacheWrite5mPerMTok": 1.00,
-    "cacheWrite1hPerMTok": 1.60,
-    "outputPerMTok": 4.00
+    "inputPerMTok": 800000,
+    "cachedInputPerMTok": 80000,
+    "cacheWrite5mPerMTok": 1000000,
+    "cacheWrite1hPerMTok": 1600000,
+    "outputPerMTok": 4000000
   },
   "anthropic/claude-3-haiku-20240307": {
-    "inputPerMTok": 0.25,
-    "cachedInputPerMTok": 0.03,
-    "cacheWrite5mPerMTok": 0.30,
-    "cacheWrite1hPerMTok": 0.50,
-    "outputPerMTok": 1.25
+    "inputPerMTok": 250000,
+    "cachedInputPerMTok": 30000,
+    "cacheWrite5mPerMTok": 300000,
+    "cacheWrite1hPerMTok": 500000,
+    "outputPerMTok": 1250000
   },
   "anthropic/claude-opus-4-0": {
-    "inputPerMTok": 15.00,
-    "cachedInputPerMTok": 1.50,
-    "cacheWrite5mPerMTok": 18.75,
-    "cacheWrite1hPerMTok": 30.00,
-    "outputPerMTok": 75.00
+    "inputPerMTok": 15000000,
+    "cachedInputPerMTok": 1500000,
+    "cacheWrite5mPerMTok": 18750000,
+    "cacheWrite1hPerMTok": 30000000,
+    "outputPerMTok": 75000000
   },
   "anthropic/claude-sonnet-4-0": {
-    "inputPerMTok": 3.00,
-    "cachedInputPerMTok": 0.30,
-    "cacheWrite5mPerMTok": 3.75,
-    "cacheWrite1hPerMTok": 6.00,
-    "outputPerMTok": 15.00
+    "inputPerMTok": 3000000,
+    "cachedInputPerMTok": 300000,
+    "cacheWrite5mPerMTok": 3750000,
+    "cacheWrite1hPerMTok": 6000000,
+    "outputPerMTok": 15000000
   },
   "google/gemini-2.5-pro": {
-    "inputPerMTok": 1.25,
-    "cachedInputPerMTok": 0.3125,
-    "outputPerMTok": 10.00
+    "inputPerMTok": 1250000,
+    "cachedInputPerMTok": 125000,
+    "outputPerMTok": 10000000
   },
   "google/gemini-2.5-flash": {
-    "inputPerMTok": 0.15,
-    "cachedInputPerMTok": 0.0375,
-    "outputPerMTok": 0.60
+    "inputPerMTok": 300000,
+    "cachedInputPerMTok": 30000,
+    "outputPerMTok": 2500000
+  },
+  "google/gemini-2.5-flash-lite": {
+    "inputPerMTok": 100000,
+    "cachedInputPerMTok": 10000,
+    "outputPerMTok": 400000
+  },
+  "google/gemini-2.0-flash": {
+    "inputPerMTok": 100000,
+    "cachedInputPerMTok": 25000,
+    "outputPerMTok": 400000
+  },
+  "google/gemini-2.0-flash-lite": {
+    "inputPerMTok": 75000,
+    "cachedInputPerMTok": 0,
+    "outputPerMTok": 300000
+  },
+  "google/gemini-3-flash-preview": {
+    "inputPerMTok": 500000,
+    "cachedInputPerMTok": 50000,
+    "outputPerMTok": 3000000
+  },
+  "google/gemini-3.1-pro-preview": {
+    "inputPerMTok": 2000000,
+    "cachedInputPerMTok": 200000,
+    "outputPerMTok": 12000000
+  },
+  "google/gemini-3.1-flash-lite-preview": {
+    "inputPerMTok": 250000,
+    "cachedInputPerMTok": 25000,
+    "outputPerMTok": 1500000
   }
 }

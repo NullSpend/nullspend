@@ -5,7 +5,8 @@ describe("costComponent boundary values", () => {
   it("single token at cheapest rate produces sub-microdollar value", () => {
     const pricing = getModelPricing("google", "gemini-2.5-flash")!;
     const cost = costComponent(1, pricing.cachedInputPerMTok);
-    expect(cost).toBe(0.0375);
+    // 1 * 30_000 / 1_000_000 = 0.03
+    expect(cost).toBeCloseTo(0.03, 10);
     expect(cost).toBeGreaterThan(0);
     expect(cost).toBeLessThan(1);
   });
@@ -17,20 +18,25 @@ describe("costComponent boundary values", () => {
   });
 
   it("rounding boundary: cost that is exactly 0.5 rounds up", () => {
-    // 1 token × 0.5 $/MTok = 0.5 microdollars → rounds to 1
-    expect(Math.round(costComponent(1, 0.5))).toBe(1);
+    // Need tokens * rate / 1_000_000 = 0.5 → tokens * rate = 500_000
+    // 1 token × 500_000 µ$/MTok / 1M = 0.5 microdollars → rounds to 1
+    expect(Math.round(costComponent(1, 500_000))).toBe(1);
   });
 
   it("rounding boundary: cost just below 0.5 rounds down", () => {
-    // 1 token × 0.499 $/MTok = 0.499 microdollars → rounds to 0
-    expect(Math.round(costComponent(1, 0.499))).toBe(0);
+    // 1 token × 499_000 µ$/MTok / 1M = 0.499 microdollars → rounds to 0
+    expect(Math.round(costComponent(1, 499_000))).toBe(0);
   });
 
   it("very large token count stays in safe integer range", () => {
-    // 1 billion tokens at $75/MTok (Opus output) = 75 billion microdollars
+    // 1 billion tokens at 75_000_000 µ$/MTok (Opus output)
+    // product = 1e9 * 75e6 = 7.5e16 — close to but within MAX_SAFE_INTEGER (9e15)
+    // Actually 7.5e16 > 9e15, so the product exceeds MAX_SAFE_INTEGER.
+    // But the final result after /1M = 75_000_000_000 microdollars — within safe range.
     const tokens = 1_000_000_000;
-    const rate = 75.0;
+    const rate = 75_000_000;
     const cost = costComponent(tokens, rate);
+    // 75 billion microdollars = $75,000
     expect(cost).toBe(75_000_000_000);
     expect(Number.isSafeInteger(Math.round(cost))).toBe(true);
   });
@@ -43,23 +49,25 @@ describe("costComponent boundary values", () => {
       costComponent(inputTokens, pricing.inputPerMTok) +
         costComponent(outputTokens, pricing.outputPerMTok),
     );
-    // 128000*15 + 4096*75 = 1,920,000 + 307,200 = 2,227,200
+    // costComponent(128000, 15_000_000) + costComponent(4096, 75_000_000)
+    // = 128000*15000000/1M + 4096*75000000/1M = 1920000 + 307200 = 2227200
     expect(cost).toBe(2_227_200);
     expect(cost / 1_000_000).toBeCloseTo(2.2272, 4);
   });
 
   it("MAX_SAFE_INTEGER tokens at high rate exceeds safe integer range", () => {
     const maxTokens = Number.MAX_SAFE_INTEGER;
-    // At Opus output rate ($75/MTok), the result is ~6.75×10^17, exceeding MAX_SAFE_INTEGER
-    const cost = costComponent(maxTokens, 75);
+    // At Opus output rate (75_000_000 µ$/MTok), the product exceeds MAX_SAFE_INTEGER
+    const cost = costComponent(maxTokens, 75_000_000);
     expect(Number.isFinite(cost)).toBe(true);
     expect(Number.isSafeInteger(Math.round(cost))).toBe(false);
   });
 
   it("MAX_SAFE_INTEGER tokens at low rate stays within safe range", () => {
     const maxTokens = Number.MAX_SAFE_INTEGER;
-    const cost = costComponent(maxTokens, 0.0375);
+    const cost = costComponent(maxTokens, 37_500);
     expect(Number.isFinite(cost)).toBe(true);
+    // 9e15 * 37500 / 1e6 ≈ 3.38e11 — safe
     expect(Number.isSafeInteger(Math.round(cost))).toBe(true);
   });
 
@@ -76,7 +84,7 @@ describe("costComponent boundary values", () => {
 
 describe("costComponent accumulation precision", () => {
   it("summing many small costs matches single large calculation", () => {
-    const rate = 2.5;
+    const rate = 2_500_000;
     const perCall = costComponent(100, rate);
     const summed = Array.from({ length: 1000 }, () => perCall).reduce((a, b) => a + b, 0);
     const direct = costComponent(100_000, rate);
@@ -85,11 +93,11 @@ describe("costComponent accumulation precision", () => {
 
   it("summing 10,000 micro-costs does not drift more than 1 microdollar", () => {
     const costs = Array.from({ length: 10_000 }, (_, i) =>
-      costComponent(i + 1, 0.15),
+      costComponent(i + 1, 150_000),
     );
     const summed = Math.round(costs.reduce((a, b) => a + b, 0));
-    // Expected: sum(1..10000) * 0.15 = 50_005_000 * 0.15 = 7_500_750
-    const expected = Math.round(((10_000 * 10_001) / 2) * 0.15);
+    // Expected: sum(1..10000) * 150_000 / 1_000_000 = 50_005_000 * 0.15 = 7_500_750
+    const expected = Math.round(((10_000 * 10_001) / 2) * 150_000 / 1_000_000);
     expect(Math.abs(summed - expected)).toBeLessThanOrEqual(1);
   });
 });
@@ -129,9 +137,7 @@ describe("getModelPricing edge cases", () => {
     const a = getModelPricing("openai", "gpt-4o");
     const b = getModelPricing("openai", "gpt-4o");
     expect(a).toEqual(b);
-    // They reference the same object (intentional — immutable data)
-    // but the values must be correct
-    expect(a!.inputPerMTok).toBe(2.5);
+    expect(a!.inputPerMTok).toBe(2_500_000);
   });
 });
 

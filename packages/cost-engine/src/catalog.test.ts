@@ -128,6 +128,20 @@ describe("per-model field validation", () => {
           }
         }
       });
+
+      it("all rates are non-negative integers (µ$/MTok format)", () => {
+        for (const [field, value] of Object.entries(pricing)) {
+          if (typeof value === "number") {
+            expect(Number.isInteger(value), `${key}.${field} = ${value} is not an integer`).toBe(true);
+            if (field === "cachedInputPerMTok") {
+              // Some models don't support caching (e.g. gemini-2.0-flash-lite) — 0 is valid
+              expect(value, `${key}.${field} must be non-negative`).toBeGreaterThanOrEqual(0);
+            } else {
+              expect(value, `${key}.${field} must be positive`).toBeGreaterThan(0);
+            }
+          }
+        }
+      });
     });
   }
 });

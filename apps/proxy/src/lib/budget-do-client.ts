@@ -1,10 +1,14 @@
-import type { BudgetRow, CheckResult, VelocityState } from "../durable-objects/user-budget.js";
+import type { BudgetRow, CheckResult, VelocityState, ThresholdCrossing } from "../durable-objects/user-budget.js";
 import type { DOBudgetEntity } from "./budget-do-lookup.js";
-import { updateBudgetSpend } from "./budget-spend.js";
 import { emitMetric } from "./metrics.js";
 
-// PXY-2: PG retry loop removed. The DO outbox (commit 3) is the retry
-// mechanism. Worker-side PG write is a single optimistic attempt.
+export interface DOReconcileOutcome {
+  status: "ok" | "error";
+  thresholdCrossings?: ThresholdCrossing[];
+}
+
+// PXY-2: Worker-side PG write removed entirely (Strategy E).
+// The DO outbox + alarm handler owns Postgres sync.
 
 /**
  * Check budget via the UserBudgetDO.
@@ -19,10 +23,11 @@ export async function doBudgetCheck(
   sessionId: string | null,
   tagEntityIds: string[],
   orgId: string | null = null,
+  finalize: boolean = false,
 ): Promise<CheckResult> {
   const startMs = Date.now();
   const stub = env.USER_BUDGET.get(env.USER_BUDGET.idFromName(ownerId));
-  const result = await stub.checkAndReserve(keyId, estimateMicrodollars, 30_000, sessionId, tagEntityIds, orgId);
+  const result = await stub.checkAndReserve(keyId, estimateMicrodollars, 30_000, sessionId, tagEntityIds, orgId, finalize);
   emitMetric("do_budget_check", {
     status: result.status,
     hasBudgets: result.hasBudgets,
@@ -36,18 +41,21 @@ export async function doBudgetCheck(
 }
 
 /**
- * Reconcile a reservation via the UserBudgetDO + Postgres write-back.
+ * Reconcile a reservation via the UserBudgetDO.
  * Never throws — errors are caught, logged, and metrics emitted.
  *
  * Returns the reconciliation status:
- * - `"ok"`: DO reconcile + Postgres write both succeeded (or actualCost=0, no PG write needed)
- * - `"pg_failed"`: DO reconcile succeeded but Postgres write failed (outbox will retry)
+ * - `"ok"`: DO reconcile succeeded
  * - `"error"`: DO reconcile itself failed
  *
- * PXY-2: Single optimistic PG write — no retry loop. The DO outbox
- * (pg_sync_outbox table) is the retry mechanism. If the PG write fails,
- * the outbox entry persists and the alarm handler retries with backoff.
- * PG writes are idempotent via the reconciled_requests dedup table.
+ * Strategy E: No optimistic PG write. The DO's PXY-2 outbox
+ * (pg_sync_outbox table) + alarm handler owns Postgres sync entirely.
+ * The alarm fires in ~1s after reconcile and writes idempotently via
+ * the reconciled_requests dedup table. This reduces waitUntil I/O
+ * from ~50ms (DO + PG) to ~10ms (DO only).
+ *
+ * Trade-off: PG spend visibility delays from ~instant to ~1-5s.
+ * Acceptable — the DO is the source of truth for budget enforcement.
  */
 export async function doBudgetReconcile(
   env: Env,
@@ -55,23 +63,27 @@ export async function doBudgetReconcile(
   orgId: string,
   reservationId: string,
   actualCost: number,
-  entities: Array<{ entityType: string; entityId: string }>,
-  connectionString: string,
-): Promise<"ok" | "pg_failed" | "error"> {
+  _entities: Array<{ entityType: string; entityId: string }>,
+): Promise<DOReconcileOutcome> {
   const startMs = Date.now();
-  let status: "ok" | "pg_failed" | "error" = "ok";
+  let status: "ok" | "error" = "ok";
+  let thresholdCrossings: ThresholdCrossing[] | undefined;
 
   try {
     const stub = env.USER_BUDGET.get(env.USER_BUDGET.idFromName(ownerId));
     const reconcileResult = await stub.reconcile(reservationId, actualCost);
+
+    thresholdCrossings = reconcileResult.thresholdCrossings;
 
     if (reconcileResult.status === "not_found") {
       // C1: not_found means expired OR already reconciled.
       // If already reconciled: outbox entry exists in DO, alarm handles PG retry.
       // If expired: no spend to write, nothing to do.
       // Either way, the Worker should NOT attempt a PG write here.
+      // P0-1: Return [] (not undefined) — no spend was applied, so no thresholds crossed.
+      // undefined would trigger stale-data fallback in shared.ts, producing false alerts.
       emitMetric("reconcile_not_found", { reservationId, costMicrodollars: actualCost });
-      return "ok";
+      return { status: "ok", thresholdCrossings: [] };
     }
 
     if (reconcileResult.budgetsMissing && reconcileResult.budgetsMissing.length > 0) {
@@ -87,30 +99,13 @@ export async function doBudgetReconcile(
       });
     }
 
-    // C7: Single optimistic PG write. No retry loop — the DO outbox
-    // is the retry mechanism. If this fails, the outbox entry persists
-    // and the alarm handler retries with idempotent writes.
-    if (actualCost > 0) {
-      try {
-        await updateBudgetSpend(connectionString, orgId, reservationId, entities, actualCost);
-        // PG succeeded — ack outbox entries so alarm doesn't retry
-        try {
-          await stub.ackPgSync(reservationId);
-        } catch (ackErr) {
-          // Ack failed — outbox persists, alarm will retry PG (idempotent).
-          console.warn("[budget-do-client] ackPgSync failed (alarm will retry):", ackErr);
-        }
-      } catch (err) {
-        status = "pg_failed";
-        console.warn("[budget-do-client] Optimistic PG write failed (outbox will retry):", {
-          reservationId,
-          actualCost,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
+    // Strategy E: PG sync handled entirely by DO outbox + alarm handler.
+    // No optimistic PG write here — alarm fires in ~1s.
   } catch (err) {
     status = "error";
+    // P0-1: Return [] on error — DO didn't run, no spend applied, no thresholds crossed.
+    // undefined would trigger stale-data fallback producing false alerts.
+    thresholdCrossings = [];
     console.error("[budget-do-client] Reconciliation failed:", err);
   } finally {
     emitMetric("do_reconciliation", {
@@ -120,7 +115,7 @@ export async function doBudgetReconcile(
     });
   }
 
-  return status;
+  return { status, thresholdCrossings };
 }
 
 /**
@@ -198,7 +193,7 @@ export async function doBudgetUpsertEntities(
       e.entityType, e.entityId, e.maxBudget, e.spend,
       e.policy, e.resetInterval, e.periodStart,
       e.velocityLimit, e.velocityWindow, e.velocityCooldown,
-      e.thresholdPercentages, e.sessionLimit,
+      e.thresholdPercentages, e.sessionLimit, e.finalizationReserve,
     );
   }
 
@@ -219,7 +214,7 @@ export async function doBudgetUpsertEntities(
         e.entityType, e.entityId, e.maxBudget, e.spend,
         e.policy, e.resetInterval, e.periodStart,
         e.velocityLimit, e.velocityWindow, e.velocityCooldown,
-        e.thresholdPercentages, e.sessionLimit,
+        e.thresholdPercentages, e.sessionLimit, e.finalizationReserve,
       );
     }
     emitMetric("budget_sync_retry", { ownerId, missingCount: missing.length });

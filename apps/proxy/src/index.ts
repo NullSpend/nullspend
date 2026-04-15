@@ -1,6 +1,6 @@
-import { handleChatCompletions } from "./routes/openai.js";
-import { handleAnthropicMessages } from "./routes/anthropic.js";
 import { handleMcpBudgetCheck, handleMcpEvents } from "./routes/mcp.js";
+import { matchProviderRoute } from "./providers/registry.js";
+import { handleProviderRequest } from "./routes/provider-handler.js";
 import { handleBudgetInvalidation, handleVelocityState, handleRequestBodies } from "./routes/internal.js";
 import { handleMetrics } from "./routes/metrics.js";
 import { handlePolicy } from "./routes/policy.js";
@@ -12,6 +12,7 @@ import { mergeTags } from "./lib/tags.js";
 import { parseCustomerHeader, resolveCustomerId } from "./lib/customer.js";
 import { resolveTraceId } from "./lib/trace-context.js";
 import { emitMetric } from "./lib/metrics.js";
+import { optionalBinding } from "./lib/env.js";
 import type { RequestContext, RouteHandler } from "./lib/context.js";
 import { handleReconciliationQueue } from "./queue-handler.js";
 import { handleDlqQueue, DLQ_QUEUE_NAME } from "./dlq-handler.js";
@@ -27,11 +28,11 @@ export { UserBudgetDO } from "./durable-objects/user-budget.js";
 
 const MAX_BODY_SIZE = 1_048_576; // 1MB
 
-const routes = new Map<string, RouteHandler>();
-routes.set("/v1/chat/completions", handleChatCompletions);
-routes.set("/v1/messages", handleAnthropicMessages);
-routes.set("/v1/mcp/budget/check", handleMcpBudgetCheck);
-routes.set("/v1/mcp/events", handleMcpEvents);
+// MCP routes have a different lifecycle (no upstream fetch) — registered directly.
+// Provider routes (OpenAI, Anthropic, etc.) use the adapter registry.
+const mcpRoutes = new Map<string, RouteHandler>();
+mcpRoutes.set("/v1/mcp/budget/check", handleMcpBudgetCheck);
+mcpRoutes.set("/v1/mcp/events", handleMcpEvents);
 
 /**
  * Rate limiting via Cloudflare native bindings.
@@ -141,8 +142,8 @@ export default {
     _ctx: ExecutionContext,
   ): Promise<Response> {
     const requestStartMs = performance.now();
-    const forceDbPersist = (env as Record<string, unknown>).FORCE_DB_PERSIST === "true";
-    const skipDbPersist = (env as Record<string, unknown>).SKIP_DB_PERSIST === "true";
+    const forceDbPersist = optionalBinding(env, "FORCE_DB_PERSIST") === "true";
+    const skipDbPersist = optionalBinding(env, "SKIP_DB_PERSIST") === "true";
     const skipDbWrites = !forceDbPersist && skipDbPersist;
 
     // Resolve trace ID early so it's available in the catch block for 500 responses
@@ -208,9 +209,10 @@ export default {
         return handlePolicy(request, env, auth, traceId);
       }
 
-      // Route lookup
-      const handler = request.method === "POST" ? routes.get(url.pathname) : undefined;
-      if (!handler) {
+      // Route lookup: provider registry first, then MCP routes
+      const providerAdapter = request.method === "POST" ? matchProviderRoute(url.pathname) : undefined;
+      const mcpHandler = !providerAdapter && request.method === "POST" ? mcpRoutes.get(url.pathname) : undefined;
+      if (!providerAdapter && !mcpHandler) {
         emitMetric("request_error", { status: 404, reason: "not_found" });
         if (url.pathname.startsWith("/v1/")) {
           const resp = errorResponse("not_found", "This endpoint is not yet supported", 404);
@@ -262,7 +264,7 @@ export default {
 
       // Build context
       const webhookDispatcher = auth.hasWebhooks
-        ? createWebhookDispatcher((env as Record<string, unknown>).WEBHOOK_QUEUE as Queue | undefined, auth.orgId ?? auth.userId)
+        ? createWebhookDispatcher(optionalBinding(env, "WEBHOOK_QUEUE"), auth.orgId ?? auth.userId)
         : null;
 
       if (auth.hasWebhooks && !webhookDispatcher) {
@@ -279,11 +281,29 @@ export default {
       const customerHeaderResult = parseCustomerHeader(request.headers.get("x-nullspend-customer"));
       const customerId = resolveCustomerId(customerHeaderResult, tags);
 
+      // CX-4: Enforce requireCustomerId — 400 when header is missing/malformed
+      if (auth.requireCustomerId && !customerId) {
+        emitMetric("customer_required_missing", { keyId: auth.keyId });
+        return errorResponse("customer_required",
+          "This API key requires X-NullSpend-Customer header",
+          400);
+      }
+
+      // CX-2: Validate customer ID against API key's allowed customers
+      if (customerId && auth.allowedCustomers && !auth.allowedCustomers.includes(customerId)) {
+        emitMetric("customer_not_allowed", { customerId, keyId: auth.keyId });
+        return errorResponse("customer_not_allowed",
+          "Customer ID not authorized for this API key",
+          403);
+      }
+
       const rawSessionId = request.headers.get("x-nullspend-session");
       if (rawSessionId && rawSessionId.length > MAX_SESSION_ID_LENGTH) {
         emitMetric("request_error", { status: 400, reason: "session_id_too_long" });
         return errorResponse("bad_request", `x-nullspend-session exceeds ${MAX_SESSION_ID_LENGTH} characters`, 400);
       }
+
+      const finalize = request.headers.get("x-nullspend-finalize") === "1";
 
       const ctx: RequestContext = {
         body: result.body,
@@ -301,6 +321,7 @@ export default {
         webhookDispatcher,
         resolvedApiVersion,
         requestStartMs,
+        finalize,
         stepTiming: { preFlightMs, bodyParseMs },
         requestLoggingEnabled: auth.requestLoggingEnabled,
       };
@@ -308,7 +329,9 @@ export default {
       // Observability: track customer attribution rate
       emitMetric("customer_attribution", { present: ctx.customerId ? "true" : "false" });
 
-      const response = await handler(request, env, ctx);
+      const response = providerAdapter
+        ? await handleProviderRequest(request, env, ctx, providerAdapter)
+        : await mcpHandler!(request, env, ctx);
       if (Object.keys(ctx.tags).length > 0) {
         response.headers.set("X-NullSpend-Effective-Tags", JSON.stringify(ctx.tags));
       }

@@ -1,12 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockUpdateBudgetSpend, mockEmitMetric } = vi.hoisted(() => ({
-  mockUpdateBudgetSpend: vi.fn(),
+const { mockEmitMetric } = vi.hoisted(() => ({
   mockEmitMetric: vi.fn(),
-}));
-
-vi.mock("../lib/budget-spend.js", () => ({
-  updateBudgetSpend: (...args: unknown[]) => mockUpdateBudgetSpend(...args),
 }));
 
 vi.mock("../lib/metrics.js", () => ({
@@ -21,7 +16,6 @@ function makeStub(overrides: Record<string, unknown> = {}) {
   const stub: Record<string, unknown> = {
     checkAndReserve: vi.fn().mockResolvedValue({ status: "approved", reservationId: "rsv-1" }),
     reconcile: vi.fn().mockResolvedValue({ status: "reconciled" }),
-    ackPgSync: vi.fn().mockResolvedValue(undefined),
     populateIfEmpty: vi.fn().mockResolvedValue(true),
     removeBudget: vi.fn().mockResolvedValue(undefined),
     resetSpend: vi.fn().mockResolvedValue(undefined),
@@ -58,7 +52,7 @@ describe("doBudgetCheck", () => {
 
     const result = await doBudgetCheck(env, "user-1", "key-1", 5_000_000, null, []);
 
-    expect(stub.checkAndReserve).toHaveBeenCalledWith("key-1", 5_000_000, 30_000, null, [], null);
+    expect(stub.checkAndReserve).toHaveBeenCalledWith("key-1", 5_000_000, 30_000, null, [], null, false);
     expect(result).toEqual({ status: "approved", reservationId: "rsv-1" });
   });
 
@@ -68,7 +62,7 @@ describe("doBudgetCheck", () => {
 
     await doBudgetCheck(env, "user-1", null, 5_000_000, null, []);
 
-    expect(stub.checkAndReserve).toHaveBeenCalledWith(null, 5_000_000, 30_000, null, [], null);
+    expect(stub.checkAndReserve).toHaveBeenCalledWith(null, 5_000_000, 30_000, null, [], null, false);
   });
 
   it("returns denied result from DO", async () => {
@@ -153,7 +147,7 @@ describe("doBudgetCheck", () => {
     await doBudgetCheck(env, "user-1", "key-1", 5_000_000, null, ["project=openclaw", "env=prod"]);
 
     expect(stub.checkAndReserve).toHaveBeenCalledWith(
-      "key-1", 5_000_000, 30_000, null, ["project=openclaw", "env=prod"], null,
+      "key-1", 5_000_000, 30_000, null, ["project=openclaw", "env=prod"], null, false,
     );
   });
 
@@ -163,7 +157,7 @@ describe("doBudgetCheck", () => {
 
     await doBudgetCheck(env, "user-1", "key-1", 5_000_000, "sess-1", []);
 
-    expect(stub.checkAndReserve).toHaveBeenCalledWith("key-1", 5_000_000, 30_000, "sess-1", [], null);
+    expect(stub.checkAndReserve).toHaveBeenCalledWith("key-1", 5_000_000, 30_000, "sess-1", [], null, false);
   });
 
   it("emits tagBudgetDenied=true when deniedEntity starts with tag:", async () => {
@@ -210,46 +204,36 @@ describe("doBudgetCheck", () => {
 describe("doBudgetReconcile", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUpdateBudgetSpend.mockResolvedValue(undefined);
   });
 
-  it("calls stub.reconcile + updateBudgetSpend with reservationId as requestId", async () => {
+  it("calls stub.reconcile and returns ok", async () => {
     const stub = makeStub();
     const env = makeEnv(stub);
 
-    await doBudgetReconcile(
+    const result = await doBudgetReconcile(
       env,
       "user-1",
       "org-test",
       "rsv-1",
       1_000,
       [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
     );
 
     expect(stub.reconcile).toHaveBeenCalledWith("rsv-1", 1_000);
-    expect(mockUpdateBudgetSpend).toHaveBeenCalledWith(
-      "postgres://test",
-      "org-test",
-      "rsv-1",
-      [{ entityType: "user", entityId: "user-1" }],
-      1_000,
-    );
+    expect(result.status).toBe("ok");
   });
 
-  it("skips updateBudgetSpend when actualCost=0", async () => {
+  it("reconciles with actualCost=0", async () => {
     const stub = makeStub();
     const env = makeEnv(stub);
 
-    await doBudgetReconcile(
+    const result = await doBudgetReconcile(
       env, "user-1", "org-test", "rsv-1", 0,
       [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
     );
 
     expect(stub.reconcile).toHaveBeenCalledWith("rsv-1", 0);
-    expect(mockUpdateBudgetSpend).not.toHaveBeenCalled();
-    expect(stub.ackPgSync).not.toHaveBeenCalled();
+    expect(result.status).toBe("ok");
   });
 
   it("returns 'error' on DO error", async () => {
@@ -259,59 +243,12 @@ describe("doBudgetReconcile", () => {
     const env = makeEnv(stub);
 
     await expect(
-      doBudgetReconcile(env, "user-1", "org-test", "rsv-1", 1_000, [{ entityType: "user", entityId: "user-1" }], "postgres://test"),
-    ).resolves.toBe("error");
+      doBudgetReconcile(env, "user-1", "org-test", "rsv-1", 1_000, [{ entityType: "user", entityId: "user-1" }]),
+    ).resolves.toEqual(expect.objectContaining({ status: "error" }));
   });
 
-  // T27: Single PG attempt — no retry loop
-  it("single PG attempt — returns pg_failed on failure (no retry)", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const stub = makeStub();
-    const env = makeEnv(stub);
-    mockUpdateBudgetSpend.mockRejectedValue(new Error("PG error"));
-
-    const result = await doBudgetReconcile(
-      env, "user-1", "org-test", "rsv-1", 500,
-      [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
-    );
-
-    expect(result).toBe("pg_failed");
-    // Single attempt only — no retries
-    expect(mockUpdateBudgetSpend).toHaveBeenCalledTimes(1);
-    // Uses console.warn, not console.error
-    expect(warnSpy).toHaveBeenCalledWith(
-      "[budget-do-client] Optimistic PG write failed (outbox will retry):",
-      expect.objectContaining({
-        reservationId: "rsv-1",
-        actualCost: 500,
-      }),
-    );
-    warnSpy.mockRestore();
-  });
-
-  it("PG failure emits do_reconciliation metric with pg_failed status (no retries field)", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    const stub = makeStub();
-    const env = makeEnv(stub);
-    mockUpdateBudgetSpend.mockRejectedValue(new Error("PG persistent"));
-
-    await doBudgetReconcile(
-      env, "user-1", "org-test", "rsv-1", 1_000,
-      [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
-    );
-
-    // Metric emitted with pg_failed status, no retries field
-    expect(mockEmitMetric).toHaveBeenCalledWith("do_reconciliation", {
-      status: "pg_failed",
-      costMicrodollars: 1_000,
-      durationMs: expect.any(Number),
-    });
-  });
-
-  // T24: not_found skips PG write and returns "ok" immediately
-  it("T24: not_found skips PG write — returns ok immediately with metric", async () => {
+  // T24: not_found returns "ok" immediately with metric
+  it("T24: not_found returns ok immediately with metric", async () => {
     const stub = makeStub({
       reconcile: vi.fn().mockResolvedValue({ status: "not_found" }),
     });
@@ -320,18 +257,17 @@ describe("doBudgetReconcile", () => {
     const result = await doBudgetReconcile(
       env, "user-1", "org-test", "rsv-1", 1_000,
       [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
     );
 
-    expect(result).toBe("ok");
-    expect(mockUpdateBudgetSpend).not.toHaveBeenCalled();
+    expect(result.status).toBe("ok");
+    expect(result.thresholdCrossings).toEqual([]);
     expect(mockEmitMetric).toHaveBeenCalledWith("reconcile_not_found", expect.objectContaining({
       reservationId: "rsv-1",
       costMicrodollars: 1_000,
     }));
   });
 
-  it("DO stub.reconcile failure → error status returned, Postgres write skipped", async () => {
+  it("DO stub.reconcile failure → error status returned", async () => {
     const stub = makeStub({
       reconcile: vi.fn().mockRejectedValue(new Error("DO error")),
     });
@@ -340,24 +276,21 @@ describe("doBudgetReconcile", () => {
     const result = await doBudgetReconcile(
       env, "user-1", "org-test", "rsv-1", 1_000,
       [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
     );
 
-    expect(result).toBe("error");
-    expect(mockUpdateBudgetSpend).not.toHaveBeenCalled();
+    expect(result.status).toBe("error");
     expect(mockEmitMetric).toHaveBeenCalledWith("do_reconciliation", expect.objectContaining({
       status: "error",
     }));
   });
 
-  it("emits do_reconciliation metric on every call (no retries field)", async () => {
+  it("emits do_reconciliation metric on every call", async () => {
     const stub = makeStub();
     const env = makeEnv(stub);
 
     await doBudgetReconcile(
       env, "user-1", "org-test", "rsv-1", 1_000,
       [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
     );
 
     expect(mockEmitMetric).toHaveBeenCalledWith("do_reconciliation", {
@@ -367,14 +300,13 @@ describe("doBudgetReconcile", () => {
     });
   });
 
-  it("emits metric even when actualCost=0 (no Postgres write)", async () => {
+  it("emits metric even when actualCost=0", async () => {
     const stub = makeStub();
     const env = makeEnv(stub);
 
     await doBudgetReconcile(
       env, "user-1", "org-test", "rsv-1", 0,
       [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
     );
 
     expect(mockEmitMetric).toHaveBeenCalledWith("do_reconciliation", expect.objectContaining({
@@ -390,10 +322,9 @@ describe("doBudgetReconcile", () => {
     const result = await doBudgetReconcile(
       env, "user-1", "org-test", "rsv-1", 1_000,
       [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
     );
 
-    expect(result).toBe("ok");
+    expect(result.status).toBe("ok");
   });
 
   it("emits reconcile_budget_missing metric when DO reports missing budgets", async () => {
@@ -409,7 +340,6 @@ describe("doBudgetReconcile", () => {
     await doBudgetReconcile(
       env, "user-1", "org-test", "rsv-1", 1_000,
       [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
     );
 
     expect(mockEmitMetric).toHaveBeenCalledWith("reconcile_budget_missing", {
@@ -426,7 +356,6 @@ describe("doBudgetReconcile", () => {
     await doBudgetReconcile(
       env, "user-1", "org-test", "rsv-1", 1_000,
       [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
     );
 
     expect(mockEmitMetric).not.toHaveBeenCalledWith(
@@ -442,69 +371,9 @@ describe("doBudgetReconcile", () => {
     const result = await doBudgetReconcile(
       env, "user-1", "org-test", "rsv-1", 0,
       [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
     );
 
-    expect(result).toBe("ok");
-  });
-
-  // T21: calls ackPgSync after successful PG write
-  it("T21: calls ackPgSync after successful PG write", async () => {
-    const stub = makeStub();
-    const env = makeEnv(stub);
-
-    await doBudgetReconcile(
-      env, "user-1", "org-test", "rsv-ack-1", 1_000,
-      [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
-    );
-
-    expect(stub.ackPgSync).toHaveBeenCalledWith("rsv-ack-1");
-    expect(stub.ackPgSync).toHaveBeenCalledTimes(1);
-  });
-
-  // T22: ackPgSync failure does not throw
-  it("T22: ackPgSync failure does not throw", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const stub = makeStub({
-      ackPgSync: vi.fn().mockRejectedValue(new Error("ack failed")),
-    });
-    const env = makeEnv(stub);
-
-    const result = await doBudgetReconcile(
-      env, "user-1", "org-test", "rsv-ack-2", 1_000,
-      [{ entityType: "user", entityId: "user-1" }],
-      "postgres://test",
-    );
-
-    // Should still return ok — ackPgSync failure is non-fatal
-    expect(result).toBe("ok");
-    expect(stub.ackPgSync).toHaveBeenCalledWith("rsv-ack-2");
-    expect(warnSpy).toHaveBeenCalledWith(
-      "[budget-do-client] ackPgSync failed (alarm will retry):",
-      expect.any(Error),
-    );
-    warnSpy.mockRestore();
-  });
-
-  // T28: passes reservationId as requestId to updateBudgetSpend
-  it("T28: passes reservationId as requestId to updateBudgetSpend", async () => {
-    const stub = makeStub();
-    const env = makeEnv(stub);
-
-    await doBudgetReconcile(
-      env, "user-1", "org-test", "rsv-unique-456", 2_000,
-      [{ entityType: "api_key", entityId: "key-1" }],
-      "postgres://test",
-    );
-
-    expect(mockUpdateBudgetSpend).toHaveBeenCalledWith(
-      "postgres://test",
-      "org-test",
-      "rsv-unique-456", // reservationId used as requestId
-      [{ entityType: "api_key", entityId: "key-1" }],
-      2_000,
-    );
+    expect(result.status).toBe("ok");
   });
 });
 
@@ -577,6 +446,7 @@ describe("doBudgetUpsertEntities", () => {
         velocityCooldown: 60_000,
         thresholdPercentages: [50, 80, 90, 95],
         sessionLimit: null,
+        finalizationReserve: 0,
       },
     ]);
 
@@ -584,7 +454,7 @@ describe("doBudgetUpsertEntities", () => {
     expect(stub.populateIfEmpty).toHaveBeenCalledWith(
       "user", "user-1", 50_000_000, 10_000_000,
       "strict_block", "monthly", 1_700_000_000_000,
-      null, 60_000, 60_000, [50, 80, 90, 95], null,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 0,
     );
   });
 
@@ -593,8 +463,8 @@ describe("doBudgetUpsertEntities", () => {
     const env = makeEnv(stub);
 
     await doBudgetUpsertEntities(env, "user-1", [
-      { entityType: "user", entityId: "user-1", maxBudget: 50_000_000, spend: 0, policy: "strict_block", resetInterval: null, periodStart: 0, velocityLimit: null, velocityWindow: 60_000, velocityCooldown: 60_000, thresholdPercentages: [50, 80, 90, 95], sessionLimit: null },
-      { entityType: "api_key", entityId: "key-1", maxBudget: 10_000_000, spend: 0, policy: "strict_block", resetInterval: null, periodStart: 0, velocityLimit: null, velocityWindow: 60_000, velocityCooldown: 60_000, thresholdPercentages: [50, 80, 90, 95], sessionLimit: null },
+      { entityType: "user", entityId: "user-1", maxBudget: 50_000_000, spend: 0, policy: "strict_block", resetInterval: null, periodStart: 0, velocityLimit: null, velocityWindow: 60_000, velocityCooldown: 60_000, thresholdPercentages: [50, 80, 90, 95], sessionLimit: null, finalizationReserve: 0 },
+      { entityType: "api_key", entityId: "key-1", maxBudget: 10_000_000, spend: 0, policy: "strict_block", resetInterval: null, periodStart: 0, velocityLimit: null, velocityWindow: 60_000, velocityCooldown: 60_000, thresholdPercentages: [50, 80, 90, 95], sessionLimit: null, finalizationReserve: 0 },
     ]);
 
     expect(stub.populateIfEmpty).toHaveBeenCalledTimes(2);
@@ -615,7 +485,7 @@ describe("doBudgetUpsertEntities", () => {
     const env = makeEnv(stub);
 
     await doBudgetUpsertEntities(env, "user-1", [
-      { entityType: "user", entityId: "user-1", maxBudget: 50_000_000, spend: 0, policy: "strict_block", resetInterval: null, periodStart: 0, velocityLimit: null, velocityWindow: 60_000, velocityCooldown: 60_000, thresholdPercentages: [50, 80, 90, 95], sessionLimit: null },
+      { entityType: "user", entityId: "user-1", maxBudget: 50_000_000, spend: 0, policy: "strict_block", resetInterval: null, periodStart: 0, velocityLimit: null, velocityWindow: 60_000, velocityCooldown: 60_000, thresholdPercentages: [50, 80, 90, 95], sessionLimit: null, finalizationReserve: 0 },
     ]);
 
     expect(stub.getBudgetState).toHaveBeenCalledTimes(1);
@@ -644,7 +514,7 @@ describe("doBudgetUpsertEntities", () => {
     const env = makeEnv(stub);
 
     await doBudgetUpsertEntities(env, "user-1", [
-      { entityType: "user", entityId: "user-1", maxBudget: 50_000_000, spend: 0, policy: "strict_block", resetInterval: null, periodStart: 0, velocityLimit: null, velocityWindow: 60_000, velocityCooldown: 60_000, thresholdPercentages: [50, 80, 90, 95], sessionLimit: null },
+      { entityType: "user", entityId: "user-1", maxBudget: 50_000_000, spend: 0, policy: "strict_block", resetInterval: null, periodStart: 0, velocityLimit: null, velocityWindow: 60_000, velocityCooldown: 60_000, thresholdPercentages: [50, 80, 90, 95], sessionLimit: null, finalizationReserve: 0 },
     ]);
 
     // Called twice: once for initial upsert, once for retry

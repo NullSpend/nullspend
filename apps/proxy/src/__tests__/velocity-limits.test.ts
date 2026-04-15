@@ -463,7 +463,7 @@ describe("OpenAI route — velocity denial", () => {
     expect(mockDoBudgetReconcile).not.toHaveBeenCalled();
   });
 
-  it("aborts upstream fetch on velocity denial", async () => {
+  it("does not call upstream fetch on velocity denial (CX-5)", async () => {
     mockDoBudgetCheck.mockResolvedValue(velocityDeniedCheckResult);
     const fetchSpy = vi.fn().mockReturnValue(new Promise(() => {}));
     globalThis.fetch = fetchSpy;
@@ -471,10 +471,8 @@ describe("OpenAI route — velocity denial", () => {
     const res = await handleChatCompletions(makeRequest(defaultBody), makeEnv(), makeCtx(defaultBody));
 
     expect(res.status).toBe(429);
-    // Optimistic execution: fetch starts in parallel, aborted when budget denies
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const signal = fetchSpy.mock.calls[0][1]?.signal as AbortSignal;
-    expect(signal?.aborted).toBe(true);
+    // CX-5: budget check runs before fetch — denied requests never start a fetch
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("velocity denial is distinct from budget_exceeded", async () => {
@@ -614,7 +612,7 @@ describe("Anthropic route — velocity denial", () => {
     expect(res.headers.get("Retry-After")).toBe("45");
   });
 
-  it("aborts upstream fetch on velocity denial", async () => {
+  it("does not call upstream fetch on velocity denial (CX-5)", async () => {
     mockDoBudgetCheck.mockResolvedValue(velocityDeniedCheckResult);
     const fetchSpy = vi.fn().mockReturnValue(new Promise(() => {}));
     globalThis.fetch = fetchSpy;
@@ -624,10 +622,8 @@ describe("Anthropic route — velocity denial", () => {
     );
 
     expect(res.status).toBe(429);
-    // Optimistic execution: fetch starts in parallel, aborted when budget denies
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const signal = fetchSpy.mock.calls[0][1]?.signal as AbortSignal;
-    expect(signal?.aborted).toBe(true);
+    // CX-5: budget check runs before fetch — denied requests never start a fetch
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("webhook dispatch uses provider='anthropic'", async () => {

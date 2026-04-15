@@ -220,7 +220,6 @@ describe("Streaming + Budget Integration", () => {
       "rsv-stream-1",
       42_000,
       expect.any(Array),
-      expect.any(String),
     );
   });
 
@@ -247,7 +246,6 @@ describe("Streaming + Budget Integration", () => {
       "rsv-stream-spend",
       75_000,
       expect.any(Array),
-      expect.any(String),
     );
   });
 
@@ -273,7 +271,6 @@ describe("Streaming + Budget Integration", () => {
       "rsv-no-usage",
       expect.any(Number),
       expect.any(Array),
-      expect.any(String),
     );
     // PXY-4: reconcile with estimate, not $0
     const actualCost = mockDoBudgetReconcile.mock.calls[0][4];
@@ -319,7 +316,6 @@ describe("Streaming + Budget Integration", () => {
       "rsv-null-body",
       0,
       expect.any(Array),
-      expect.any(String),
     );
   });
 

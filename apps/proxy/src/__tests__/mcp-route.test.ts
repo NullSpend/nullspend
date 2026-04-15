@@ -89,6 +89,8 @@ function makeCtx(
     webhookDispatcher: null,
     resolvedApiVersion: "2026-04-01",
     requestStartMs: performance.now(),
+    requestLoggingEnabled: false,
+    finalize: false,
     ...overrides,
   };
 }
@@ -354,6 +356,7 @@ describe("handleMcpBudgetCheck", () => {
       null,
       [],
       "org-test",
+      false,
     );
   });
 });
@@ -707,7 +710,6 @@ describe("handleMcpEvents", () => {
       "rsv-123",
       10000,
       expect.any(Array),
-      expect.any(String),
     );
   });
 
@@ -741,7 +743,6 @@ describe("handleMcpEvents", () => {
       "rsv-fail-test",
       10000,
       expect.any(Array),
-      expect.any(String),
     );
   });
 

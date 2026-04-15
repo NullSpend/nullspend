@@ -34,6 +34,8 @@ export interface ApiKeyIdentity {
   defaultTags: Record<string, string>;
   allowedModels: string[] | null;
   allowedProviders: string[] | null;
+  allowedCustomers: string[] | null;
+  requireCustomerId: boolean;
   /**
    * Org-level upgrade URL from `organizations.metadata.upgradeUrl`.
    * Null when unset. Surfaced in `budget_exceeded` and
@@ -106,7 +108,7 @@ async function lookupKeyInDb(
   const sql = getSql(connectionString);
 
   const rows = await sql`
-    SELECT k.id, k.user_id, k.org_id, k.api_version, k.default_tags, k.allowed_models, k.allowed_providers,
+    SELECT k.id, k.user_id, k.org_id, k.api_version, k.default_tags, k.allowed_models, k.allowed_providers, k.allowed_customers, k.require_customer_id,
       EXISTS(
         SELECT 1 FROM webhook_endpoints w
         WHERE w.org_id = k.org_id AND w.enabled = true
@@ -145,6 +147,8 @@ async function lookupKeyInDb(
       : {},
     allowedModels: parseTextArray(row.allowed_models),
     allowedProviders: parseTextArray(row.allowed_providers),
+    allowedCustomers: parseTextArray(row.allowed_customers),
+    requireCustomerId: row.require_customer_id === true,
     orgUpgradeUrl: typeof row.org_upgrade_url === "string" ? row.org_upgrade_url : null,
   };
 }

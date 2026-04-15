@@ -1,3 +1,5 @@
+import { emitMetric } from "./metrics.js";
+
 export const MAX_TAGS = 10;
 const MAX_KEYS = MAX_TAGS;
 const MAX_KEY_LENGTH = 64;
@@ -41,11 +43,13 @@ export function parseTags(header: string | null): Record<string, string> {
     parsed = JSON.parse(header);
   } catch {
     console.warn("[tags] Malformed X-NullSpend-Tags header — ignoring");
+    emitMetric("tags_header_malformed", { reason: "invalid_json" });
     return {};
   }
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     console.warn("[tags] X-NullSpend-Tags header is not a JSON object — ignoring");
+    emitMetric("tags_header_malformed", { reason: "not_object" });
     return {};
   }
 

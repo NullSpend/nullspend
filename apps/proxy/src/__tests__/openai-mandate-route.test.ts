@@ -78,6 +78,7 @@ function makeCtx(
       requestLoggingEnabled: false,
       allowedModels: null,
       allowedProviders: null,
+      allowedCustomers: null,
     },
     ownerId: "org-1",
     connectionString: "postgresql://postgres:postgres@127.0.0.1:54322/postgres",

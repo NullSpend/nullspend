@@ -108,6 +108,14 @@ openai = OpenAI(
 )
 ```
 
+```bash
+# Google Gemini — native API, just change the base URL
+curl "https://proxy.nullspend.dev/v1beta/models/gemini-2.5-flash:generateContent" \
+  -H "x-goog-api-key: $GOOGLE_API_KEY" \
+  -H "X-NullSpend-Key: $NULLSPEND_API_KEY" \
+  -d '{"contents":[{"parts":[{"text":"Hello"}]}]}'
+```
+
 ### Option 2: SDK (direct calls, client-side tracking)
 
 Wrap your provider client. Costs are calculated locally and reported in the background. No proxy in the path.
@@ -170,7 +178,7 @@ Not every use case needs the same level of control. Pick the integration path th
 ```mermaid
 flowchart LR
     A["Your Agent"] -->|LLM request| B["NullSpend Proxy"]
-    B -->|forward| C["OpenAI / Anthropic"]
+    B -->|forward| C["OpenAI / Anthropic / Gemini"]
     C -->|response| B
     B -->|response + cost| A
     B -->|events| D["Dashboard & Webhooks"]
@@ -200,7 +208,7 @@ flowchart LR
         S3 --> S4["Report async"]
     end
 
-    A ==>|"direct API call"| C["OpenAI / Anthropic"]
+    A ==>|"direct API call"| C["OpenAI / Anthropic / Gemini"]
     C ==>|response| A
     S4 -.->|"cost events"| D["NullSpend API"]
     D -.->|"policy"| S
@@ -215,13 +223,13 @@ Don't want to route traffic through a proxy? The SDK wraps your existing fetch c
 
 ## Supported Models
 
-47 models with accurate token-to-cost calculation — cached tokens, reasoning tokens (o-series), Anthropic cache write tiers:
+56 models with accurate token-to-cost calculation — cached tokens, reasoning tokens (o-series), thinking tokens (Gemini), Anthropic cache write tiers:
 
-- **OpenAI** (23) — GPT-5.4, GPT-5.3, GPT-5, GPT-4.1, GPT-4o, o3, o4-mini, and more
+- **OpenAI** (26) — GPT-5.4/Pro, GPT-5.2/Pro, GPT-5, GPT-4.1, GPT-4o, o3/Pro, o4-mini, o1/Pro, and more
 - **Anthropic** (22) — Claude Opus 4.6, Sonnet 4.6, Haiku 4.5, plus all dated variants
-- **Google** (2, pricing only) — Gemini 2.5 Pro, Gemini 2.5 Flash
+- **Google** (8) — Gemini 3.1 Pro, 3 Flash, 2.5 Pro/Flash/Flash-Lite, 2.0 Flash/Flash-Lite (including dated aliases)
 
-Proxy routes OpenAI and Anthropic. Google pricing is in the catalog for SDK-side cost calculation.
+Proxy routes OpenAI, Anthropic, and Google Gemini. All models have accurate token-to-cost calculation including cached tokens, thinking/reasoning tokens, and tool definition costs.
 
 ## Packages
 
@@ -230,7 +238,7 @@ Proxy routes OpenAI and Anthropic. Google pricing is in the catalog for SDK-side
 | [`apps/proxy`](apps/proxy/) | Cloudflare Workers proxy — budget authorization, mandates, cost tracking, velocity controls, session limits, webhooks, request logging, streaming |
 | [`@nullspend/sdk`](packages/sdk/) | TypeScript SDK — tracked fetch with client-side enforcement, cost reporting, HITL approval workflows, budget & spend queries |
 | [`nullspend`](packages/sdk-python/) | Python SDK — full feature parity with the TypeScript SDK |
-| [`@nullspend/cost-engine`](packages/cost-engine/) | Pricing catalog and cost calculation for 47 models (OpenAI, Anthropic, Google) |
+| [`@nullspend/cost-engine`](packages/cost-engine/) | Pricing catalog and cost calculation for 56 models (OpenAI, Anthropic, Google) |
 | [`@nullspend/claude-agent`](packages/claude-agent/) | Claude Agent SDK adapter — `withNullSpend()` and `withNullSpendAsync()` for budget-aware agents |
 | [`@nullspend/mcp-server`](packages/mcp-server/) | MCP server — approval tools, budget queries, spend summaries, and cost event listing for any MCP client |
 | [`@nullspend/mcp-proxy`](packages/mcp-proxy/) | MCP proxy — gate tool calls through approval before forwarding to upstream servers |
@@ -256,8 +264,10 @@ The open-source packages handle authorization, enforcement, and cost tracking. T
 |---|---|
 | `POST /v1/chat/completions` | OpenAI |
 | `POST /v1/messages` | Anthropic |
+| `POST /v1beta/models/{model}:generateContent` | Google Gemini |
+| `POST /v1beta/models/{model}:streamGenerateContent` | Google Gemini (streaming) |
 
-Streaming and non-streaming. Your provider API key forwards transparently.
+Streaming and non-streaming. Your provider API key forwards transparently. Gemini uses `x-goog-api-key` or `Authorization: Bearer` for the Google API key.
 
 ## Development
 
@@ -287,6 +297,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 - [Overview](docs/overview.md)
 - [Quick Start — OpenAI](docs/quickstart/openai.md)
 - [Quick Start — Anthropic](docs/quickstart/anthropic.md)
+- [Quick Start — Gemini](docs/quickstart/gemini.md)
 - [API Reference](docs/api-reference/overview.md)
 - [Webhooks](docs/webhooks/overview.md)
 - [Full docs at nullspend.dev](https://nullspend.dev/docs)

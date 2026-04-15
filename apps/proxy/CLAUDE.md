@@ -1,6 +1,6 @@
 # Proxy Worker (@nullspend/proxy)
 
-Cloudflare Workers proxy that sits between agents and OpenAI. Authenticates requests, tracks costs, and enforces budgets.
+Cloudflare Workers proxy that sits between agents and LLM providers (OpenAI, Anthropic, Google Gemini). Authenticates requests, tracks costs, and enforces budgets.
 
 ## Commands
 
@@ -16,6 +16,7 @@ pnpm deploy           # Deploy to Cloudflare
 - **NEVER add failover logic** that bypasses auth or cost tracking — this undermines the entire FinOps purpose
 - Auth check must be the absolute first thing before any processing
 - Body size limit (1MB) enforced both pre-read (Content-Length) and post-read (byte count)
+- **Rate limiter fails OPEN** — if the Cloudflare rate limiter binding is unavailable, requests proceed without rate limiting. This is intentional (availability > rate limiting) but means a partial Cloudflare outage disables rate limits. The dashboard rate limiter (Upstash) fails CLOSED (503).
 
 ## Testing
 
@@ -109,9 +110,15 @@ runs) and `afterAll`.
 
 **Entry & Routing**
 - `src/index.ts` — entry point, routing, body parsing, session/trace extraction
-- `src/routes/openai.ts` — OpenAI chat completions handler
-- `src/routes/anthropic.ts` — Anthropic messages handler
-- `src/routes/mcp.ts` — MCP budget check + cost event ingestion
+- `src/routes/provider-handler.ts` — generic provider route handler (shared lifecycle for all LLM providers)
+- `src/routes/openai.ts` — OpenAI thin wrapper (delegates to provider-handler with OpenAI adapter)
+- `src/routes/anthropic.ts` — Anthropic thin wrapper (delegates to provider-handler with Anthropic adapter)
+- `src/providers/openai.ts` — OpenAI ProviderAdapter (headers, SSE parser, cost calculator wrappers)
+- `src/providers/anthropic.ts` — Anthropic ProviderAdapter (headers, SSE parser, cost calculator, cache tags)
+- `src/providers/gemini.ts` — Gemini ProviderAdapter (native URL scheme, model-in-URL, x-goog-api-key auth)
+- `src/providers/registry.ts` — maps URL paths to ProviderAdapter configs (exact-match + Gemini prefix matching)
+- `src/lib/provider-types.ts` — ProviderAdapter interface, StreamResult, ParsedResponse types (includes optional extractModel/isStreaming hooks)
+- `src/routes/mcp.ts` — MCP budget check + cost event ingestion (separate lifecycle, not adapter-based)
 - `src/routes/internal.ts` — internal budget invalidation/sync endpoint
 - `src/routes/shared.ts` — shared budget denial handling, webhook dispatch helpers (used by all routes)
 
@@ -136,6 +143,11 @@ runs) and `afterAll`.
 - `src/lib/cost-estimator.ts` — OpenAI pre-request cost estimation
 - `src/lib/anthropic-cost-calculator.ts` — Anthropic token-to-cost (cache write TTLs, long context 2x)
 - `src/lib/anthropic-cost-estimator.ts` — Anthropic pre-request estimation
+- `src/lib/gemini-cost-calculator.ts` — Gemini token-to-cost (usageMetadata → microdollars)
+- `src/lib/gemini-cost-estimator.ts` — Gemini pre-request estimation
+- `src/lib/gemini-sse-parser.ts` — Gemini SSE parser (complete-response-per-event, not delta)
+- `src/lib/gemini-headers.ts` — Gemini header forwarding (x-goog-api-key auth)
+- `src/lib/gemini-types.ts` — Gemini API type definitions (GeminiUsageMetadata, GeminiResponse)
 - `src/lib/cost-logger.ts` — async DB write via `waitUntil()`
 
 **Body Storage (Request/Response Logging)**

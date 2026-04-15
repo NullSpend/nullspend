@@ -271,8 +271,8 @@ describe("searchDocs (real data)", () => {
   const realDocs = docsData as DocPage[];
   const realIndex = buildIndex(realDocs);
 
-  it("has all 46 docs indexed", () => {
-    expect(realIndex).toHaveLength(46);
+  it("has all 47 docs indexed", () => {
+    expect(realIndex).toHaveLength(47);
   });
 
   it("no doc has CRLF in content", () => {

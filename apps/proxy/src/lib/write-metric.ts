@@ -1,3 +1,5 @@
+import { optionalBinding } from "./env.js";
+
 /**
  * Write a latency data point to Cloudflare Analytics Engine.
  * Fire-and-forget — zero hot-path overhead, never throws.
@@ -20,9 +22,7 @@ export function writeLatencyDataPoint(
   userId?: string,
 ): void {
   try {
-    const metrics = (env as Record<string, unknown>).METRICS as
-      | { writeDataPoint(event: Record<string, unknown>): void }
-      | undefined;
+    const metrics = optionalBinding(env, "METRICS");
     if (!metrics) return;
 
     metrics.writeDataPoint({

@@ -1,5 +1,6 @@
 import type { NewCostEventRow } from "@nullspend/db";
 import { logCostEvent, logCostEventsBatch } from "./cost-logger.js";
+import { optionalBinding } from "./env.js";
 import { emitMetric } from "./metrics.js";
 
 export interface CostEventMessage {
@@ -64,7 +65,7 @@ export async function enqueueCostEventsBatch(
  * Returns the COST_EVENT_QUEUE binding from env, or undefined if absent.
  */
 export function getCostEventQueue(env: Env): Queue | undefined {
-  return (env as unknown as Record<string, unknown>).COST_EVENT_QUEUE as Queue | undefined;
+  return optionalBinding(env, "COST_EVENT_QUEUE");
 }
 
 /**

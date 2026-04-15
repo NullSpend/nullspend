@@ -435,6 +435,37 @@ Session limits track cumulative spend per `createTrackedFetch()` instance:
 
 > **Note:** SDK session limits are cooperative — each `createTrackedFetch()` instance tracks independently. For fleet-wide authoritative enforcement, use the proxy.
 
+### Finalization Reserve
+
+When your agent is near its budget limit and needs to make one last request:
+
+```typescript
+const finalFetch = ns.createTrackedFetch("openai", {
+  finalize: true,  // Injects X-NullSpend-Finalize: 1 in proxy mode
+});
+
+const response = await finalFetch("https://proxy.nullspend.dev/v1/chat/completions", {
+  method: "POST",
+  headers: { "Content-Type": "application/json", Authorization: "Bearer sk-..." },
+  body: JSON.stringify({ model: "gpt-4o", messages: [...] }),
+});
+```
+
+In proxy mode, `finalize: true` adds the `X-NullSpend-Finalize: 1` header. In direct mode, it skips the reserve subtraction in the cooperative budget check.
+
+The `BudgetExceededError` includes reserve details when thrown:
+
+```typescript
+try {
+  await trackedFetch(url, init);
+} catch (err) {
+  if (err instanceof BudgetExceededError) {
+    console.log(err.finalizationReserveMicrodollars); // Reserve amount, or undefined
+    console.log(err.finalizationRemainingMicrodollars); // Remaining after reserve, or undefined
+  }
+}
+```
+
 ## Error Handling
 
 Eight error classes, all extending `Error`. All constructors validate arguments — `NaN`, `Infinity`, and negative numbers are clamped to `0`.

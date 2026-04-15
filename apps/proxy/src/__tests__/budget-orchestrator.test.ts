@@ -44,6 +44,8 @@ function makeCtx(overrides: Partial<RequestContext> = {}): RequestContext {
     webhookDispatcher: null,
     resolvedApiVersion: "2026-04-01",
     requestStartMs: performance.now(),
+    requestLoggingEnabled: false,
+    finalize: false,
     ...overrides,
   };
 }
@@ -96,7 +98,7 @@ describe("checkBudget — DO-first mode", () => {
     expect(result.status).toBe("approved");
     expect(result.reservationId).toBe("rsv-do-1");
     expect(mockDoBudgetCheck).toHaveBeenCalledWith(
-      expect.anything(), "user-1", "key-1", 5_000_000, null, [], null,
+      expect.anything(), "user-1", "key-1", 5_000_000, null, [], null, false,
     );
   });
 
@@ -242,7 +244,7 @@ describe("checkBudget — DO-first mode", () => {
     await checkBudget(makeEnv(), ctx, 5_000_000);
 
     expect(mockDoBudgetCheck).toHaveBeenCalledWith(
-      expect.anything(), "user-1", null, 5_000_000, null, [], null,
+      expect.anything(), "user-1", null, 5_000_000, null, [], null, false,
     );
   });
 
@@ -302,7 +304,7 @@ describe("checkBudget — DO-first mode", () => {
     await checkBudget(makeEnv(), ctx, 5_000_000);
 
     expect(mockDoBudgetCheck).toHaveBeenCalledWith(
-      expect.anything(), "user-1", "key-1", 5_000_000, null, [], "org-xyz",
+      expect.anything(), "user-1", "key-1", 5_000_000, null, [], "org-xyz", false,
     );
   });
 });
@@ -310,7 +312,7 @@ describe("checkBudget — DO-first mode", () => {
 describe("reconcileBudget — durable-objects mode", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockDoBudgetReconcile.mockResolvedValue("ok");
+    mockDoBudgetReconcile.mockResolvedValue({ status: "ok", thresholdCrossings: [] });
   });
 
   it("calls doBudgetReconcile with userId", async () => {
@@ -322,7 +324,6 @@ describe("reconcileBudget — durable-objects mode", () => {
     expect(mockDoBudgetReconcile).toHaveBeenCalledWith(
       expect.anything(), "user-1", "org-test", "rsv-1", 1_000,
       [{ entityType: "api_key", entityId: "key-1" }],
-      "postgres://test",
     );
   });
 
@@ -335,7 +336,6 @@ describe("reconcileBudget — durable-objects mode", () => {
     expect(mockDoBudgetReconcile).toHaveBeenCalledWith(
       expect.anything(), "user-1", "org-test", "rsv-1", 0,
       expect.any(Array),
-      "postgres://test",
     );
   });
 
@@ -344,24 +344,24 @@ describe("reconcileBudget — durable-objects mode", () => {
 
     await expect(
       reconcileBudget(makeEnv(), "user-1", "org-test", "rsv-1", 1_000, [keyEntity], "postgres://test"),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({});
   });
 
   it("throwOnError: throws when status is not ok", async () => {
-    mockDoBudgetReconcile.mockResolvedValue("pg_failed");
+    mockDoBudgetReconcile.mockResolvedValue({ status: "error", thresholdCrossings: [] });
     vi.spyOn(console, "error").mockImplementation(() => {});
 
     await expect(
       reconcileBudget(makeEnv(), "user-1", "org-test", "rsv-1", 1_000, [keyEntity], "postgres://test", { throwOnError: true }),
-    ).rejects.toThrow("Reconciliation failed with status: pg_failed");
+    ).rejects.toThrow("Reconciliation failed with status: error");
   });
 
   it("throwOnError: does not throw when status is ok", async () => {
-    mockDoBudgetReconcile.mockResolvedValue("ok");
+    mockDoBudgetReconcile.mockResolvedValue({ status: "ok", thresholdCrossings: [] });
 
     await expect(
       reconcileBudget(makeEnv(), "user-1", "org-test", "rsv-1", 1_000, [keyEntity], "postgres://test", { throwOnError: true }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({ thresholdCrossings: [] });
   });
 
   it("throwOnError: re-throws doBudgetReconcile rejection", async () => {
@@ -395,7 +395,7 @@ describe("checkBudget — tag budget", () => {
 
     expect(mockDoBudgetCheck).toHaveBeenCalledWith(
       expect.anything(), "user-1", "key-1", 5_000_000, null,
-      ["project=openclaw", "env=prod"], null,
+      ["project=openclaw", "env=prod"], null, false,
     );
   });
 
@@ -411,7 +411,7 @@ describe("checkBudget — tag budget", () => {
     await checkBudget(makeEnv(), ctx, 5_000_000);
 
     expect(mockDoBudgetCheck).toHaveBeenCalledWith(
-      expect.anything(), "user-1", "key-1", 5_000_000, null, [], null,
+      expect.anything(), "user-1", "key-1", 5_000_000, null, [], null, false,
     );
   });
 

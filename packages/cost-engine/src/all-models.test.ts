@@ -3,6 +3,7 @@ import { getModelPricing, costComponent, isKnownModel } from "./pricing.js";
 
 // ---------------------------------------------------------------------------
 // Model catalog — every model in pricing-data.json with expected rates
+// Rates are in integer µ$/MTok (multiply old $/MTok by 1,000,000).
 // ---------------------------------------------------------------------------
 
 interface OpenAIRates {
@@ -31,50 +32,61 @@ type ModelEntry =
   | [provider: "google", model: string, rates: GoogleRates];
 
 const openaiModels: [string, OpenAIRates][] = [
-  ["gpt-4o", { in: 2.5, cached: 1.25, out: 10.0 }],
-  ["gpt-4o-mini", { in: 0.15, cached: 0.075, out: 0.6 }],
-  ["gpt-4.1", { in: 2.0, cached: 0.5, out: 8.0 }],
-  ["gpt-4.1-mini", { in: 0.4, cached: 0.1, out: 1.6 }],
-  ["gpt-4.1-nano", { in: 0.1, cached: 0.025, out: 0.4 }],
-  ["o4-mini", { in: 1.1, cached: 0.275, out: 4.4 }],
-  ["o3", { in: 2.0, cached: 0.5, out: 8.0 }],
-  ["o3-mini", { in: 1.1, cached: 0.55, out: 4.4 }],
-  ["o1", { in: 15.0, cached: 7.5, out: 60.0 }],
-  ["gpt-5", { in: 1.25, cached: 0.125, out: 10.0 }],
-  ["gpt-5-mini", { in: 0.25, cached: 0.025, out: 2.0 }],
-  ["gpt-5-nano", { in: 0.05, cached: 0.005, out: 0.4 }],
-  ["gpt-5.1", { in: 1.25, cached: 0.125, out: 10.0 }],
-  ["gpt-5.2", { in: 1.75, cached: 0.175, out: 14.0 }],
+  ["gpt-4o", { in: 2_500_000, cached: 1_250_000, out: 10_000_000 }],
+  ["gpt-4o-mini", { in: 150_000, cached: 75_000, out: 600_000 }],
+  ["gpt-4.1", { in: 2_000_000, cached: 500_000, out: 8_000_000 }],
+  ["gpt-4.1-mini", { in: 400_000, cached: 100_000, out: 1_600_000 }],
+  ["gpt-4.1-nano", { in: 100_000, cached: 25_000, out: 400_000 }],
+  ["o4-mini", { in: 1_100_000, cached: 275_000, out: 4_400_000 }],
+  ["o3", { in: 2_000_000, cached: 500_000, out: 8_000_000 }],
+  ["o3-mini", { in: 1_100_000, cached: 550_000, out: 4_400_000 }],
+  ["o1", { in: 15_000_000, cached: 7_500_000, out: 60_000_000 }],
+  ["gpt-5", { in: 1_250_000, cached: 125_000, out: 10_000_000 }],
+  ["gpt-5-mini", { in: 250_000, cached: 25_000, out: 2_000_000 }],
+  ["gpt-5-nano", { in: 50_000, cached: 5_000, out: 400_000 }],
+  ["gpt-5.1", { in: 1_250_000, cached: 125_000, out: 10_000_000 }],
+  ["gpt-5.2", { in: 1_750_000, cached: 175_000, out: 14_000_000 }],
+  ["gpt-5.2-pro", { in: 21_000_000, cached: 21_000_000, out: 168_000_000 }],
+  ["gpt-5-pro", { in: 15_000_000, cached: 15_000_000, out: 120_000_000 }],
+  ["o3-pro", { in: 20_000_000, cached: 20_000_000, out: 80_000_000 }],
+  ["o1-pro", { in: 150_000_000, cached: 150_000_000, out: 600_000_000 }],
+  ["o1-mini", { in: 1_100_000, cached: 550_000, out: 4_400_000 }],
 ];
 
 const anthropicModels: [string, AnthropicRates][] = [
-  ["claude-sonnet-4-6", { in: 3.0, cached: 0.3, w5m: 3.75, w1h: 6.0, out: 15.0 }],
-  ["claude-haiku-3.5", { in: 0.8, cached: 0.08, w5m: 1.0, w1h: 1.6, out: 4.0 }],
-  ["claude-opus-4", { in: 15.0, cached: 1.5, w5m: 18.75, w1h: 30.0, out: 75.0 }],
-  ["claude-opus-4-6", { in: 5.0, cached: 0.5, w5m: 6.25, w1h: 10.0, out: 25.0 }],
-  ["claude-sonnet-4-5", { in: 3.0, cached: 0.3, w5m: 3.75, w1h: 6.0, out: 15.0 }],
-  ["claude-opus-4-5", { in: 5.0, cached: 0.5, w5m: 6.25, w1h: 10.0, out: 25.0 }],
-  ["claude-opus-4-1", { in: 15.0, cached: 1.5, w5m: 18.75, w1h: 30.0, out: 75.0 }],
-  ["claude-sonnet-4", { in: 3.0, cached: 0.3, w5m: 3.75, w1h: 6.0, out: 15.0 }],
-  ["claude-haiku-4-5", { in: 1.0, cached: 0.1, w5m: 1.25, w1h: 2.0, out: 5.0 }],
-  ["claude-haiku-3", { in: 0.25, cached: 0.03, w5m: 0.3, w1h: 0.5, out: 1.25 }],
-  ["claude-opus-4-6-20260205", { in: 5.0, cached: 0.5, w5m: 6.25, w1h: 10.0, out: 25.0 }],
-  ["claude-sonnet-4-6-20260217", { in: 3.0, cached: 0.3, w5m: 3.75, w1h: 6.0, out: 15.0 }],
-  ["claude-sonnet-4-5-20250929", { in: 3.0, cached: 0.3, w5m: 3.75, w1h: 6.0, out: 15.0 }],
-  ["claude-opus-4-5-20251101", { in: 5.0, cached: 0.5, w5m: 6.25, w1h: 10.0, out: 25.0 }],
-  ["claude-haiku-4-5-20251001", { in: 1.0, cached: 0.1, w5m: 1.25, w1h: 2.0, out: 5.0 }],
-  ["claude-opus-4-1-20250805", { in: 15.0, cached: 1.5, w5m: 18.75, w1h: 30.0, out: 75.0 }],
-  ["claude-opus-4-20250514", { in: 15.0, cached: 1.5, w5m: 18.75, w1h: 30.0, out: 75.0 }],
-  ["claude-sonnet-4-20250514", { in: 3.0, cached: 0.3, w5m: 3.75, w1h: 6.0, out: 15.0 }],
-  ["claude-3-5-haiku-20241022", { in: 0.8, cached: 0.08, w5m: 1.0, w1h: 1.6, out: 4.0 }],
-  ["claude-3-haiku-20240307", { in: 0.25, cached: 0.03, w5m: 0.3, w1h: 0.5, out: 1.25 }],
-  ["claude-opus-4-0", { in: 15.0, cached: 1.5, w5m: 18.75, w1h: 30.0, out: 75.0 }],
-  ["claude-sonnet-4-0", { in: 3.0, cached: 0.3, w5m: 3.75, w1h: 6.0, out: 15.0 }],
+  ["claude-sonnet-4-6", { in: 3_000_000, cached: 300_000, w5m: 3_750_000, w1h: 6_000_000, out: 15_000_000 }],
+  ["claude-haiku-3.5", { in: 800_000, cached: 80_000, w5m: 1_000_000, w1h: 1_600_000, out: 4_000_000 }],
+  ["claude-opus-4", { in: 15_000_000, cached: 1_500_000, w5m: 18_750_000, w1h: 30_000_000, out: 75_000_000 }],
+  ["claude-opus-4-6", { in: 5_000_000, cached: 500_000, w5m: 6_250_000, w1h: 10_000_000, out: 25_000_000 }],
+  ["claude-sonnet-4-5", { in: 3_000_000, cached: 300_000, w5m: 3_750_000, w1h: 6_000_000, out: 15_000_000 }],
+  ["claude-opus-4-5", { in: 5_000_000, cached: 500_000, w5m: 6_250_000, w1h: 10_000_000, out: 25_000_000 }],
+  ["claude-opus-4-1", { in: 15_000_000, cached: 1_500_000, w5m: 18_750_000, w1h: 30_000_000, out: 75_000_000 }],
+  ["claude-sonnet-4", { in: 3_000_000, cached: 300_000, w5m: 3_750_000, w1h: 6_000_000, out: 15_000_000 }],
+  ["claude-haiku-4-5", { in: 1_000_000, cached: 100_000, w5m: 1_250_000, w1h: 2_000_000, out: 5_000_000 }],
+  ["claude-haiku-3", { in: 250_000, cached: 30_000, w5m: 300_000, w1h: 500_000, out: 1_250_000 }],
+  ["claude-opus-4-6-20260205", { in: 5_000_000, cached: 500_000, w5m: 6_250_000, w1h: 10_000_000, out: 25_000_000 }],
+  ["claude-sonnet-4-6-20260217", { in: 3_000_000, cached: 300_000, w5m: 3_750_000, w1h: 6_000_000, out: 15_000_000 }],
+  ["claude-sonnet-4-5-20250929", { in: 3_000_000, cached: 300_000, w5m: 3_750_000, w1h: 6_000_000, out: 15_000_000 }],
+  ["claude-opus-4-5-20251101", { in: 5_000_000, cached: 500_000, w5m: 6_250_000, w1h: 10_000_000, out: 25_000_000 }],
+  ["claude-haiku-4-5-20251001", { in: 1_000_000, cached: 100_000, w5m: 1_250_000, w1h: 2_000_000, out: 5_000_000 }],
+  ["claude-opus-4-1-20250805", { in: 15_000_000, cached: 1_500_000, w5m: 18_750_000, w1h: 30_000_000, out: 75_000_000 }],
+  ["claude-opus-4-20250514", { in: 15_000_000, cached: 1_500_000, w5m: 18_750_000, w1h: 30_000_000, out: 75_000_000 }],
+  ["claude-sonnet-4-20250514", { in: 3_000_000, cached: 300_000, w5m: 3_750_000, w1h: 6_000_000, out: 15_000_000 }],
+  ["claude-3-5-haiku-20241022", { in: 800_000, cached: 80_000, w5m: 1_000_000, w1h: 1_600_000, out: 4_000_000 }],
+  ["claude-3-haiku-20240307", { in: 250_000, cached: 30_000, w5m: 300_000, w1h: 500_000, out: 1_250_000 }],
+  ["claude-opus-4-0", { in: 15_000_000, cached: 1_500_000, w5m: 18_750_000, w1h: 30_000_000, out: 75_000_000 }],
+  ["claude-sonnet-4-0", { in: 3_000_000, cached: 300_000, w5m: 3_750_000, w1h: 6_000_000, out: 15_000_000 }],
 ];
 
 const googleModels: [string, GoogleRates][] = [
-  ["gemini-2.5-pro", { in: 1.25, cached: 0.3125, out: 10.0 }],
-  ["gemini-2.5-flash", { in: 0.15, cached: 0.0375, out: 0.6 }],
+  ["gemini-2.5-pro", { in: 1_250_000, cached: 125_000, out: 10_000_000 }],
+  ["gemini-2.5-flash", { in: 300_000, cached: 30_000, out: 2_500_000 }],
+  ["gemini-2.5-flash-lite", { in: 100_000, cached: 10_000, out: 400_000 }],
+  ["gemini-2.0-flash", { in: 100_000, cached: 25_000, out: 400_000 }],
+  ["gemini-2.0-flash-lite", { in: 75_000, cached: 0, out: 300_000 }],
+  ["gemini-3-flash-preview", { in: 500_000, cached: 50_000, out: 3_000_000 }],
+  ["gemini-3.1-pro-preview", { in: 2_000_000, cached: 200_000, out: 12_000_000 }],
+  ["gemini-3.1-flash-lite-preview", { in: 250_000, cached: 25_000, out: 1_500_000 }],
 ];
 
 // Flattened list for parameterized tests
@@ -89,14 +101,14 @@ const allModels: ModelEntry[] = [
 // ---------------------------------------------------------------------------
 
 describe("pricing catalog completeness", () => {
-  it("recognises all 38 models via isKnownModel", () => {
+  it("recognises all 49 models via isKnownModel", () => {
     for (const [provider, model] of allModels) {
       expect(
         isKnownModel(provider, model),
         `expected isKnownModel("${provider}", "${model}") to be true`,
       ).toBe(true);
     }
-    expect(allModels).toHaveLength(38);
+    expect(allModels).toHaveLength(49);
   });
 
   it.each([
@@ -167,7 +179,9 @@ describe("cost calculation: every model, 10K in + 2K out", () => {
       const inputCost = costComponent(10_000, rates.in);
       const outputCost = costComponent(2_000, rates.out);
       const total = Math.round(inputCost + outputCost);
-      const expected = Math.round(10_000 * rates.in + 2_000 * rates.out);
+      const expected = Math.round(
+        costComponent(10_000, rates.in) + costComponent(2_000, rates.out),
+      );
 
       expect(total).toBe(expected);
       expect(total).toBeGreaterThan(0);
@@ -189,9 +203,9 @@ describe("Google Gemini cost calculations", () => {
     const cachedCost = costComponent(2_000, pricing.cachedInputPerMTok);
     const outputCost = costComponent(1_000, pricing.outputPerMTok);
     const total = Math.round(inputCost + cachedCost + outputCost);
-    const expected = Math.round(5_000 * 1.25 + 2_000 * 0.3125 + 1_000 * 10.0);
-
-    expect(total).toBe(expected);
+    // costComponent(5000, 1_250_000) + costComponent(2000, 125_000) + costComponent(1000, 10_000_000)
+    // = 6250 + 250 + 10000 = 16500
+    expect(total).toBe(16500);
   });
 
   it("gemini-2.5-flash: 50K input, 10K output", () => {
@@ -201,9 +215,8 @@ describe("Google Gemini cost calculations", () => {
     const inputCost = costComponent(50_000, pricing.inputPerMTok);
     const outputCost = costComponent(10_000, pricing.outputPerMTok);
     const total = Math.round(inputCost + outputCost);
-    const expected = Math.round(50_000 * 0.15 + 10_000 * 0.6);
-
-    expect(total).toBe(expected);
+    // costComponent(50000, 300_000) + costComponent(10000, 2_500_000) = 15000 + 25000 = 40000
+    expect(total).toBe(40000);
   });
 
   it("Gemini models have no cacheWrite fields", () => {

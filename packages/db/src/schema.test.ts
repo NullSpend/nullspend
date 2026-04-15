@@ -234,6 +234,19 @@ describe("existing tables still have correct structure", () => {
     expect(cols.defaultTags.hasDefault).toBe(true);
   });
 
+  it("apiKeys table has requireCustomerId column (CX-4 migration 0059)", () => {
+    const cols = getTableColumns(apiKeys);
+    expect(cols.requireCustomerId).toBeDefined();
+    expect(cols.requireCustomerId.notNull).toBe(true);
+    expect(cols.requireCustomerId.hasDefault).toBe(true);
+    expect(cols.requireCustomerId.dataType).toBe("boolean");
+  });
+
+  it("apiKeys table has allowedCustomers column (CX-2)", () => {
+    const cols = getTableColumns(apiKeys);
+    expect(cols.allowedCustomers).toBeDefined();
+  });
+
   it("slackConfigs table has required columns", () => {
     const cols = getTableColumns(slackConfigs);
     expect(cols.id.notNull).toBe(true);

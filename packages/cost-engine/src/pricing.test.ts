@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { getModelPricing, costComponent } from "./pricing.js";
+import { getModelPricing, costComponent, RATE_SCALE } from "./pricing.js";
 
 describe("getModelPricing", () => {
   it("returns pricing for known OpenAI model", () => {
     const pricing = getModelPricing("openai", "gpt-4o");
     expect(pricing).not.toBeNull();
-    expect(pricing!.inputPerMTok).toBe(2.5);
-    expect(pricing!.cachedInputPerMTok).toBe(1.25);
-    expect(pricing!.outputPerMTok).toBe(10.0);
+    expect(pricing!.inputPerMTok).toBe(2_500_000);
+    expect(pricing!.cachedInputPerMTok).toBe(1_250_000);
+    expect(pricing!.outputPerMTok).toBe(10_000_000);
     expect(pricing!.cacheWrite5mPerMTok).toBeUndefined();
     expect(pricing!.cacheWrite1hPerMTok).toBeUndefined();
   });
@@ -15,19 +15,19 @@ describe("getModelPricing", () => {
   it("returns pricing for known Anthropic model with cache write fields", () => {
     const pricing = getModelPricing("anthropic", "claude-sonnet-4-6");
     expect(pricing).not.toBeNull();
-    expect(pricing!.inputPerMTok).toBe(3.0);
-    expect(pricing!.cachedInputPerMTok).toBe(0.3);
-    expect(pricing!.cacheWrite5mPerMTok).toBe(3.75);
-    expect(pricing!.cacheWrite1hPerMTok).toBe(6.0);
-    expect(pricing!.outputPerMTok).toBe(15.0);
+    expect(pricing!.inputPerMTok).toBe(3_000_000);
+    expect(pricing!.cachedInputPerMTok).toBe(300_000);
+    expect(pricing!.cacheWrite5mPerMTok).toBe(3_750_000);
+    expect(pricing!.cacheWrite1hPerMTok).toBe(6_000_000);
+    expect(pricing!.outputPerMTok).toBe(15_000_000);
   });
 
   it("returns pricing for known Gemini model", () => {
     const pricing = getModelPricing("google", "gemini-2.5-flash");
     expect(pricing).not.toBeNull();
-    expect(pricing!.inputPerMTok).toBe(0.15);
-    expect(pricing!.cachedInputPerMTok).toBe(0.0375);
-    expect(pricing!.outputPerMTok).toBe(0.6);
+    expect(pricing!.inputPerMTok).toBe(300_000);
+    expect(pricing!.cachedInputPerMTok).toBe(30_000);
+    expect(pricing!.outputPerMTok).toBe(2_500_000);
   });
 
   it("returns pricing for all 10 launch models", () => {
@@ -59,11 +59,12 @@ describe("getModelPricing", () => {
 
 describe("costComponent", () => {
   it("returns correct unrounded microdollars", () => {
-    expect(costComponent(1000, 2.5)).toBe(2500.0);
+    // 1000 tokens × 2,500,000 µ$/MTok / 1,000,000 = 2500 µ$
+    expect(costComponent(1000, 2_500_000)).toBe(2500.0);
   });
 
   it("returns 0 for zero tokens", () => {
-    expect(costComponent(0, 10.0)).toBe(0);
+    expect(costComponent(0, 10_000_000)).toBe(0);
   });
 
   it("returns 0 for zero rate", () => {
@@ -71,15 +72,22 @@ describe("costComponent", () => {
   });
 
   it("handles small token counts", () => {
-    expect(costComponent(1, 2.5)).toBe(2.5);
+    // 1 token × 2,500,000 / 1,000,000 = 2.5 µ$
+    expect(costComponent(1, 2_500_000)).toBe(2.5);
   });
 
   it("returns 0 for negative tokens (security guard)", () => {
-    expect(costComponent(-1000, 2.5)).toBe(0);
+    expect(costComponent(-1000, 2_500_000)).toBe(0);
   });
 
   it("returns 0 for negative rate (security guard)", () => {
-    expect(costComponent(1000, -2.5)).toBe(0);
+    expect(costComponent(1000, -2_500_000)).toBe(0);
+  });
+});
+
+describe("RATE_SCALE", () => {
+  it("is 1,000,000", () => {
+    expect(RATE_SCALE).toBe(1_000_000);
   });
 });
 
@@ -96,7 +104,8 @@ describe("end-to-end cost calculation", () => {
         costComponent(output, pricing.outputPerMTok),
     );
 
-    // 4000*2.50 + 1000*1.25 + 2000*10.00 = 10000 + 1250 + 20000 = 31250
+    // costComponent(4000, 2_500_000) + costComponent(1000, 1_250_000) + costComponent(2000, 10_000_000)
+    // = 10000 + 1250 + 20000 = 31250
     expect(cost).toBe(31250);
     expect(cost / 1_000_000).toBeCloseTo(0.03125, 5);
   });
@@ -111,20 +120,24 @@ describe("end-to-end cost calculation", () => {
         costComponent(1000, pricing.outputPerMTok),
     );
 
-    // 2000*3.00 + 500*3.75 + 300*0.30 + 1000*15.00 = 6000 + 1875 + 90 + 15000 = 22965
+    // costComponent(2000, 3_000_000) + costComponent(500, 3_750_000) + costComponent(300, 300_000) + costComponent(1000, 15_000_000)
+    // = 6000 + 1875 + 90 + 15000 = 22965
     expect(cost).toBe(22965);
     expect(cost / 1_000_000).toBeCloseTo(0.022965, 6);
   });
 
-  it("IEEE 754 edge case: Math.round handles floating point safely", () => {
-    // 0.1 + 0.2 !== 0.3 in IEEE 754, so test with values that actually produce fp error
-    const raw = costComponent(1, 0.1) + costComponent(1, 0.2);
-    // 1*0.1 + 1*0.2 = 0.30000000000000004 due to IEEE 754
-    expect(raw).not.toBe(0.3);
-    expect(Math.round(raw)).toBe(0);
+  it("integer arithmetic eliminates IEEE 754 float imprecision in multiplication", () => {
+    // With old float rates: 1 * 0.0375 = 0.037500000000000006 (IEEE 754 error)
+    // With integer rates: (1 * 37500) / 1_000_000 — multiplication is exact
+    const result = costComponent(1, 37_500);
+    // The division by 1M may introduce ≤1 ULP error, but the multiplication is exact
+    expect(result).toBeCloseTo(0.0375, 15);
 
-    // Larger scale where rounding matters: verify it rounds correctly
-    const big = costComponent(333, 0.3);
-    expect(Math.round(big)).toBe(100);
+    // Verify the multiplication step is exact for integer inputs
+    const tokens = 7;
+    const rate = 37_500;
+    const product = tokens * rate; // 262500 — exact integer
+    expect(Number.isInteger(product)).toBe(true);
+    expect(product).toBe(262_500);
   });
 });

@@ -13,6 +13,7 @@
  */
 
 import { emitMetric } from "../lib/metrics.js";
+import { optionalBinding } from "../lib/env.js";
 
 const CACHE_KEY = "metrics:proxy_latency";
 const CACHE_TTL_SECONDS = 90;
@@ -71,8 +72,8 @@ export async function handleMetrics(
   emitMetric("ae_cache", { hit: false });
 
   // 2. Cache miss — query Analytics Engine
-  const accountId = (env as Record<string, unknown>).CF_ACCOUNT_ID as string | undefined;
-  const apiToken = (env as Record<string, unknown>).CF_API_TOKEN as string | undefined;
+  const accountId = optionalBinding(env, "CF_ACCOUNT_ID");
+  const apiToken = optionalBinding(env, "CF_API_TOKEN");
 
   if (!accountId || !apiToken) {
     // AE not configured — return empty metrics

@@ -123,6 +123,7 @@ def _parse_budget_entity(data: dict[str, Any]) -> BudgetEntity:
         policy=d["policy"],
         reset_interval=d.get("resetInterval"),
         current_period_start=d.get("currentPeriodStart"),
+        finalization_reserve_microdollars=d.get("finalizationReserveMicrodollars", 0),
     ))
 
 
@@ -141,6 +142,7 @@ def _parse_budget_record(data: dict[str, Any]) -> BudgetRecord:
         velocity_window_seconds=d.get("velocityWindowSeconds"),
         velocity_cooldown_seconds=d.get("velocityCooldownSeconds"),
         session_limit_microdollars=d.get("sessionLimitMicrodollars"),
+        finalization_reserve_microdollars=d.get("finalizationReserveMicrodollars", 0),
         created_at=d.get("createdAt", ""),
         updated_at=d.get("updatedAt", ""),
     ))
@@ -281,6 +283,7 @@ class NullSpend:
 
         self._client = httpx.Client(timeout=self._timeout_s)
         self._policy_caches: list[Any] = []
+        self._direct_cost_error_logged = False
 
         # Wire CostReporter if config provided
         if cost_reporting is not None:
@@ -396,6 +399,7 @@ class NullSpend:
         trace_id: str | None = None,
         action_id: str | None = None,
         enforcement: bool = False,
+        finalize: bool = False,
         session_limit_microdollars: int | None = None,
         on_cost_error: Any | None = None,
         on_denied: Any | None = None,
@@ -429,6 +433,7 @@ class NullSpend:
             trace_id=trace_id,
             action_id=action_id,
             enforcement=enforcement,
+            finalize=finalize,
             session_limit_microdollars=session_limit_microdollars,
             policy_cache=policy_cache,
             queue_cost=queue_fn,
@@ -437,15 +442,13 @@ class NullSpend:
             timeout=self._timeout_s,
         )
 
-    _direct_cost_error_logged = False
-
     def _queue_cost_direct(self, event: CostEventInput) -> None:
         """Fallback: report cost immediately when no CostReporter is configured."""
         try:
             self.report_cost(event)
         except Exception as err:
-            if not NullSpend._direct_cost_error_logged:
-                NullSpend._direct_cost_error_logged = True
+            if not self._direct_cost_error_logged:
+                self._direct_cost_error_logged = True
                 logger.warning(
                     "nullspend: Failed to report cost event (%s). "
                     "Subsequent errors will be silent.",

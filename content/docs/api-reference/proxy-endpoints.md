@@ -12,10 +12,12 @@ The NullSpend proxy sits between your agents and upstream providers. It authenti
 |---|---|---|---|
 | POST | `/v1/chat/completions` | OpenAI | `https://api.openai.com` |
 | POST | `/v1/messages` | Anthropic | `https://api.anthropic.com` |
+| POST | `/v1beta/models/{model}:generateContent` | Google Gemini | `https://generativelanguage.googleapis.com` |
+| POST | `/v1beta/models/{model}:streamGenerateContent` | Google Gemini (streaming) | `https://generativelanguage.googleapis.com` |
 | POST | `/v1/mcp/budget/check` | MCP | None (local) |
 | POST | `/v1/mcp/events` | MCP | None (local) |
 
-All provider routes require an `X-NullSpend-Key` header. Unsupported `/v1/*` paths return `404 not_found`. Non-POST methods return `404`.
+All provider routes require an `X-NullSpend-Key` header. Unsupported paths return `404 not_found`. Non-POST methods return `404`.
 
 ### OpenAI (`/v1/chat/completions`)
 
@@ -38,6 +40,43 @@ Forwards to `https://api.anthropic.com/v1/messages` (or custom upstream). Header
 - `traceparent`, `tracestate`
 
 Supports both streaming and non-streaming responses.
+
+### Google Gemini (`/v1beta/models/{model}:generateContent`, `:streamGenerateContent`)
+
+Forwards to Google's Gemini API using the same URL structure as the native API. Replace the base URL and add your NullSpend key. The request body passes through unmodified in native Gemini format.
+
+**Authentication:** The proxy extracts the Google API key from either:
+- `Authorization: Bearer <key>` (NullSpend convention, works with all providers)
+- `x-goog-api-key: <key>` (Google's native header)
+
+Headers forwarded:
+- `x-goog-api-key` — Your Google API key (extracted from `Authorization` or forwarded directly)
+- `traceparent`, `tracestate` — W3C trace context
+
+**Streaming:** The proxy automatically appends `?alt=sse` to the upstream URL for `:streamGenerateContent` requests. You don't need to include it yourself.
+
+**Model in URL:** Unlike OpenAI/Anthropic where the model is in the request body, Gemini puts the model in the URL path. The proxy extracts it automatically for cost tracking. Dated model aliases (e.g., `gemini-2.5-flash-preview-04-17`) are resolved to their base model for pricing.
+
+**Thinking tokens:** Gemini 2.5 models report `thoughtsTokenCount` in usage metadata. These are tracked as `_ns_thinking_tokens` in cost event tags, similar to OpenAI reasoning tokens.
+
+**Response ID:** Since Gemini doesn't return a request ID in response headers, the proxy generates a UUID and sets `x-request-id` on the response. Google's `responseId` from the response body is captured as the `_ns_google_response_id` tag for cross-referencing.
+
+```bash
+# Non-streaming
+curl "https://proxy.nullspend.dev/v1beta/models/gemini-2.5-flash:generateContent" \
+  -H "x-goog-api-key: $GOOGLE_API_KEY" \
+  -H "X-NullSpend-Key: $NULLSPEND_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"parts":[{"text":"Hello"}]}]}'
+
+# Streaming
+curl "https://proxy.nullspend.dev/v1beta/models/gemini-2.5-flash:streamGenerateContent" \
+  -H "x-goog-api-key: $GOOGLE_API_KEY" \
+  -H "X-NullSpend-Key: $NULLSPEND_API_KEY" \
+  -H "Content-Type: application/json" \
+  --no-buffer \
+  -d '{"contents":[{"parts":[{"text":"Count to 5"}]}]}'
+```
 
 ### MCP (`/v1/mcp/budget/check`, `/v1/mcp/events`)
 
@@ -80,8 +119,9 @@ When overriding the upstream provider with the `X-NullSpend-Upstream` header, on
 | `https://api.fireworks.ai/inference` | Fireworks AI |
 | `https://api.mistral.ai` | Mistral |
 | `https://openrouter.ai/api` | OpenRouter |
+| `https://generativelanguage.googleapis.com` | Google Gemini (default) |
 
-Invalid upstream URLs return `400 invalid_upstream`. Perplexity is excluded because it doesn't use the `/v1/` prefix in its URL structure.
+Invalid upstream URLs return `400 invalid_upstream`. Entries must not include API version path segments (`/v1`, `/v1beta`), as the proxy appends these automatically.
 
 ---
 

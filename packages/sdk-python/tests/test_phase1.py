@@ -159,6 +159,34 @@ class TestBudgetExceededError:
         )
         assert "https://nullspend.dev/upgrade" in str(err)
 
+    def test_finalization_fields_default_none(self):
+        err = BudgetExceededError(remaining_microdollars=0)
+        assert err.finalization_reserve_microdollars is None
+        assert err.finalization_remaining_microdollars is None
+
+    def test_finalization_fields_populated(self):
+        err = BudgetExceededError(
+            remaining_microdollars=500_000,
+            finalization_reserve_microdollars=3_000_000,
+            finalization_remaining_microdollars=7_000_000,
+        )
+        assert err.finalization_reserve_microdollars == 3_000_000
+        assert err.finalization_remaining_microdollars == 7_000_000
+
+    def test_finalization_fields_backward_compat(self):
+        """Existing code that doesn't pass finalization fields should still work."""
+        err = BudgetExceededError(
+            remaining_microdollars=100,
+            entity_type="org",
+            entity_id="org-1",
+            limit_microdollars=1_000_000,
+            spend_microdollars=999_900,
+            upgrade_url="https://example.com",
+        )
+        assert err.finalization_reserve_microdollars is None
+        assert err.finalization_remaining_microdollars is None
+        assert err.remaining_microdollars == 100
+
 
 class TestMandateViolationError:
     def test_basic(self):
@@ -425,9 +453,10 @@ class TestCostReporter:
             CostReporter(CostReportingConfig(max_queue_size=0), lambda b: None)
 
     def test_enqueue_after_shutdown_silently_dropped(self):
+        sent: list[list[CostEventInput]] = []
         reporter = CostReporter(
             CostReportingConfig(),
-            lambda batch: None,
+            lambda batch: sent.append(batch),
         )
         reporter.shutdown()
         # Should not raise
@@ -435,6 +464,12 @@ class TestCostReporter:
             provider="openai", model="gpt-4o",
             input_tokens=100, output_tokens=50, cost_microdollars=1500,
         ))
+        # Event must not be in the queue — verify nothing was enqueued
+        assert reporter._queue.empty()
+        assert reporter._queue_size == 0
+        # Flushing after should send nothing
+        reporter.flush()
+        assert len(sent) == 0
 
 
 # ---- AsyncNullSpend ----

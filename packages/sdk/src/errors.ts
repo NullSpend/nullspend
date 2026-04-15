@@ -59,6 +59,10 @@ export class BudgetExceededError extends NullSpendError {
    * time. Undefined when no upgrade_url is configured.
    */
   public readonly upgradeUrl: string | undefined;
+  /** Finalization reserve in microdollars held back from available budget. */
+  public readonly finalizationReserveMicrodollars: number | undefined;
+  /** Remaining budget after subtracting finalization reserve. */
+  public readonly finalizationRemainingMicrodollars: number | undefined;
 
   constructor(details: number | {
     remaining: number;
@@ -67,6 +71,8 @@ export class BudgetExceededError extends NullSpendError {
     limit?: number;
     spend?: number;
     upgradeUrl?: string;
+    finalizationReserve?: number;
+    finalizationRemaining?: number;
   }) {
     const d = typeof details === "number" ? { remaining: details } : details;
     const safeRemaining = safeFiniteNonNeg(d.remaining);
@@ -80,6 +86,8 @@ export class BudgetExceededError extends NullSpendError {
     this.limitMicrodollars = d.limit !== undefined ? safeFiniteNonNeg(d.limit) : undefined;
     this.spendMicrodollars = d.spend !== undefined ? safeFiniteNonNeg(d.spend) : undefined;
     this.upgradeUrl = d.upgradeUrl;
+    this.finalizationReserveMicrodollars = d.finalizationReserve !== undefined ? safeFiniteNonNeg(d.finalizationReserve) : undefined;
+    this.finalizationRemainingMicrodollars = d.finalizationRemaining !== undefined ? safeFiniteNonNeg(d.finalizationRemaining) : undefined;
   }
 }
 

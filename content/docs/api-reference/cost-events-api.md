@@ -23,7 +23,7 @@ API key
 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
-| `provider` | body | string | Yes | Provider name (e.g., `"openai"`, `"anthropic"`). 1–100 chars. |
+| `provider` | body | string | Yes | Provider name (e.g., `"openai"`, `"anthropic"`, `"google"`). 1–100 chars. |
 | `model` | body | string | Yes | Model identifier (e.g., `"gpt-4o"`, `"claude-sonnet-4-5-20250514"`). 1–200 chars. |
 | `inputTokens` | body | integer | Yes | Input token count. Min 0. |
 | `outputTokens` | body | integer | Yes | Output token count. Min 0. |

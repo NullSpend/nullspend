@@ -140,12 +140,37 @@ export async function logCostEventsBatch(
       ON CONFLICT (request_id, provider) DO NOTHING
     `;
   } catch (err) {
-    emitMetric("cost_event_drop", { reason: "batch_pg_error", count: events.length });
+    emitMetric("cost_event_drop", { reason: "batch_pg_error_attempting_fallback", count: events.length });
     console.error(
-      "[cost-logger] Failed to write cost event batch:",
+      "[cost-logger] Batch INSERT failed, attempting per-event fallback:",
       err instanceof Error ? err.message : "Unknown error",
       `(${events.length} events)`,
     );
-    if (options?.throwOnError) throw err;
+
+    // Per-event fallback: try writing each event individually
+    let succeeded = 0;
+    let failed = 0;
+    for (const event of events) {
+      try {
+        await logCostEvent(connectionString, event, { throwOnError: true });
+        succeeded++;
+      } catch {
+        failed++;
+      }
+    }
+
+    if (failed > 0) {
+      emitMetric("cost_event_drop", { reason: "per_event_fallback_pg_error", count: failed });
+    }
+
+    if (succeeded > 0) {
+      emitMetric("cost_event_batch_recovered", { count: succeeded, total: events.length });
+    }
+
+    console.log(
+      `[cost-logger] Per-event fallback result: ${succeeded} succeeded, ${failed} failed out of ${events.length}`,
+    );
+
+    if (options?.throwOnError && succeeded === 0) throw err;
   }
 }

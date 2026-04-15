@@ -126,6 +126,51 @@ No `Retry-After` header is sent — the session is done. The agent should start 
 
 When a session limit is exceeded, a `session.limit_exceeded` webhook event is dispatched (if webhooks are configured).
 
+## Finalization reserve
+
+When agents hit their budget limit, they're hard-killed mid-task. Finalization reserve holds back a portion of the budget so agents can finish gracefully.
+
+### Setting a finalization reserve
+
+1. In the budget dialog, expand **Finalization reserve**
+2. Enter the dollar amount to hold back (e.g., $5.00 on a $100 budget)
+3. Click **Set Budget**
+
+The budget list shows a two-zone progress bar when a reserve is active: green for the normal zone, amber for the reserve.
+
+### How agents use it
+
+Your agent watches the response headers:
+
+```typescript
+const response = await trackedFetch("https://proxy.nullspend.dev/v1/chat/completions", {
+  // ... normal request
+});
+
+const remaining = parseInt(response.headers.get("X-NullSpend-Budget-Effective-Remaining") || "0");
+const reserve = parseInt(response.headers.get("X-NullSpend-Budget-Finalization-Reserve") || "0");
+
+if (remaining <= 0 && reserve > 0) {
+  // We're in the reserve zone — do one final cleanup request
+  const finalResponse = await trackedFetch("https://proxy.nullspend.dev/v1/chat/completions", {
+    headers: { "X-NullSpend-Finalize": "1" },
+    // ... cleanup request
+  });
+}
+```
+
+Or with the SDK:
+
+```typescript
+const finalFetch = ns.createTrackedFetch("openai", { finalize: true });
+```
+
+### Recommendations
+
+- Set the reserve to the cost of 1-2 cleanup requests (typically $1-5 for GPT-4o)
+- Use the `X-NullSpend-Budget-Requests-Remaining` header to know when to start winding down
+- The reserve only unlocks when the agent has actually reached the zone — setting `finalize` early has no effect
+
 ## Budget tracking
 
 Budget spend is tracked in **real-time** using a Cloudflare Durable Object with embedded SQLite. This means:

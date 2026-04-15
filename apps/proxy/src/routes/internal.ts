@@ -2,6 +2,7 @@ import { invalidateAuthCacheForOwner } from "../lib/api-key-auth.js";
 import { doBudgetRemove, doBudgetResetSpend, doBudgetUpsertEntities, doBudgetGetVelocityState } from "../lib/budget-do-client.js";
 import { lookupBudgetsForDO } from "../lib/budget-do-lookup.js";
 import { errorResponse } from "../lib/errors.js";
+import { optionalBinding } from "../lib/env.js";
 import { emitMetric } from "../lib/metrics.js";
 import { timingSafeStringEqual } from "../lib/timing-safe-equal.js";
 import { retrieveBodies } from "../lib/body-storage.js";
@@ -271,7 +272,7 @@ export async function handleRequestBodies(
     return errorResponse("bad_request", "ownerId and requestId must be alphanumeric", 400);
   }
 
-  const bodyBucket = (env as Record<string, unknown>).BODY_STORAGE as R2Bucket | undefined;
+  const bodyBucket = optionalBinding(env, "BODY_STORAGE");
   if (!bodyBucket) {
     return errorResponse("internal_error", "Body storage not configured", 500);
   }

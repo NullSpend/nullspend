@@ -1,9 +1,9 @@
 ---
 title: "Supported Models"
-description: "NullSpend supports 45 models across OpenAI and Anthropic with full proxy routing, cost tracking, and budget enforcement."
+description: "NullSpend supports 56 models across OpenAI, Anthropic, and Google Gemini with full proxy routing, cost tracking, and budget enforcement."
 ---
 
-NullSpend supports 45 models across OpenAI (23) and Anthropic (22) with full proxy routing, cost tracking, and budget enforcement.
+NullSpend supports 56 models across OpenAI (26), Anthropic (22), and Google Gemini (8) with full proxy routing, cost tracking, and budget enforcement.
 
 ## Cost Formula
 
@@ -17,7 +17,7 @@ For the full calculation logic including cached tokens, cache writes, and long c
 
 ## OpenAI Models
 
-23 models. Rates in $/MTok.
+26 models. Rates in $/MTok.
 
 | Model | Input | Cached Input | Output |
 |---|---|---|---|
@@ -29,21 +29,24 @@ For the full calculation logic including cached tokens, cache writes, and long c
 | `o4-mini` | 1.10 | 0.275 | 4.40 |
 | `o3` | 2.00 | 0.50 | 8.00 |
 | `o3-mini` | 1.10 | 0.55 | 4.40 |
+| `o3-pro` | 20.00 | 20.00 | 80.00 |
 | `o1` | 15.00 | 7.50 | 60.00 |
+| `o1-pro` | 150.00 | 150.00 | 600.00 |
+| `o1-mini` | 1.10 | 0.55 | 4.40 |
 | `gpt-5` | 1.25 | 0.125 | 10.00 |
 | `gpt-5-mini` | 0.25 | 0.025 | 2.00 |
 | `gpt-5-nano` | 0.05 | 0.005 | 0.40 |
+| `gpt-5-pro` | 15.00 | 15.00 | 120.00 |
 | `gpt-5.1` | 1.25 | 0.125 | 10.00 |
 | `gpt-5.2` | 1.75 | 0.175 | 14.00 |
-| `gpt-5.3-chat-latest` | 1.75 | 0.175 | 14.00 |
-| `gpt-5.3-codex` | 1.75 | 0.175 | 14.00 |
+| `gpt-5.2-pro` | 21.00 | 21.00 | 168.00 |
 | `gpt-5.4` | 2.50 | 0.25 | 15.00 |
 | `gpt-5.4-mini` | 0.75 | 0.075 | 4.50 |
 | `gpt-5.4-nano` | 0.20 | 0.02 | 1.25 |
 | `gpt-5.4-pro` | 30.00 | 30.00 | 180.00 |
-| `o3-deep-research` | 5.00 | 5.00 | 20.00 |
-| `o4-mini-deep-research` | 1.00 | 1.00 | 4.00 |
-| `computer-use-preview` | 1.50 | 1.50 | 6.00 |
+| `o3-deep-research` | 10.00 | 2.50 | 40.00 |
+| `o4-mini-deep-research` | 2.00 | 0.50 | 8.00 |
+| `computer-use-preview` | 3.00 | 3.00 | 12.00 |
 
 OpenAI cost formula: `(prompt_tokens - cached_tokens) × input + cached_tokens × cached + completion_tokens × output`. Reasoning tokens are a subset of completion tokens — not double-counted.
 
@@ -107,13 +110,23 @@ Anthropic offers two cache write tiers:
 
 If the response includes `ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`, each is priced at its respective rate. Otherwise, all cache creation tokens use the 5-minute rate.
 
-## Unknown Models
+## Google Gemini Models
 
-If a request uses a model not in the pricing catalog, the proxy returns `400` with error code `invalid_model`. See the [error reference](../api-reference/errors.md#request-validation) for details.
+8 models. Rates in $/MTok. Proxy routes natively via `/v1beta/models/{model}:generateContent`.
 
-To request a new model, contact support.
+| Model | Input | Cached Input | Output |
+|---|---|---|---|
+| `gemini-2.5-pro` | 1.25 | 0.125 | 10.00 |
+| `gemini-2.5-flash` | 0.30 | 0.03 | 2.50 |
+| `gemini-2.5-flash-lite` | 0.10 | 0.01 | 0.40 |
+| `gemini-2.0-flash` | 0.10 | 0.025 | 0.40 |
+| `gemini-2.0-flash-lite` | 0.075 | — | 0.30 |
+| `gemini-3-flash-preview` | 0.50 | 0.05 | 3.00 |
+| `gemini-3.1-pro-preview` | 2.00 | 0.20 | 12.00 |
+| `gemini-3.1-flash-lite-preview` | 0.25 | 0.025 | 1.50 |
 
-## Related
+Gemini cost formula: `(promptTokenCount - cachedContentTokenCount) × input + cachedContentTokenCount × cached + candidatesTokenCount × output`. Thinking tokens (`thoughtsTokenCount`) are a subset of output, tracked as `_ns_thinking_tokens` tag.
 
-- [Cost Tracking](../features/cost-tracking.md) — full cost calculation formulas for each provider
-- [Error Reference](../api-reference/errors.md) — `invalid_model` error details
+**Model aliases:** Dated model names (e.g., `gemini-2.5-flash-preview-04-17`) are resolved to their base model for pricing via prefix matching.
+
+**Tiered pricing:** `gemini-2.5-pro` and `gemini-3.1-pro-preview` charge 2× rates for prompts exceeding 200K tokens. NullSpend currently uses the ≤200K rate. Long-context cost underreporting for these two models is a known limitation.

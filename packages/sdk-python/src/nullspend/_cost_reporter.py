@@ -70,10 +70,9 @@ class CostReporter:
 
     def enqueue(self, event: CostEventInput) -> None:
         """Add a cost event to the queue. Thread-safe."""
-        if self._is_shut_down:
-            return
-
         with self._lock:
+            if self._is_shut_down:
+                return
             if self._queue_size >= self._max_queue_size:
                 # Drop oldest events
                 dropped = 0

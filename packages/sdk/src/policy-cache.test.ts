@@ -471,4 +471,245 @@ describe("createPolicyCache", () => {
       expect(onError.mock.calls[0][0].message).toBe("string error");
     });
   });
+
+  // -----------------------------------------------------------------------
+  // Finalization reserve
+  // -----------------------------------------------------------------------
+
+  describe("checkBudget with finalization reserve", () => {
+    it("subtracts reserve from remaining when policy is strict_block", async () => {
+      fetchPolicy.mockResolvedValue(
+        makePolicy({
+          budget: {
+            remaining_microdollars: 10_000,
+            max_microdollars: 50_000,
+            spend_microdollars: 40_000,
+            period_end: null,
+            entity_type: "api_key",
+            entity_id: "key-1",
+            finalization_reserve_microdollars: 3_000,
+            policy: "strict_block",
+          },
+        }),
+      );
+      const cache = createPolicyCache(fetchPolicy);
+      await cache.getPolicy();
+
+      // effectiveRemaining = 10_000 - 3_000 = 7_000
+      const result = cache.checkBudget(7_000);
+      expect(result.allowed).toBe(true);
+      expect(result.remaining).toBe(7_000);
+
+      // 7_001 exceeds effective remaining
+      const denied = cache.checkBudget(7_001);
+      expect(denied.allowed).toBe(false);
+      expect(denied.remaining).toBe(7_000);
+    });
+
+    it("does NOT subtract reserve when policy is soft_block", async () => {
+      fetchPolicy.mockResolvedValue(
+        makePolicy({
+          budget: {
+            remaining_microdollars: 10_000,
+            max_microdollars: 50_000,
+            spend_microdollars: 40_000,
+            period_end: null,
+            entity_type: "api_key",
+            entity_id: "key-1",
+            finalization_reserve_microdollars: 3_000,
+            policy: "soft_block",
+          },
+        }),
+      );
+      const cache = createPolicyCache(fetchPolicy);
+      await cache.getPolicy();
+
+      // With soft_block, reserve is not subtracted: effective = 10_000
+      const result = cache.checkBudget(10_000);
+      expect(result.allowed).toBe(true);
+      expect(result.remaining).toBe(10_000);
+    });
+
+    it("skips reserve subtraction when finalize=true regardless of policy", async () => {
+      fetchPolicy.mockResolvedValue(
+        makePolicy({
+          budget: {
+            remaining_microdollars: 10_000,
+            max_microdollars: 50_000,
+            spend_microdollars: 40_000,
+            period_end: null,
+            entity_type: "api_key",
+            entity_id: "key-1",
+            finalization_reserve_microdollars: 3_000,
+            policy: "strict_block",
+          },
+        }),
+      );
+      const cache = createPolicyCache(fetchPolicy);
+      await cache.getPolicy();
+
+      // Without finalize, effective = 7_000 → 10_000 exceeds
+      const denied = cache.checkBudget(10_000);
+      expect(denied.allowed).toBe(false);
+
+      // With finalize, effective = 10_000 → exactly fits
+      const allowed = cache.checkBudget(10_000, { finalize: true });
+      expect(allowed.allowed).toBe(true);
+      expect(allowed.remaining).toBe(10_000);
+    });
+
+    it("unchanged behavior when no reserve is set", async () => {
+      fetchPolicy.mockResolvedValue(
+        makePolicy({
+          budget: {
+            remaining_microdollars: 10_000,
+            max_microdollars: 50_000,
+            spend_microdollars: 40_000,
+            period_end: null,
+            entity_type: "api_key",
+            entity_id: "key-1",
+            // no finalization_reserve_microdollars
+          },
+        }),
+      );
+      const cache = createPolicyCache(fetchPolicy);
+      await cache.getPolicy();
+
+      const result = cache.checkBudget(10_000);
+      expect(result.allowed).toBe(true);
+      expect(result.remaining).toBe(10_000);
+
+      const denied = cache.checkBudget(10_001);
+      expect(denied.allowed).toBe(false);
+      expect(denied.remaining).toBe(10_000);
+    });
+
+    it("effective remaining floors at 0 when reserve exceeds remaining", async () => {
+      fetchPolicy.mockResolvedValue(
+        makePolicy({
+          budget: {
+            remaining_microdollars: 2_000,
+            max_microdollars: 50_000,
+            spend_microdollars: 48_000,
+            period_end: null,
+            entity_type: "api_key",
+            entity_id: "key-1",
+            finalization_reserve_microdollars: 5_000,
+            policy: "strict_block",
+          },
+        }),
+      );
+      const cache = createPolicyCache(fetchPolicy);
+      await cache.getPolicy();
+
+      // effectiveRemaining = max(0, 2_000 - 5_000) = 0
+      const result = cache.checkBudget(1);
+      expect(result.allowed).toBe(false);
+      expect(result.remaining).toBe(0);
+    });
+
+    it("defaults policy to strict_block when not specified", async () => {
+      fetchPolicy.mockResolvedValue(
+        makePolicy({
+          budget: {
+            remaining_microdollars: 10_000,
+            max_microdollars: 50_000,
+            spend_microdollars: 40_000,
+            period_end: null,
+            entity_type: "api_key",
+            entity_id: "key-1",
+            finalization_reserve_microdollars: 3_000,
+            // no policy → defaults to strict_block
+          },
+        }),
+      );
+      const cache = createPolicyCache(fetchPolicy);
+      await cache.getPolicy();
+
+      // Should subtract reserve (strict_block default)
+      const result = cache.checkBudget(8_000);
+      expect(result.allowed).toBe(false);
+      expect(result.remaining).toBe(7_000);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // getFinalizationReserve
+  // -----------------------------------------------------------------------
+
+  describe("getFinalizationReserve", () => {
+    it("returns null when no cached policy", () => {
+      const cache = createPolicyCache(fetchPolicy);
+      expect(cache.getFinalizationReserve()).toBeNull();
+    });
+
+    it("returns null when policy has no budget", async () => {
+      fetchPolicy.mockResolvedValue(makePolicy({ budget: null }));
+      const cache = createPolicyCache(fetchPolicy);
+      await cache.getPolicy();
+
+      expect(cache.getFinalizationReserve()).toBeNull();
+    });
+
+    it("returns null when budget has no finalization reserve", async () => {
+      fetchPolicy.mockResolvedValue(
+        makePolicy({
+          budget: {
+            remaining_microdollars: 10_000,
+            max_microdollars: 50_000,
+            spend_microdollars: 40_000,
+            period_end: null,
+            entity_type: "api_key",
+            entity_id: "key-1",
+          },
+        }),
+      );
+      const cache = createPolicyCache(fetchPolicy);
+      await cache.getPolicy();
+
+      expect(cache.getFinalizationReserve()).toBeNull();
+    });
+
+    it("returns the reserve value when present", async () => {
+      fetchPolicy.mockResolvedValue(
+        makePolicy({
+          budget: {
+            remaining_microdollars: 10_000,
+            max_microdollars: 50_000,
+            spend_microdollars: 40_000,
+            period_end: null,
+            entity_type: "api_key",
+            entity_id: "key-1",
+            finalization_reserve_microdollars: 5_000,
+          },
+        }),
+      );
+      const cache = createPolicyCache(fetchPolicy);
+      await cache.getPolicy();
+
+      expect(cache.getFinalizationReserve()).toBe(5_000);
+    });
+
+    it("returns null after invalidate()", async () => {
+      fetchPolicy.mockResolvedValue(
+        makePolicy({
+          budget: {
+            remaining_microdollars: 10_000,
+            max_microdollars: 50_000,
+            spend_microdollars: 40_000,
+            period_end: null,
+            entity_type: "api_key",
+            entity_id: "key-1",
+            finalization_reserve_microdollars: 5_000,
+          },
+        }),
+      );
+      const cache = createPolicyCache(fetchPolicy);
+      await cache.getPolicy();
+
+      expect(cache.getFinalizationReserve()).toBe(5_000);
+      cache.invalidate();
+      expect(cache.getFinalizationReserve()).toBeNull();
+    });
+  });
 });

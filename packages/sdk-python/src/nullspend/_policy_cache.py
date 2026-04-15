@@ -25,6 +25,8 @@ class PolicyBudget:
     period_end: str | None
     entity_type: str
     entity_id: str
+    finalization_reserve_microdollars: int = 0
+    policy: str = "strict_block"
 
 
 @dataclass
@@ -66,6 +68,10 @@ def _parse_policy_response(data: dict[str, Any]) -> PolicyResponse:
             period_end=budget_data.get("period_end"),
             entity_type=budget_data.get("entity_type", ""),
             entity_id=budget_data.get("entity_id", ""),
+            finalization_reserve_microdollars=int(
+                budget_data.get("finalization_reserve_microdollars", 0)
+            ),
+            policy=budget_data.get("policy", "strict_block"),
         )
 
     return PolicyResponse(
@@ -155,24 +161,39 @@ class PolicyCache:
 
         return MandateResult(allowed=True)
 
-    def check_budget(self, estimate_microdollars: int) -> BudgetResult:
-        """Check if estimated cost fits within budget. Fail-open."""
+    def check_budget(
+        self, estimate_microdollars: int, *, finalize: bool = False,
+    ) -> BudgetResult:
+        """Check if estimated cost fits within budget. Fail-open.
+
+        When finalize=True, the finalization reserve is not subtracted from
+        remaining (the caller is performing a final settlement).
+        """
         cached = self._cached
         if cached is None or cached.budget is None:
             return BudgetResult(allowed=True)
 
         b = cached.budget
-        if estimate_microdollars > b.remaining_microdollars:
+        reserve = b.finalization_reserve_microdollars
+        policy = b.policy
+        skip_reserve = finalize or policy != "strict_block"
+        effective_remaining = (
+            b.remaining_microdollars
+            if skip_reserve
+            else max(0, b.remaining_microdollars - reserve)
+        )
+
+        if estimate_microdollars > effective_remaining:
             return BudgetResult(
                 allowed=False,
-                remaining=b.remaining_microdollars,
+                remaining=effective_remaining,
                 entity_type=b.entity_type,
                 entity_id=b.entity_id,
                 limit=b.max_microdollars,
                 spend=b.spend_microdollars,
             )
 
-        return BudgetResult(allowed=True, remaining=b.remaining_microdollars)
+        return BudgetResult(allowed=True, remaining=effective_remaining)
 
     def get_session_limit(self) -> int | None:
         """Get the session limit from cached policy."""
@@ -180,6 +201,13 @@ class PolicyCache:
         if cached is None:
             return None
         return cached.session_limit_microdollars
+
+    def get_finalization_reserve(self) -> int | None:
+        """Get the finalization reserve from cached policy budget."""
+        cached = self._cached
+        if cached is None or cached.budget is None:
+            return None
+        return cached.budget.finalization_reserve_microdollars
 
     def invalidate(self) -> None:
         """Clear the cache, forcing a fresh fetch on next access."""

@@ -901,6 +901,58 @@ describe("UserBudgetDO", () => {
     expect(r.checkedEntities![0].sessionLimit).toBe(5_000_000);
   });
 
+  // ── P1-2 regression: session spend drift under cancel-repeat ─────
+
+  it("session limit: multiple cancellations don't cause negative session spend", async () => {
+    const stub = getStub("user-session-cancel-repeat");
+    await stub.populateIfEmpty(
+      "user", "u1", 10_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], 5_000_000, 0,
+    );
+
+    // Request 1: reserve 4M, cancel (actual = 0)
+    const r1 = await stub.checkAndReserve(null, 4_000_000, 30_000, "sess-cancel");
+    expect(r1.status).toBe("approved");
+    await stub.reconcile(r1.reservationId!, 0);
+
+    // Request 2: reserve 4M again, cancel again (actual = 0)
+    const r2 = await stub.checkAndReserve(null, 4_000_000, 30_000, "sess-cancel");
+    expect(r2.status).toBe("approved");
+    await stub.reconcile(r2.reservationId!, 0);
+
+    // Request 3: session spend should be 0 after two cancellations
+    // 0 + 4M = 4M < 5M → approved
+    const r3 = await stub.checkAndReserve(null, 4_000_000, 30_000, "sess-cancel");
+    expect(r3.status).toBe("approved");
+  });
+
+  it("session limit: cancel then succeed tracks spend correctly", async () => {
+    const stub = getStub("user-session-cancel-then-succeed");
+    await stub.populateIfEmpty(
+      "user", "u1", 10_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], 5_000_000, 0,
+    );
+
+    // Request 1: reserve 4M, cancel (actual = 0) → session_spend = 0
+    const r1 = await stub.checkAndReserve(null, 4_000_000, 30_000, "sess-mixed");
+    expect(r1.status).toBe("approved");
+    await stub.reconcile(r1.reservationId!, 0);
+
+    // Request 2: reserve 4M, succeed with actual 3M → session_spend = 3M
+    const r2 = await stub.checkAndReserve(null, 4_000_000, 30_000, "sess-mixed");
+    expect(r2.status).toBe("approved");
+    await stub.reconcile(r2.reservationId!, 3_000_000);
+
+    // Request 3: session_spend=3M, estimate=2M → 3M + 2M = 5M ≤ 5M → approved
+    const r3 = await stub.checkAndReserve(null, 2_000_000, 30_000, "sess-mixed");
+    expect(r3.status).toBe("approved");
+
+    // Request 4: session_spend=3M (r3 still reserved, adds 2M) → 3M + 2M + 1M = 6M > 5M → denied
+    const r4 = await stub.checkAndReserve(null, 1_000_000, 30_000, "sess-mixed");
+    expect(r4.status).toBe("denied");
+    expect(r4.sessionLimitDenied).toBe(true);
+  });
+
 });
 
 // ── currentPeriodStart unit tests ────────────────────────────────────
@@ -1431,5 +1483,378 @@ describe("PXY-2: Alarm outbox processing", () => {
     // Verify: alarm completed without crash
     const outboxAfter = await stub.getOutboxEntries();
     expect(outboxAfter).toHaveLength(0);
+  });
+
+  // ── P0-1: Threshold alert dedup ─────────────────────────────────────
+
+  it("P0-1: reconcile detects threshold crossing and returns it", async () => {
+    const stub = getStub("user-threshold-basic");
+    // Budget: $100, thresholds at [50, 80, 90, 95]
+    await stub.populateIfEmpty("user", "u1", 100_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95]);
+
+    // Reserve + reconcile: 55% of budget ($55)
+    const check = await stub.checkAndReserve(null, 55_000_000);
+    const result = await stub.reconcile(check.reservationId!, 55_000_000);
+
+    expect(result.status).toBe("reconciled");
+    expect(result.thresholdCrossings).toBeDefined();
+    expect(result.thresholdCrossings).toHaveLength(1);
+    expect(result.thresholdCrossings![0].threshold).toBe(50);
+    expect(result.thresholdCrossings![0].isCritical).toBe(false); // 50 is warning
+    expect(result.thresholdCrossings![0].entityType).toBe("user");
+    expect(result.thresholdCrossings![0].entityId).toBe("u1");
+    expect(result.thresholdCrossings![0].maxBudget).toBe(100_000_000);
+    expect(result.thresholdCrossings![0].spend).toBe(55_000_000);
+    expect(result.thresholdCrossings![0].requestId).toBe(check.reservationId!);
+
+    // Verify last_alerted_threshold was updated
+    const state = await stub.getBudgetState();
+    expect(state[0].last_alerted_threshold).toBe(50);
+  });
+
+  it("P0-1: second reconcile does NOT re-fire the same threshold (dedup)", async () => {
+    const stub = getStub("user-threshold-dedup");
+    await stub.populateIfEmpty("user", "u1", 100_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95]);
+
+    // First request: 0% → 55% — crosses 50%
+    const check1 = await stub.checkAndReserve(null, 55_000_000);
+    const r1 = await stub.reconcile(check1.reservationId!, 55_000_000);
+    expect(r1.thresholdCrossings).toHaveLength(1);
+    expect(r1.thresholdCrossings![0].threshold).toBe(50);
+
+    // Second request: 55% → 60% — does NOT cross 50% again
+    const check2 = await stub.checkAndReserve(null, 5_000_000);
+    const r2 = await stub.reconcile(check2.reservationId!, 5_000_000);
+    expect(r2.thresholdCrossings).toEqual([]); // No crossings = empty array (DO always returns the field)
+  });
+
+  it("P0-1: multi-threshold jump fires all crossed thresholds", async () => {
+    const stub = getStub("user-threshold-multi");
+    await stub.populateIfEmpty("user", "u1", 100_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95]);
+
+    // Single request: 0% → 92% — crosses 50, 80, 90
+    const check = await stub.checkAndReserve(null, 92_000_000);
+    const result = await stub.reconcile(check.reservationId!, 92_000_000);
+
+    expect(result.thresholdCrossings).toHaveLength(3);
+    const thresholds = result.thresholdCrossings!.map(c => c.threshold).sort((a, b) => a - b);
+    expect(thresholds).toEqual([50, 80, 90]);
+
+    // Verify isCritical classification
+    const byThreshold = Object.fromEntries(result.thresholdCrossings!.map(c => [c.threshold, c]));
+    expect(byThreshold[50].isCritical).toBe(false); // warning
+    expect(byThreshold[80].isCritical).toBe(false); // warning
+    expect(byThreshold[90].isCritical).toBe(true);  // critical (>= 90)
+
+    // Verify last_alerted_threshold is the highest
+    const state = await stub.getBudgetState();
+    expect(state[0].last_alerted_threshold).toBe(90);
+  });
+
+  it("P0-1: period reset clears last_alerted_threshold", async () => {
+    const stub = getStub("user-threshold-period-reset");
+    // Budget with daily reset, period starting 2 days ago (already expired)
+    const twoDaysAgo = Date.now() - 2 * 86_400_000;
+    await stub.populateIfEmpty("user", "u1", 100_000_000, 55_000_000, "strict_block", "daily", twoDaysAgo,
+      null, 60_000, 60_000, [50, 80, 90, 95]);
+
+    // checkAndReserve triggers the period reset (daily period expired)
+    // After reset: spend=0, last_alerted_threshold=0
+    // Then the check reserves 55M against the now-clean budget
+    const check = await stub.checkAndReserve(null, 55_000_000);
+    expect(check.status).toBe("approved");
+
+    // Verify the period reset happened and cleared dedup state
+    const stateAfterReset = await stub.getBudgetState();
+    expect(stateAfterReset[0].last_alerted_threshold).toBe(0);
+
+    // Reconcile — spend goes from 0 to 55%, crosses 50%
+    const result = await stub.reconcile(check.reservationId!, 55_000_000);
+    expect(result.thresholdCrossings).toHaveLength(1);
+    expect(result.thresholdCrossings![0].threshold).toBe(50);
+
+    // Second request in the new period — doesn't re-fire 50%
+    const check2 = await stub.checkAndReserve(null, 5_000_000);
+    const r2 = await stub.reconcile(check2.reservationId!, 5_000_000);
+    expect(r2.thresholdCrossings).toEqual([]);
+  });
+
+  it("P0-1: threshold config change resets last_alerted_threshold", async () => {
+    const stub = getStub("user-threshold-config-change");
+    await stub.populateIfEmpty("user", "u1", 100_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95]);
+
+    // Push past 50% threshold
+    const check1 = await stub.checkAndReserve(null, 55_000_000);
+    const r1 = await stub.reconcile(check1.reservationId!, 55_000_000);
+    expect(r1.thresholdCrossings).toHaveLength(1);
+
+    const stateAfter = await stub.getBudgetState();
+    expect(stateAfter[0].last_alerted_threshold).toBe(50);
+
+    // Reconfigure thresholds to [25, 50, 75, 100] — adds 25% (below current spend)
+    await stub.populateIfEmpty("user", "u1", 100_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [25, 50, 75, 100]);
+
+    // last_alerted_threshold should be reset due to config change
+    const stateAfterConfig = await stub.getBudgetState();
+    expect(stateAfterConfig[0].last_alerted_threshold).toBe(0);
+
+    // Next reconcile should fire 25 and 50 (both below current 55% spend)
+    const check2 = await stub.checkAndReserve(null, 1_000_000);
+    const r2 = await stub.reconcile(check2.reservationId!, 1_000_000);
+    expect(r2.thresholdCrossings).toHaveLength(2);
+    const thresholds = r2.thresholdCrossings!.map(c => c.threshold).sort((a, b) => a - b);
+    expect(thresholds).toEqual([25, 50]);
+  });
+
+  it("P0-1: last threshold in array is classified as critical", async () => {
+    const stub = getStub("user-threshold-critical-last");
+    // Custom thresholds where 75 is last — it should be critical
+    await stub.populateIfEmpty("user", "u1", 100_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [25, 50, 75]);
+
+    const check = await stub.checkAndReserve(null, 80_000_000);
+    const result = await stub.reconcile(check.reservationId!, 80_000_000);
+
+    expect(result.thresholdCrossings).toHaveLength(3);
+    const byThreshold = Object.fromEntries(result.thresholdCrossings!.map(c => [c.threshold, c]));
+    expect(byThreshold[25].isCritical).toBe(false);
+    expect(byThreshold[50].isCritical).toBe(false);
+    expect(byThreshold[75].isCritical).toBe(true); // last in array → critical
+  });
+
+  it("P0-1: reconcile with actualCost=0 does not detect thresholds", async () => {
+    const stub = getStub("user-threshold-zero-cost");
+    await stub.populateIfEmpty("user", "u1", 100_000_000, 49_000_000, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95]);
+
+    const check = await stub.checkAndReserve(null, 5_000_000);
+    const result = await stub.reconcile(check.reservationId!, 0); // cancelled
+    expect(result.status).toBe("reconciled");
+    expect(result.thresholdCrossings).toEqual([]); // No crossings on zero-cost
+  });
+
+  it("P0-1: resetSpend clears last_alerted_threshold", async () => {
+    const stub = getStub("user-threshold-reset-spend");
+    await stub.populateIfEmpty("user", "u1", 100_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95]);
+
+    // Cross 50% threshold
+    const check = await stub.checkAndReserve(null, 55_000_000);
+    await stub.reconcile(check.reservationId!, 55_000_000);
+
+    const stateBeforeReset = await stub.getBudgetState();
+    expect(stateBeforeReset[0].last_alerted_threshold).toBe(50);
+
+    // Manual reset
+    await stub.resetSpend("user", "u1");
+
+    const stateAfterReset = await stub.getBudgetState();
+    expect(stateAfterReset[0].spend).toBe(0);
+    expect(stateAfterReset[0].last_alerted_threshold).toBe(0);
+  });
+
+  it("P0-1: getBudgetState includes last_alerted_threshold", async () => {
+    const stub = getStub("user-threshold-state-visibility");
+    await stub.populateIfEmpty("user", "u1", 100_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95]);
+
+    const check = await stub.checkAndReserve(null, 85_000_000);
+    await stub.reconcile(check.reservationId!, 85_000_000);
+
+    const state = await stub.getBudgetState();
+    expect(state[0]).toHaveProperty("last_alerted_threshold");
+    expect(state[0].last_alerted_threshold).toBe(80); // Crossed 50 and 80
+  });
+
+  // ── CX-1: Finalization reserve bypass guard ──────────────────────
+  // The finalize flag should ONLY skip reserve subtraction when the
+  // entity is already in the reserve zone (spend+reserved >= limit-reserve).
+  // This prevents callers from burning through the reserve early.
+
+  it("CX-1: finalize=true + in reserve zone → reserve skipped, request approved", async () => {
+    const stub = getStub("user-cx1-in-zone");
+    // Budget: limit=100, reserve=10, spend=92 → in zone (92 >= 100-10=90)
+    await stub.populateIfEmpty(
+      "user", "u1", 100_000_000, 92_000_000, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 10_000_000,
+    );
+    // Estimate 7M — exceeds effective remaining (100-92-0-10=−2) without finalize
+    // but with finalize in zone, effective = 100-92-0 = 8M, so 7M fits
+    const result = await stub.checkAndReserve(null, 7_000_000, 30_000, null, [], null, true);
+    expect(result.status).toBe("approved");
+    expect(result.reservationId).toBeTruthy();
+  });
+
+  it("CX-1: finalize=true + NOT in reserve zone → reserve still applied, denied", async () => {
+    const stub = getStub("user-cx1-not-in-zone");
+    // Budget: limit=100, reserve=10, spend=50 → NOT in zone (50 < 100-10=90)
+    await stub.populateIfEmpty(
+      "user", "u1", 100_000_000, 50_000_000, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 10_000_000,
+    );
+    // Effective remaining = 100-50-0-10 = 40M. Request 41M should be denied.
+    const result = await stub.checkAndReserve(null, 41_000_000, 30_000, null, [], null, true);
+    expect(result.status).toBe("denied");
+    // But 39M should be approved (under effective remaining of 40M)
+    const result2 = await stub.checkAndReserve(null, 39_000_000, 30_000, null, [], null, true);
+    expect(result2.status).toBe("approved");
+  });
+
+  it("CX-1: finalize=false + in reserve zone → reserve applied, denied", async () => {
+    const stub = getStub("user-cx1-no-finalize-in-zone");
+    // Budget: limit=100, reserve=10, spend=92 → in zone but finalize=false
+    await stub.populateIfEmpty(
+      "user", "u1", 100_000_000, 92_000_000, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 10_000_000,
+    );
+    // Effective remaining = 100-92-0-10 = −2 → clamped to 0 at comparison.
+    // Any positive estimate should be denied.
+    const result = await stub.checkAndReserve(null, 1_000_000, 30_000, null, [], null, false);
+    expect(result.status).toBe("denied");
+    expect(result.finalizationReserve).toBe(10_000_000);
+  });
+
+  it("CX-1: finalize=false + not in zone → normal check with reserve subtracted", async () => {
+    const stub = getStub("user-cx1-no-finalize-normal");
+    // Budget: limit=100, reserve=10, spend=50 → normal zone
+    await stub.populateIfEmpty(
+      "user", "u1", 100_000_000, 50_000_000, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 10_000_000,
+    );
+    // Effective remaining = 100-50-0-10 = 40M. 40M should be approved.
+    const result = await stub.checkAndReserve(null, 40_000_000, 30_000, null, [], null, false);
+    expect(result.status).toBe("approved");
+    // 41M should be denied
+    const stub2 = getStub("user-cx1-no-finalize-normal-deny");
+    await stub2.populateIfEmpty(
+      "user", "u1", 100_000_000, 50_000_000, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 10_000_000,
+    );
+    const result2 = await stub2.checkAndReserve(null, 41_000_000, 30_000, null, [], null, false);
+    expect(result2.status).toBe("denied");
+  });
+
+  it("CX-1: concurrent reservations push entity into reserve zone", async () => {
+    const stub = getStub("user-cx1-concurrent");
+    // Budget: limit=100, reserve=10, spend=80 → NOT in zone yet (80 < 90)
+    await stub.populateIfEmpty(
+      "user", "u1", 100_000_000, 80_000_000, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 10_000_000,
+    );
+    // First request reserves 11M → reserved=11M, spend+reserved=91M >= 90M → in zone
+    const r1 = await stub.checkAndReserve(null, 11_000_000, 30_000, null, [], null, false);
+    expect(r1.status).toBe("denied"); // 11M > effective 10M (100-80-0-10)
+
+    // But if first request is smaller (9M, under effective 10M), it's approved
+    const stub2 = getStub("user-cx1-concurrent-2");
+    await stub2.populateIfEmpty(
+      "user", "u1", 100_000_000, 80_000_000, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 10_000_000,
+    );
+    const r2 = await stub2.checkAndReserve(null, 9_000_000, 30_000, null, [], null, false);
+    expect(r2.status).toBe("approved");
+    // Now spend=80, reserved=9 → 89 < 90, still not in zone
+    // Second finalize request: spend+reserved=89 < 90, finalize should NOT skip reserve
+    const r3 = await stub2.checkAndReserve(null, 2_000_000, 30_000, null, [], null, true);
+    // effective remaining = 100-80-9-10 = 1M. 2M > 1M → denied
+    expect(r3.status).toBe("denied");
+  });
+
+  it("CX-1: boundary — spend+reserved exactly equals limit-reserve (zone entry)", async () => {
+    const stub = getStub("user-cx1-boundary");
+    // Budget: limit=100, reserve=10, spend=90 → exactly at boundary (90 >= 90)
+    await stub.populateIfEmpty(
+      "user", "u1", 100_000_000, 90_000_000, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 10_000_000,
+    );
+    // Finalize=true: in zone (90 >= 90), reserve skipped. remaining = 100-90-0 = 10M
+    const result = await stub.checkAndReserve(null, 10_000_000, 30_000, null, [], null, true);
+    expect(result.status).toBe("approved");
+  });
+
+  it("CX-1: boundary — spend+reserved one below zone threshold", async () => {
+    const stub = getStub("user-cx1-boundary-below");
+    // Budget: limit=100, reserve=10, spend=89.999999 → just below zone (89.999999 < 90)
+    await stub.populateIfEmpty(
+      "user", "u1", 100_000_000, 89_999_999, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 10_000_000,
+    );
+    // Finalize=true but NOT in zone → reserve still applied
+    // effective = 100 - 89.999999 - 0 - 10 = 0.000001M
+    const result = await stub.checkAndReserve(null, 1, 30_000, null, [], null, true);
+    // 1 microdollar > 1 microdollar effective? Actually effective = 1. 1 <= 1 → approved
+    expect(result.status).toBe("approved");
+    // But 2 microdollars should be denied
+    const stub2 = getStub("user-cx1-boundary-below-2");
+    await stub2.populateIfEmpty(
+      "user", "u1", 100_000_000, 89_999_999, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 10_000_000,
+    );
+    const result2 = await stub2.checkAndReserve(null, 2, 30_000, null, [], null, true);
+    expect(result2.status).toBe("denied");
+  });
+
+  it("populateIfEmpty persists finalization_reserve to SQLite", async () => {
+    const stub = getStub("user-populate-finalize");
+    await stub.populateIfEmpty(
+      "user", "u1", 100_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 5_000_000,
+    );
+    const state = await stub.getBudgetState();
+    expect(state).toHaveLength(1);
+    expect(state[0].finalization_reserve).toBe(5_000_000);
+  });
+
+  it("populateIfEmpty UPSERT updates finalization_reserve", async () => {
+    const stub = getStub("user-populate-finalize-upsert");
+    await stub.populateIfEmpty(
+      "user", "u1", 100_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 5_000_000,
+    );
+    // Update reserve from 5M to 15M
+    await stub.populateIfEmpty(
+      "user", "u1", 100_000_000, 0, "strict_block", null, 0,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 15_000_000,
+    );
+    const state = await stub.getBudgetState();
+    expect(state[0].finalization_reserve).toBe(15_000_000);
+  });
+
+  // ── EC-1: Period reset + finalize interaction ──────────────────────
+  // After a period reset, spend=0 and reserved=0. The CX-1 guard sees
+  // the entity as NOT in the reserve zone, so finalize=true is correctly
+  // denied (reserve still subtracted). This is conservative behavior:
+  // the agent has a fresh budget period and doesn't need finalize yet.
+
+  it("EC-1: period reset then finalize=true is correctly denied (conservative)", async () => {
+    const stub = getStub("user-ec1-period-reset-finalize");
+    const pastPeriodStart = Date.now() - 2 * 86_400_000; // 2 days ago
+    // Budget: limit=100, reserve=10, spend=95 (in zone), daily reset
+    await stub.populateIfEmpty(
+      "user", "u1", 100_000_000, 95_000_000, "strict_block", "daily", pastPeriodStart,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 10_000_000,
+    );
+    // Before period reset, entity IS in zone (spend 95 >= limit-reserve 90)
+    // The period is expired (2 days ago + daily), so checkAndReserve will reset it.
+    // After reset: spend=0, reserved=0 → NOT in zone (0 < 90).
+    // finalize=true should NOT skip reserve. effective = 100-0-0-10 = 90M.
+    const result = await stub.checkAndReserve(null, 91_000_000, 30_000, null, [], null, true);
+    // 91M > 90M effective → denied (finalize ignored because post-reset, not in zone)
+    expect(result.status).toBe("denied");
+
+    // But 89M should be approved (under effective 90M)
+    const stub2 = getStub("user-ec1-period-reset-finalize-2");
+    const pastPeriodStart2 = Date.now() - 2 * 86_400_000;
+    await stub2.populateIfEmpty(
+      "user", "u1", 100_000_000, 95_000_000, "strict_block", "daily", pastPeriodStart2,
+      null, 60_000, 60_000, [50, 80, 90, 95], null, 10_000_000,
+    );
+    const result2 = await stub2.checkAndReserve(null, 89_000_000, 30_000, null, [], null, true);
+    expect(result2.status).toBe("approved");
   });
 });

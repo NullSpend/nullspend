@@ -206,6 +206,8 @@ function makeCtx(
     webhookDispatcher: null,
     resolvedApiVersion: "2026-04-01",
     requestStartMs: performance.now(),
+    requestLoggingEnabled: false,
+    finalize: false,
     ...overrides,
   };
 }
@@ -444,7 +446,7 @@ describe("Tag Budget Enforcement", () => {
         // We verify the orchestrator produced the correct entities by checking doBudgetCheck was called with tags
         expect(mockDoBudgetCheck).toHaveBeenCalledWith(
           expect.anything(), "user-1", "key-1", expect.any(Number), null,
-          ["project=openclaw"], null,
+          ["project=openclaw"], null, false,
         );
       } finally {
         globalThis.fetch = originalFetch;

@@ -147,8 +147,8 @@ describe("Anthropic budget enforcement", () => {
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
-    // Optimistic execution: fetch starts in parallel with budget check.
-    // Default mock returns a pending promise (aborted on denial).
+    // CX-5: Budget check runs before fetch. On denial, fetch is never called.
+    // Default mock returns a pending promise — only reached on approved paths.
     globalThis.fetch = vi.fn().mockReturnValue(new Promise(() => {}));
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -278,6 +278,8 @@ describe("Anthropic budget enforcement", () => {
 
   it("budget lookup failure returns 503 budget_unavailable", async () => {
     mockCheckBudget.mockRejectedValue(new Error("Budget service unavailable"));
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy;
 
     const body = {
       model: "claude-sonnet-4-20250514",
@@ -289,6 +291,8 @@ describe("Anthropic budget enforcement", () => {
     expect(res.status).toBe(503);
     const json = await res.json();
     expect(json.error.code).toBe("budget_unavailable");
+    // CX-5: budget check runs before fetch — failures never start a fetch
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("no budget entities skips enforcement entirely", async () => {

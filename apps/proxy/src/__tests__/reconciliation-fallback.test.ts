@@ -9,7 +9,7 @@ vi.mock("cloudflare:workers", () => cloudflareWorkersMock());
 
 vi.mock("../lib/budget-do-client.js", () => ({
   doBudgetCheck: vi.fn(),
-  doBudgetReconcile: vi.fn(),
+  doBudgetReconcile: vi.fn().mockResolvedValue({ status: "ok" }),
 }));
 
 vi.mock("../lib/budget-spend.js", () => ({
@@ -50,7 +50,7 @@ describe("reconcileBudgetQueued", () => {
     mockEnqueueReconciliation.mockResolvedValue(undefined);
   });
 
-  it("uses queue when available", async () => {
+  it("always goes direct (queue bypassed for atomic threshold dedup)", async () => {
     const mockQueue = {} as any;
 
     await reconcileBudgetQueued(
@@ -58,16 +58,9 @@ describe("reconcileBudgetQueued", () => {
       budgetEntities, "postgresql://test",
     );
 
-    expect(mockEnqueueReconciliation).toHaveBeenCalledWith(
-      mockQueue,
-      expect.objectContaining({
-        type: "reconcile",
-        reservationId: "res-123",
-        actualCostMicrodollars: 50_000,
-        ownerId: "user-1",
-        orgId: "org-test",
-      }),
-    );
+    // P0-1 fix: reconcileBudgetQueued always calls DO directly now
+    // (queue caused duplicate threshold webhooks under concurrency)
+    expect(mockEnqueueReconciliation).not.toHaveBeenCalled();
   });
 
   it("falls back to direct reconciliation when queue is undefined", async () => {
@@ -82,21 +75,16 @@ describe("reconcileBudgetQueued", () => {
     expect(mockEnqueueReconciliation).not.toHaveBeenCalled();
   });
 
-  it("falls back to direct when queue send fails", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
+  it("always goes direct even when queue is provided (P0-1 threshold dedup)", async () => {
     const mockQueue = {} as any;
-    mockEnqueueReconciliation.mockRejectedValueOnce(new Error("queue unavailable"));
 
     await reconcileBudgetQueued(
       mockQueue, makeEnv(), "user-1", "org-test", "res-789", 30_000,
       budgetEntities, "postgresql://test",
     );
 
-    expect(mockEnqueueReconciliation).toHaveBeenCalledTimes(1);
-    expect(console.error).toHaveBeenCalledWith(
-      "[budget-orchestrator] Queue send failed, falling back to direct:",
-      expect.any(Error),
-    );
+    // Queue is ignored — DO provides atomic threshold crossing dedup
+    expect(mockEnqueueReconciliation).not.toHaveBeenCalled();
   });
 
   it("skips queue when reservationId is null", async () => {

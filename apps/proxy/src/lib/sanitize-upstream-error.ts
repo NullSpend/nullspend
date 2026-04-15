@@ -6,7 +6,7 @@
  */
 export async function sanitizeUpstreamError(
   upstreamResponse: Response,
-  _provider: "openai" | "anthropic",
+  _provider: string,
 ): Promise<string> {
   const status = upstreamResponse.status;
 

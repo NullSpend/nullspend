@@ -24,11 +24,12 @@ from nullspend.types import CostBreakdown, CostEventInput
 
 
 class ModelPricing(TypedDict, total=False):
-    inputPerMTok: float
-    cachedInputPerMTok: float
-    outputPerMTok: float
-    cacheWrite5mPerMTok: float   # Anthropic only
-    cacheWrite1hPerMTok: float   # Anthropic only
+    """Pricing rates in integer µ$/MTok (microdollars per million tokens)."""
+    inputPerMTok: int
+    cachedInputPerMTok: int
+    outputPerMTok: int
+    cacheWrite5mPerMTok: int   # Anthropic only
+    cacheWrite1hPerMTok: int   # Anthropic only
 
 
 def _load_pricing_map() -> dict[str, ModelPricing]:
@@ -43,6 +44,9 @@ PRICING_MAP: dict[str, ModelPricing] = _load_pricing_map()
 # Anthropic long-context threshold (strict >)
 _LONG_CONTEXT_THRESHOLD = 200_000
 
+# Scale factor: rates are stored as integer µ$/MTok (× 1,000,000)
+_RATE_SCALE = 1_000_000
+
 
 def get_model_pricing(provider: str, model: str) -> ModelPricing | None:
     return PRICING_MAP.get(f"{provider}/{model}")
@@ -55,16 +59,19 @@ def is_known_model(provider: str, model: str) -> bool:
 # ---- Core math ----
 
 
-def cost_component(tokens: int, rate_per_mtok: float) -> float:
+def cost_component(tokens: int, rate_micro_per_mtok: int | float) -> float:
     """Compute a single cost component in unrounded microdollars.
 
-    Dimensional analysis: tokens x ($/MTok) = microdollars
-    (because $/MTok = $ per 10^6 tokens, and 10^6 microdollars = $1,
-     so tokens * rate gives microdollars directly).
+    Rates are integer µ$/MTok (see _RATE_SCALE). The formula:
+      microdollars = tokens × rate / _RATE_SCALE
+
+    The multiplication tokens × int_rate is exact (Python arbitrary
+    precision int), and the single division introduces at most 1 ULP
+    of floating-point error.
     """
-    if tokens <= 0 or rate_per_mtok <= 0:
+    if tokens <= 0 or rate_micro_per_mtok <= 0:
         return 0.0
-    return float(tokens) * rate_per_mtok
+    return (tokens * rate_micro_per_mtok) / _RATE_SCALE
 
 
 def _distribute_residual(
@@ -222,14 +229,14 @@ def calculate_anthropic_cost_event(
     is_long_context = total_input_tokens > _LONG_CONTEXT_THRESHOLD
 
     if pricing:
-        input_rate = pricing["inputPerMTok"] * (2.0 if is_long_context else 1.0)
-        cache_read_rate = pricing["cachedInputPerMTok"] * (2.0 if is_long_context else 1.0)
-        output_rate = pricing["outputPerMTok"] * (1.5 if is_long_context else 1.0)
+        input_rate = pricing["inputPerMTok"] * (2 if is_long_context else 1)
+        cache_read_rate = pricing["cachedInputPerMTok"] * (2 if is_long_context else 1)
+        output_rate = pricing["outputPerMTok"] * (1.5 if is_long_context else 1)
 
         cw5m_base = pricing.get("cacheWrite5mPerMTok", 0) or 0
         cw1h_base = pricing.get("cacheWrite1hPerMTok", 0) or 0
-        cache_write_5m_rate = cw5m_base * (2.0 if is_long_context else 1.0)
-        cache_write_1h_rate = cw1h_base * (2.0 if is_long_context else 1.0)
+        cache_write_5m_rate = cw5m_base * (2 if is_long_context else 1)
+        cache_write_1h_rate = cw1h_base * (2 if is_long_context else 1)
     else:
         input_rate = cache_read_rate = output_rate = 0.0
         cache_write_5m_rate = cache_write_1h_rate = 0.0

@@ -126,7 +126,7 @@ openai = OpenAI(http_client=ns.openai)
 anthropic = Anthropic(http_client=ns.anthropic)
 ```
 
-Cost events are calculated locally using the built-in pricing engine (38 models) and reported asynchronously in batches. Your requests go directly to the provider — no proxy required.
+Cost events are calculated locally using the built-in pricing engine (56 models) and reported asynchronously in batches. Your requests go directly to the provider — no proxy required.
 
 ### `create_tracked_client(provider, **options)`
 
@@ -197,6 +197,32 @@ The SDK detects whether requests go through the NullSpend proxy (by comparing th
 ### Streaming Support
 
 Tracked clients handle streaming responses transparently via `TeeByteStream` — chunks are yielded to the caller while SSE data is accumulated for cost extraction. Cost events are queued when the stream completes.
+
+### Finalization Reserve
+
+When near the budget limit:
+
+```python
+final_client = ns.create_tracked_client("openai", finalize=True)
+
+# This request can use the finalization reserve
+response = final_client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "Summarize and save results"}],
+)
+```
+
+The `BudgetExceededError` includes reserve fields:
+
+```python
+from nullspend.errors import BudgetExceededError
+
+try:
+    response = tracked.chat.completions.create(...)
+except BudgetExceededError as e:
+    print(e.finalization_reserve_microdollars)   # Reserve amount, or None
+    print(e.finalization_remaining_microdollars)  # Remaining after reserve, or None
+```
 
 ## Customer Sessions
 
@@ -311,7 +337,7 @@ result = ns.report_cost_batch([
 
 ## Cost Calculation
 
-The SDK includes a built-in pricing engine with 38 models (synced from `@nullspend/cost-engine`). Use it to compute cost events from API response usage:
+The SDK includes a built-in pricing engine with 56 models (synced from `@nullspend/cost-engine`). Use it to compute cost events from API response usage:
 
 ```python
 from nullspend import calculate_openai_cost_event, calculate_anthropic_cost_event

@@ -193,6 +193,15 @@ describe("createAction", () => {
     expect(init.headers["NullSpend-Version"]).toBe("2026-04-01");
   });
 
+  it("sends X-NullSpend-SDK header", async () => {
+    const fetchFn = vi.fn().mockResolvedValue(jsonResponse({ data: mockAction() }));
+    const client = createClient(fetchFn);
+    await client.createAction({ agentId: "a", actionType: "t", payload: {} });
+
+    const [, init] = fetchFn.mock.calls[0];
+    expect(init.headers["X-NullSpend-SDK"]).toMatch(/^typescript\/\d+\.\d+\.\d+$/);
+  });
+
   it("sends custom apiVersion when configured", async () => {
     const fetchFn = vi.fn().mockResolvedValue(jsonResponse({ data: { id: "act-1", status: "pending" } }));
     const client = new NullSpend({

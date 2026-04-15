@@ -57,6 +57,9 @@ class BudgetExceededError(NullSpendError):
         limit_microdollars: int | None = None,
         spend_microdollars: int | None = None,
         upgrade_url: str | None = None,
+        *,
+        finalization_reserve_microdollars: int | None = None,
+        finalization_remaining_microdollars: int | None = None,
     ):
         remaining_dollars = remaining_microdollars / 1_000_000
         parts = [f"Budget exceeded. ${remaining_dollars:.2f} remaining"]
@@ -77,6 +80,8 @@ class BudgetExceededError(NullSpendError):
         self.limit_microdollars = limit_microdollars
         self.spend_microdollars = spend_microdollars
         self.upgrade_url = upgrade_url
+        self.finalization_reserve_microdollars = finalization_reserve_microdollars
+        self.finalization_remaining_microdollars = finalization_remaining_microdollars
 
 
 class MandateViolationError(NullSpendError):

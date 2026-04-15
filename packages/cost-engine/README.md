@@ -2,11 +2,11 @@
 
 Model pricing catalog and cost calculation engine for OpenAI, Anthropic, and Google AI.
 
-## Supported Models (47 total)
+## Supported Models (56 total)
 
-- **OpenAI** (23): gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.4-pro, gpt-5.3-chat-latest, gpt-5.3-codex, gpt-5.2, gpt-5.1, gpt-5, gpt-5-mini, gpt-5-nano, gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o4-mini, o3, o3-mini, o1, o3-deep-research, o4-mini-deep-research, computer-use-preview
+- **OpenAI** (26): gpt-5.4, gpt-5.4-mini, gpt-5.4-nano, gpt-5.4-pro, gpt-5.2-pro, gpt-5-pro, gpt-5.2, gpt-5.1, gpt-5, gpt-5-mini, gpt-5-nano, gpt-4.1, gpt-4.1-mini, gpt-4.1-nano, gpt-4o, gpt-4o-mini, o4-mini, o3, o3-mini, o3-pro, o1, o1-pro, o1-mini, o3-deep-research, o4-mini-deep-research, computer-use-preview
 - **Anthropic** (22): claude-sonnet-4-6, claude-opus-4-6, claude-sonnet-4-5, claude-opus-4-5, claude-opus-4-1, claude-opus-4, claude-sonnet-4, claude-haiku-4-5, claude-haiku-3.5, claude-haiku-3, claude-opus-4-0, claude-sonnet-4-0 (plus 10 dated variants)
-- **Google** (2): gemini-2.5-pro, gemini-2.5-flash
+- **Google** (8): gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite, gemini-2.0-flash, gemini-2.0-flash-lite, gemini-3-flash-preview, gemini-3.1-pro-preview, gemini-3.1-flash-lite-preview
 
 ## Install
 

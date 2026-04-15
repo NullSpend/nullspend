@@ -24,7 +24,17 @@ import {
   calculateOpenAICostEvent,
   calculateAnthropicCostEvent,
 } from "./cost-calculator.js";
-import { getModelPricing } from "@nullspend/cost-engine";
+import { getModelPricing, costComponent } from "@nullspend/cost-engine";
+import { AsyncLocalStorage } from "node:async_hooks";
+
+// Global symbol key ensures the nesting guard works even when multiple
+// copies of @nullspend/sdk are loaded (npm duplication, different versions).
+// Symbol.for() returns the same symbol across the entire V8 isolate,
+// so all copies share one AsyncLocalStorage instance.
+const TRACKING_KEY = Symbol.for("nullspend:tracking");
+const trackingContext: AsyncLocalStorage<true> =
+  (globalThis as Record<symbol, unknown>)[TRACKING_KEY] as AsyncLocalStorage<true>
+    ?? ((globalThis as Record<symbol, unknown>)[TRACKING_KEY] = new AsyncLocalStorage<true>());
 
 /**
  * Build a tracked fetch function that intercepts LLM API calls and
@@ -56,6 +66,7 @@ export function buildTrackedFetch(
   const tags = options?.tags;
   const traceId = options?.traceId;
   const enforcement = options?.enforcement ?? false;
+  const finalize = options?.finalize ?? false;
   const manualSessionLimit = options?.sessionLimitMicrodollars ?? null;
   const onCostError = options?.onCostError ?? defaultCostErrorHandler;
   const onDenied = options?.onDenied;
@@ -76,155 +87,173 @@ export function buildTrackedFetch(
     input: RequestInfo | URL,
     init?: RequestInit,
   ): Promise<Response> {
-    // Resolve URL from input
-    const url = resolveUrl(input);
-
-    // Inject X-NullSpend-Customer header if customer is set. This MUST happen
-    // before the isProxied bailout — otherwise the header never reaches the
-    // proxy and customer attribution is silently lost.
-    //
-    // WHATWG subtlety: when input is a Request and init.headers is set,
-    // init.headers REPLACES the Request's headers entirely (dropping any
-    // Authorization the caller baked into the Request). So if the caller
-    // passed a Request without init.headers, we must inject the header into
-    // a cloned Request instead of synthesizing an init.
-    if (customer) {
-      if (input instanceof Request && !init?.headers) {
-        const newHeaders = new Headers(input.headers);
-        newHeaders.set("X-NullSpend-Customer", customer);
-        input = new Request(input, { headers: newHeaders });
-      } else {
-        init = addHeader(init, "X-NullSpend-Customer", customer);
-      }
-    }
-
-    // Proxy path: skip client-side cost tracking + enforcement + stream injection,
-    // but still intercept NullSpend denial codes so callers get typed errors.
-    // The proxy handles cost tracking and enforcement server-side; running them
-    // client-side would double-count. The 429 interception was previously
-    // bypassed by an early return — that was the bug fixed in §15c-1.
-    if (isProxied(url, init, proxyUrl, input)) {
-      const response = await doFetch(input, init);
-      if (response.status === 429 && enforcement) {
-        const parsed = await parseDenialPayload(response);
-        if (parsed) dispatchDenialCode(parsed, customer, onDenied, onCostError);
-      }
-      return response; // raw response, no cost tracking — preserves no-double-count
-    }
-
-    // Non-tracked routes pass through
-    const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-    if (!isTrackedRoute(provider, url, method)) {
+    // Prevent double-counting when tracked fetches are nested
+    if (trackingContext.getStore()) {
       return doFetch(input, init);
     }
 
-    // Parse body for model + streaming detection
-    const bodyStr = await extractBody(input, init);
-    const model = (bodyStr && extractModelFromBody(bodyStr)) ?? "unknown";
-    const streaming = bodyStr ? isStreamingRequest(bodyStr) : false;
+    return trackingContext.run(true, async () => {
+      // Resolve URL from input
+      const url = resolveUrl(input);
 
-    // Phase 2: Cooperative enforcement
-    if (enforcement && policyCache) {
-      try {
-        await policyCache.getPolicy();
-        const mandateResult = policyCache.checkMandate(provider, model);
-        if (!mandateResult.allowed) {
-          safeDenied(onDenied, { type: "mandate", mandate: mandateResult.mandate!, requested: mandateResult.requested!, allowed: mandateResult.allowed_list! }, onCostError);
-          throw new MandateViolationError(
-            mandateResult.mandate!,
-            mandateResult.requested!,
-            mandateResult.allowed_list!,
-          );
+      // Inject X-NullSpend-Customer header if customer is set. This MUST happen
+      // before the isProxied bailout — otherwise the header never reaches the
+      // proxy and customer attribution is silently lost.
+      //
+      // WHATWG subtlety: when input is a Request and init.headers is set,
+      // init.headers REPLACES the Request's headers entirely (dropping any
+      // Authorization the caller baked into the Request). So if the caller
+      // passed a Request without init.headers, we must inject the header into
+      // a cloned Request instead of synthesizing an init.
+      if (customer) {
+        if (input instanceof Request && !init?.headers) {
+          const newHeaders = new Headers(input.headers);
+          newHeaders.set("X-NullSpend-Customer", customer);
+          input = new Request(input, { headers: newHeaders });
+        } else {
+          init = addHeader(init, "X-NullSpend-Customer", customer);
         }
-
-        // Rough estimate for budget check
-        const estimate = estimateCostMicrodollars(provider, model, bodyStr);
-        const budgetResult = policyCache.checkBudget(estimate);
-        if (!budgetResult.allowed) {
-          safeDenied(onDenied, {
-            type: "budget",
-            remaining: budgetResult.remaining ?? 0,
-            entityType: budgetResult.entityType,
-            entityId: budgetResult.entityId,
-            limit: budgetResult.limit,
-            spend: budgetResult.spend,
-          }, onCostError);
-          throw new BudgetExceededError({
-            remaining: budgetResult.remaining ?? 0,
-            entityType: budgetResult.entityType,
-            entityId: budgetResult.entityId,
-            limit: budgetResult.limit,
-            spend: budgetResult.spend,
-          });
-        }
-
-        // Session limit check (only when sessionId is set)
-        if (sessionId) {
-          const sessionLimit = manualSessionLimit ?? policyCache.getSessionLimit() ?? null;
-          if (sessionLimit !== null && sessionSpendMicrodollars + estimate > sessionLimit) {
-            warnSessionDenied(sessionSpendMicrodollars, estimate, sessionLimit, sessionId);
-            safeDenied(onDenied, { type: "session_limit", sessionSpend: sessionSpendMicrodollars, sessionLimit }, onCostError);
-            throw new SessionLimitExceededError(sessionSpendMicrodollars, sessionLimit);
-          }
-        }
-      } catch (err) {
-        if (
-          err instanceof BudgetExceededError ||
-          err instanceof MandateViolationError ||
-          err instanceof SessionLimitExceededError
-        ) {
-          throw err;
-        }
-        // Policy fetch failure — fall open, but still enforce manual session limit
-        if (sessionId && manualSessionLimit !== null) {
-          const estimate = estimateCostMicrodollars(provider, model, bodyStr);
-          if (sessionSpendMicrodollars + estimate > manualSessionLimit) {
-            warnSessionDenied(sessionSpendMicrodollars, estimate, manualSessionLimit, sessionId, true);
-            safeDenied(onDenied, { type: "session_limit", sessionSpend: sessionSpendMicrodollars, sessionLimit: manualSessionLimit }, onCostError);
-            throw new SessionLimitExceededError(sessionSpendMicrodollars, manualSessionLimit);
-          }
-        }
-        onCostError?.(err instanceof Error ? err : new Error(String(err)));
       }
-    }
 
-    // For OpenAI streaming: inject stream_options.include_usage
-    let modifiedInit = init;
-    if (streaming && provider === "openai" && bodyStr) {
-      modifiedInit = injectStreamUsage(bodyStr, init);
-    } else if (!bodyStr && provider === "openai") {
-      // Body couldn't be extracted (e.g., Request object with ReadableStream body).
-      // OpenAI streaming won't include usage without stream_options.include_usage.
-      // Non-streaming still works (usage in response JSON).
-      onCostError(new Error(
-        "Could not extract request body — OpenAI streaming usage will not be tracked. " +
-        "Pass fetch(url, init) instead of fetch(request) for full tracking support.",
-      ));
-    }
+      // Inject finalization header so the proxy also skips the reserve
+      if (finalize) {
+        if (input instanceof Request && !init?.headers) {
+          const newHeaders = new Headers(input.headers);
+          newHeaders.set("X-NullSpend-Finalize", "1");
+          input = new Request(input, { headers: newHeaders });
+        } else {
+          init = addHeader(init, "X-NullSpend-Finalize", "1");
+        }
+      }
 
-    const startTime = performance.now();
-    const response = await doFetch(input, modifiedInit ?? init);
+      // Proxy path: skip client-side cost tracking + enforcement + stream injection,
+      // but still intercept NullSpend denial codes so callers get typed errors.
+      // The proxy handles cost tracking and enforcement server-side; running them
+      // client-side would double-count. The 429 interception was previously
+      // bypassed by an early return — that was the bug fixed in §15c-1.
+      if (isProxied(url, init, proxyUrl, input)) {
+        const response = await doFetch(input, init);
+        if (response.status === 429 && enforcement) {
+          const parsed = await parseDenialPayload(response);
+          if (parsed) dispatchDenialCode(parsed, customer, onDenied, onCostError);
+        }
+        return response; // raw response, no cost tracking — preserves no-double-count
+      }
 
-    // No 429 interception in direct mode. In direct mode there is no NullSpend
-    // proxy to send denial codes; the SDK handles enforcement locally (mandates,
-    // budgets, session limits above). Trusting X-NullSpend-Denied from an
-    // arbitrary LLM provider origin would be a trust-boundary violation.
-    // Proxy-mode 429 interception lives in the isProxied() branch above.
+      // Non-tracked routes pass through
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (!isTrackedRoute(provider, url, method)) {
+        return doFetch(input, init);
+      }
 
-    // Don't track errors
-    if (!response.ok) return response;
+      // Parse body for model + streaming detection
+      const bodyStr = await extractBody(input, init);
+      const model = (bodyStr && extractModelFromBody(bodyStr)) ?? "unknown";
+      const streaming = bodyStr ? isStreamingRequest(bodyStr) : false;
 
-    // Streaming response
-    if (isStreamingResponse(response) && response.body) {
-      return handleStreamingResponse(
+      // Phase 2: Cooperative enforcement
+      if (enforcement && policyCache) {
+        try {
+          await policyCache.getPolicy();
+          const mandateResult = policyCache.checkMandate(provider, model);
+          if (!mandateResult.allowed) {
+            safeDenied(onDenied, { type: "mandate", mandate: mandateResult.mandate!, requested: mandateResult.requested!, allowed: mandateResult.allowed_list! }, onCostError);
+            throw new MandateViolationError(
+              mandateResult.mandate!,
+              mandateResult.requested!,
+              mandateResult.allowed_list!,
+            );
+          }
+
+          // Rough estimate for budget check
+          const estimate = estimateCostMicrodollars(provider, model, bodyStr);
+          const budgetResult = policyCache.checkBudget(estimate, { finalize });
+          if (!budgetResult.allowed) {
+            safeDenied(onDenied, {
+              type: "budget",
+              remaining: budgetResult.remaining ?? 0,
+              entityType: budgetResult.entityType,
+              entityId: budgetResult.entityId,
+              limit: budgetResult.limit,
+              spend: budgetResult.spend,
+            }, onCostError);
+            throw new BudgetExceededError({
+              remaining: budgetResult.remaining ?? 0,
+              entityType: budgetResult.entityType,
+              entityId: budgetResult.entityId,
+              limit: budgetResult.limit,
+              spend: budgetResult.spend,
+            });
+          }
+
+          // Session limit check (only when sessionId is set)
+          if (sessionId) {
+            const sessionLimit = manualSessionLimit ?? policyCache.getSessionLimit() ?? null;
+            if (sessionLimit !== null && sessionSpendMicrodollars + estimate > sessionLimit) {
+              warnSessionDenied(sessionSpendMicrodollars, estimate, sessionLimit, sessionId);
+              safeDenied(onDenied, { type: "session_limit", sessionSpend: sessionSpendMicrodollars, sessionLimit }, onCostError);
+              throw new SessionLimitExceededError(sessionSpendMicrodollars, sessionLimit);
+            }
+          }
+        } catch (err) {
+          if (
+            err instanceof BudgetExceededError ||
+            err instanceof MandateViolationError ||
+            err instanceof SessionLimitExceededError
+          ) {
+            throw err;
+          }
+          // Policy fetch failure — fall open, but still enforce manual session limit
+          if (sessionId && manualSessionLimit !== null) {
+            const estimate = estimateCostMicrodollars(provider, model, bodyStr);
+            if (sessionSpendMicrodollars + estimate > manualSessionLimit) {
+              warnSessionDenied(sessionSpendMicrodollars, estimate, manualSessionLimit, sessionId, true);
+              safeDenied(onDenied, { type: "session_limit", sessionSpend: sessionSpendMicrodollars, sessionLimit: manualSessionLimit }, onCostError);
+              throw new SessionLimitExceededError(sessionSpendMicrodollars, manualSessionLimit);
+            }
+          }
+          onCostError?.(err instanceof Error ? err : new Error(String(err)));
+        }
+      }
+
+      // For OpenAI streaming: inject stream_options.include_usage
+      let modifiedInit = init;
+      if (streaming && provider === "openai" && bodyStr) {
+        modifiedInit = injectStreamUsage(bodyStr, init);
+      } else if (!bodyStr && provider === "openai") {
+        // Body couldn't be extracted (e.g., Request object with ReadableStream body).
+        // OpenAI streaming won't include usage without stream_options.include_usage.
+        // Non-streaming still works (usage in response JSON).
+        onCostError(new Error(
+          "Could not extract request body — OpenAI streaming usage will not be tracked. " +
+          "Pass fetch(url, init) instead of fetch(request) for full tracking support.",
+        ));
+      }
+
+      const startTime = performance.now();
+      const response = await doFetch(input, modifiedInit ?? init);
+
+      // No 429 interception in direct mode. In direct mode there is no NullSpend
+      // proxy to send denial codes; the SDK handles enforcement locally (mandates,
+      // budgets, session limits above). Trusting X-NullSpend-Denied from an
+      // arbitrary LLM provider origin would be a trust-boundary violation.
+      // Proxy-mode 429 interception lives in the isProxied() branch above.
+
+      // Don't track errors
+      if (!response.ok) return response;
+
+      // Streaming response
+      if (isStreamingResponse(response) && response.body) {
+        return handleStreamingResponse(
+          provider, model, response, startTime, metadata, costSink, onCostError,
+        );
+      }
+
+      // Non-streaming response
+      return handleNonStreamingResponse(
         provider, model, response, startTime, metadata, costSink, onCostError,
       );
-    }
-
-    // Non-streaming response
-    return handleNonStreamingResponse(
-      provider, model, response, startTime, metadata, costSink, onCostError,
-    );
+    });
   };
 }
 
@@ -365,7 +394,9 @@ function dispatchDenialCode(
     const limit = toFiniteNumber(details?.budget_limit_microdollars);
     const spend = toFiniteNumber(details?.budget_spend_microdollars);
     const remaining = Math.max(0, (limit ?? 0) - (spend ?? 0));
-    safeDenied(onDenied, { type: "budget", remaining, entityType, entityId, limit, spend }, onCostError);
+    const finalizationReserve = toFiniteNumber(details?.finalization_reserve_microdollars);
+    const finalizationRemaining = toFiniteNumber(details?.finalization_remaining_microdollars);
+    safeDenied(onDenied, { type: "budget", remaining, entityType, entityId, limit, spend, finalizationReserve, finalizationRemaining }, onCostError);
     throw new BudgetExceededError({
       remaining,
       entityType,
@@ -373,6 +404,8 @@ function dispatchDenialCode(
       limit,
       spend,
       upgradeUrl: parsed.upgradeUrl,
+      finalizationReserve,
+      finalizationRemaining,
     });
   }
 
@@ -386,7 +419,9 @@ function dispatchDenialCode(
     const limit = toFiniteNumber(details?.budget_limit_microdollars);
     const spend = toFiniteNumber(details?.budget_spend_microdollars);
     const remaining = Math.max(0, (limit ?? 0) - (spend ?? 0));
-    safeDenied(onDenied, { type: "budget", remaining, entityType: "customer", entityId, limit, spend }, onCostError);
+    const finalizationReserve = toFiniteNumber(details?.finalization_reserve_microdollars);
+    const finalizationRemaining = toFiniteNumber(details?.finalization_remaining_microdollars);
+    safeDenied(onDenied, { type: "budget", remaining, entityType: "customer", entityId, limit, spend, finalizationReserve, finalizationRemaining }, onCostError);
     throw new BudgetExceededError({
       remaining,
       entityType: "customer",
@@ -394,6 +429,8 @@ function dispatchDenialCode(
       limit,
       spend,
       upgradeUrl: parsed.upgradeUrl,
+      finalizationReserve,
+      finalizationRemaining,
     });
   }
 
@@ -617,21 +654,46 @@ function estimateCostMicrodollars(
   const pricing = getModelPricing(provider, model);
   if (!pricing) return 0;
 
-  // Rough estimate: use max_tokens from body for output, 1000 for input
   let maxTokens = 4096;
+  let estimatedInputTokens = 1000;
   if (bodyStr) {
     try {
       const parsed = JSON.parse(bodyStr);
       if (typeof parsed.max_tokens === "number") maxTokens = parsed.max_tokens;
       if (typeof parsed.max_completion_tokens === "number") maxTokens = parsed.max_completion_tokens;
+      // Estimate input tokens from message content (~4 chars per token).
+      // Handles both string content and array content blocks (OpenAI content
+      // parts with {type:"text",text:"..."}, Anthropic content blocks same shape).
+      let charCount = 0;
+      if (Array.isArray(parsed.messages)) {
+        for (const msg of parsed.messages) {
+          if (typeof msg.content === "string") {
+            charCount += msg.content.length;
+          } else if (Array.isArray(msg.content)) {
+            for (const block of msg.content) {
+              if (block && typeof block.text === "string") charCount += block.text.length;
+            }
+          }
+        }
+      }
+      // Anthropic system prompt is a top-level field, not in messages
+      if (typeof parsed.system === "string") {
+        charCount += parsed.system.length;
+      } else if (Array.isArray(parsed.system)) {
+        for (const block of parsed.system) {
+          if (block && typeof block.text === "string") charCount += block.text.length;
+        }
+      }
+      if (charCount > 0) estimatedInputTokens = Math.ceil(charCount / 4);
     } catch {
       // ignore
     }
   }
 
-  const inputEstimate = 1000 * pricing.inputPerMTok;
-  const outputEstimate = maxTokens * pricing.outputPerMTok;
-  return Math.round(inputEstimate + outputEstimate);
+  return Math.round(
+    costComponent(estimatedInputTokens, pricing.inputPerMTok) +
+    costComponent(maxTokens, pricing.outputPerMTok),
+  );
 }
 
 async function handleStreamingResponse(

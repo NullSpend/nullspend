@@ -65,6 +65,24 @@ The proxy echoes `X-NullSpend-Session` in the response headers when present, so 
 
 ---
 
+### `X-NullSpend-Finalize`
+
+Signal that this is a finalization request — unlock the finalization reserve for this request.
+
+| Property | Value |
+|---|---|
+| Format | `"1"` |
+| If omitted | Normal budget enforcement (reserve is subtracted from remaining) |
+| If set but entity is not in reserve zone | Ignored — reserve still applies |
+
+```bash
+X-NullSpend-Finalize: 1
+```
+
+The proxy only honors this header when the budget entity has entered the reserve zone (spend + reservations >= limit - reserve). This prevents callers from burning through the reserve before reaching it. See [Finalization Reserve](../features/budgets.md#finalization-reserve).
+
+---
+
 ### `X-NullSpend-Customer`
 
 Associate this request with a customer for per-customer cost tracking and budget enforcement.
@@ -202,6 +220,22 @@ Server-Timing: preflight;dur=0;desc="Auth + rate limit",body;dur=0;desc="Body pa
 ```
 
 Steps (`preflight`, `body`, `budget`) are only included when measured. The `overhead`, `upstream`, and `total` entries are always present.
+
+### Budget Proximity Headers
+
+When the request matches a budget with enforcement, the proxy includes budget proximity headers. These signal how close the agent is to hitting the budget wall.
+
+| Header | Value | When |
+|---|---|---|
+| `X-NullSpend-Budget-Limit` | Total budget in microdollars | Always (when budgets exist) |
+| `X-NullSpend-Budget-Spent` | Current spend + reservations in microdollars | Always |
+| `X-NullSpend-Budget-Remaining` | Raw remaining in microdollars | Always |
+| `X-NullSpend-Budget-Entity` | `{entityType}:{entityId}` of the tightest budget | Always |
+| `X-NullSpend-Budget-Finalization-Reserve` | Reserve amount in microdollars | Only when reserve > 0 |
+| `X-NullSpend-Budget-Effective-Remaining` | Remaining minus reserve in microdollars | Only when reserve > 0 |
+| `X-NullSpend-Budget-Requests-Remaining` | Estimated requests remaining (e.g., `~12`) | Only when reserve > 0 and avg cost > 0 |
+
+These are snapshot values at check time. On streaming responses, they reflect pre-reconciliation state.
 
 ### Rate Limit Headers (on `429` responses only)
 
