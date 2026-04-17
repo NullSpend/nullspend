@@ -1,0 +1,42 @@
+name: Build workspace packages
+description: >
+  Build all @nullspend/* workspace packages in dependency order. Single
+  source of truth shared by ci.yml and e2e-post-deploy.yml so the two
+  workflows cannot drift.
+
+  This composite action exists because of a real drift incident (Slice 1c):
+  e2e-post-deploy.yml was missing `pnpm sdk:build` for weeks before
+  anyone noticed, which broke scripts/e2e-smoke.ts in CI. Factoring the
+  build sequence into a single reusable unit prevents recurrence — any
+  future change to the build order lands in ONE file and both workflows
+  automatically pick it up.
+
+  Dependency order matters:
+    db       → no deps on other workspace packages
+    cost-engine → (possibly) uses db types
+    sdk      → depends on cost-engine exports
+    claude-agent → depends on sdk
+    docs     → independent
+
+runs:
+  using: composite
+  steps:
+    - name: Build @nullspend/db
+      shell: bash
+      run: pnpm db:build
+
+    - name: Build @nullspend/cost-engine
+      shell: bash
+      run: pnpm cost-engine:build
+
+    - name: Build @nullspend/sdk
+      shell: bash
+      run: pnpm sdk:build
+
+    - name: Build @nullspend/claude-agent
+      shell: bash
+      run: pnpm claude-agent:build
+
+    - name: Build @nullspend/docs
+      shell: bash
+      run: pnpm docs-mcp:build

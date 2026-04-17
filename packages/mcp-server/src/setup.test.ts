@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -71,13 +71,11 @@ describe("runSetup — print mode", () => {
 
 describe("runSetup — write mode", () => {
   let tmpDir: string;
-  let configPath: string;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "nullspend-mcp-setup-"));
-    configPath = join(tmpDir, "claude_desktop_config.json");
     // Override the platform-specific path resolution by spying on the
-    // env-var fallbacks the helper uses on Windows.
+    // env-var fallbacks the helper uses on Windows / Linux / macOS.
     vi.stubEnv("APPDATA", tmpDir);
     vi.stubEnv("HOME", tmpDir);
   });
@@ -88,27 +86,21 @@ describe("runSetup — write mode", () => {
   });
 
   it("refuses to overwrite an existing nullspend entry", () => {
-    // Pre-seed a config with a different nullspend entry
     const existing = {
       mcpServers: { nullspend: { command: "different", args: [] } },
     };
-    const fs = require("node:fs");
-    fs.mkdirSync(join(tmpDir, "Claude"), { recursive: true });
-    fs.mkdirSync(join(tmpDir, "Library", "Application Support", "Claude"), { recursive: true });
-    fs.mkdirSync(join(tmpDir, ".config", "Claude"), { recursive: true });
-    // Write to all three platform candidates so the test works regardless of OS
-    fs.writeFileSync(
-      join(tmpDir, "Claude", "claude_desktop_config.json"),
-      JSON.stringify(existing),
-    );
-    fs.writeFileSync(
+    const json = JSON.stringify(existing);
+    // Pre-seed all three platform candidates so the test works regardless of
+    // which OS the test runs on.
+    mkdirSync(join(tmpDir, "Claude"), { recursive: true });
+    mkdirSync(join(tmpDir, "Library", "Application Support", "Claude"), { recursive: true });
+    mkdirSync(join(tmpDir, ".config", "Claude"), { recursive: true });
+    writeFileSync(join(tmpDir, "Claude", "claude_desktop_config.json"), json);
+    writeFileSync(
       join(tmpDir, "Library", "Application Support", "Claude", "claude_desktop_config.json"),
-      JSON.stringify(existing),
+      json,
     );
-    fs.writeFileSync(
-      join(tmpDir, ".config", "Claude", "claude_desktop_config.json"),
-      JSON.stringify(existing),
-    );
+    writeFileSync(join(tmpDir, ".config", "Claude", "claude_desktop_config.json"), json);
 
     const t = makeStreams();
     const code = runSetup(["--write", "--api-key", "ns_live_sk_x"], t.streams);
