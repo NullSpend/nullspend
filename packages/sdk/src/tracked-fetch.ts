@@ -3,11 +3,13 @@ import type { PolicyCache } from "./policy-cache.js";
 import { validateCustomerId } from "./customer-id.js";
 import {
   BudgetExceededError,
+  LoopDetectedError,
   MandateViolationError,
   SessionLimitExceededError,
   VelocityExceededError,
   TagBudgetExceededError,
 } from "./errors.js";
+import { LoopDetector } from "./loop-detector.js";
 import {
   isTrackedRoute,
   extractModelFromBody,
@@ -80,8 +82,23 @@ export function buildTrackedFetch(
       }
     : queueCost;
 
+  // Loop detection (opt-in)
+  let loopDetector: LoopDetector | null = null;
+  if (options?.loopDetection === true) {
+    loopDetector = new LoopDetector();
+  } else if (options?.loopDetection && typeof options.loopDetection === "object") {
+    loopDetector = new LoopDetector(options.loopDetection);
+  }
+
   const metadata = { sessionId, traceId, tags, customer };
   const doFetch = fetchFn ?? globalThis.fetch;
+
+  // BIL-1: warn once per (proxyUrl, requestOrigin) pair when proxyUrl is
+  // configured but the request URL's origin doesn't match — the SDK is taking
+  // the direct path and proxy-side cost tracking is bypassed. This is almost
+  // always a misconfiguration (port mismatch, wrong host) and silently
+  // double-counts when the request also reaches the proxy via DNS.
+  const warnedFallthroughOrigins = new Set<string>();
 
   return async function trackedFetch(
     input: RequestInfo | URL,
@@ -126,12 +143,61 @@ export function buildTrackedFetch(
         }
       }
 
+      // Non-tracked routes pass through (checked before loop detection
+      // and proxy bailout so GET /models etc. are never loop-checked)
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (!isTrackedRoute(provider, url, method)) {
+        return doFetch(input, init);
+      }
+
+      // Parse body for model + loop detection. Body extraction is hoisted
+      // above the proxy bailout so loop detection fires before ANY upstream
+      // call — proxy or direct. This matches the Python SDK ordering.
+      const bodyStr = await extractBody(input, init);
+      const model = (bodyStr && extractModelFromBody(bodyStr)) ?? "unknown";
+
+      // Phase 1.5: Loop detection (before ANY upstream call, including proxy).
+      // Use async SHA-256 hash so SDK loop hashes match the proxy AND the
+      // Python SDK byte-for-byte (proxy: SHA-256 first 8 hex; Python:
+      // SHA-256 first 8 hex). Falls back to sync FNV-1a only when Web Crypto
+      // is unavailable, which keeps non-crypto runtimes operational. (SDK-T-2)
+      if (loopDetector) {
+        const callKey = `${provider}:${model}`;
+        const bodyHash = await LoopDetector.contentHash(bodyStr);
+        const loopResult = loopDetector.check(callKey, bodyHash);
+        if (loopResult.isWarning) {
+          console.warn(
+            `[nullspend] approaching loop threshold for ${model} ` +
+            `(${loopResult.callCount}/${loopDetector.maxCalls} calls in ${loopDetector.windowSeconds}s window)`,
+          );
+        }
+        if (loopResult.isLoop) {
+          const err = new LoopDetectedError({
+            model,
+            callCount: loopResult.callCount,
+            windowSeconds: loopDetector.windowSeconds,
+            maxCalls: loopDetector.maxCalls,
+            detectionType: loopResult.detectionType,
+          });
+          safeDenied(onDenied, {
+            type: "loop",
+            detectionType: loopResult.detectionType,
+            model,
+            callCount: loopResult.callCount,
+            windowSeconds: loopDetector.windowSeconds,
+            maxCalls: loopDetector.maxCalls,
+          }, onCostError);
+          throw err;
+        }
+      }
+
       // Proxy path: skip client-side cost tracking + enforcement + stream injection,
       // but still intercept NullSpend denial codes so callers get typed errors.
       // The proxy handles cost tracking and enforcement server-side; running them
       // client-side would double-count. The 429 interception was previously
       // bypassed by an early return — that was the bug fixed in §15c-1.
-      if (isProxied(url, init, proxyUrl, input)) {
+      const proxied = isProxied(url, init, proxyUrl, input);
+      if (proxied) {
         const response = await doFetch(input, init);
         if (response.status === 429 && enforcement) {
           const parsed = await parseDenialPayload(response);
@@ -139,16 +205,26 @@ export function buildTrackedFetch(
         }
         return response; // raw response, no cost tracking — preserves no-double-count
       }
-
-      // Non-tracked routes pass through
-      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
-      if (!isTrackedRoute(provider, url, method)) {
-        return doFetch(input, init);
+      // BIL-1: configured a proxy but request fell through to direct path.
+      // Warn once per origin so misconfiguration surfaces at deploy time
+      // instead of at margin-reconciliation time.
+      if (proxyUrl) {
+        try {
+          const reqOrigin = new URL(url).origin;
+          if (!warnedFallthroughOrigins.has(reqOrigin)) {
+            warnedFallthroughOrigins.add(reqOrigin);
+            console.warn(
+              `[nullspend] proxyUrl is configured (${proxyUrl}) but request to ${reqOrigin} ` +
+              `did not match — taking direct path. If this request also reaches the proxy, ` +
+              `cost events may be double-counted. Verify proxyUrl includes the correct port/host.`,
+            );
+          }
+        } catch {
+          // URL parse failed — non-blocking, just skip the warn.
+        }
       }
 
-      // Parse body for model + streaming detection
-      const bodyStr = await extractBody(input, init);
-      const model = (bodyStr && extractModelFromBody(bodyStr)) ?? "unknown";
+      // Streaming detection (only needed for non-proxy path)
       const streaming = bodyStr ? isStreamingRequest(bodyStr) : false;
 
       // Phase 2: Cooperative enforcement
@@ -300,6 +376,9 @@ function safeDenied(
   }
 }
 
+// Recovery type re-exported from errors.ts — single source of truth.
+import type { Recovery } from "./errors.js";
+
 type DenialPayload = {
   code: string;
   details: Record<string, unknown> | undefined;
@@ -311,6 +390,8 @@ type DenialPayload = {
    * the proxy didn't include one.
    */
   upgradeUrl: string | undefined;
+  /** Structured recovery hints from proxy. Undefined for old proxy versions. */
+  recovery: Recovery | undefined;
 };
 
 /**
@@ -360,10 +441,25 @@ async function parseDenialPayload(
     ? rawUpgradeUrl
     : undefined;
   const retryAfterRaw = parseInt(response.headers.get("Retry-After") ?? "", 10);
+  // Parse recovery object if present (added in proxy recovery-field feature).
+  const rawRecovery = errObj.recovery;
+  let recovery: Recovery | undefined;
+  if (rawRecovery && typeof rawRecovery === "object" && !Array.isArray(rawRecovery)) {
+    const rec = rawRecovery as Record<string, unknown>;
+    recovery = {
+      retryable: rec.retryable === true,
+      ownerActionRequired: rec.owner_action_required === true,
+      retryAfterSeconds: typeof rec.retry_after_seconds === "number" && Number.isFinite(rec.retry_after_seconds) && rec.retry_after_seconds >= 0
+        ? rec.retry_after_seconds
+        : null,
+      docs: typeof rec.docs === "string" && rec.docs.length > 0 ? rec.docs : null,
+    };
+  }
   return {
     code,
     details,
     upgradeUrl,
+    recovery,
     // RFC 7231 Retry-After is a non-negative integer; reject negatives defensively.
     retryAfterSeconds: Number.isFinite(retryAfterRaw) && retryAfterRaw >= 0 ? retryAfterRaw : undefined,
   };
@@ -406,6 +502,7 @@ function dispatchDenialCode(
       upgradeUrl: parsed.upgradeUrl,
       finalizationReserve,
       finalizationRemaining,
+      recovery: parsed.recovery,
     });
   }
 
@@ -431,6 +528,7 @@ function dispatchDenialCode(
       upgradeUrl: parsed.upgradeUrl,
       finalizationReserve,
       finalizationRemaining,
+      recovery: parsed.recovery,
     });
   }
 
@@ -452,6 +550,7 @@ function dispatchDenialCode(
       limit: velLimit,
       window: velWindow,
       current: velCurrent,
+      recovery: parsed.recovery,
     });
   }
 
@@ -459,7 +558,7 @@ function dispatchDenialCode(
     const sessionSpend = toFiniteNumber(details?.session_spend_microdollars);
     const sessionLimit = toFiniteNumber(details?.session_limit_microdollars);
     safeDenied(onDenied, { type: "session_limit", sessionSpend: sessionSpend ?? 0, sessionLimit: sessionLimit ?? 0 }, onCostError);
-    throw new SessionLimitExceededError(sessionSpend ?? 0, sessionLimit ?? 0);
+    throw new SessionLimitExceededError(sessionSpend ?? 0, sessionLimit ?? 0, parsed.recovery);
   }
 
   if (code === "tag_budget_exceeded") {
@@ -470,7 +569,31 @@ function dispatchDenialCode(
     const spend = toFiniteNumber(details?.budget_spend_microdollars);
     const remaining = Math.max(0, (limit ?? 0) - (spend ?? 0));
     safeDenied(onDenied, { type: "tag_budget", tagKey, tagValue, remaining, limit, spend }, onCostError);
-    throw new TagBudgetExceededError({ tagKey, tagValue, remaining, limit, spend });
+    throw new TagBudgetExceededError({ tagKey, tagValue, remaining, limit, spend, recovery: parsed.recovery });
+  }
+
+  if (code === "loop_detected") {
+    const loopType = details?.type as string | undefined;
+    const loopModel = details?.model as string | undefined;
+    const callCount = toFiniteNumber(details?.callCount);
+    const windowSeconds = toFiniteNumber(details?.windowSeconds);
+    const maxCalls = toFiniteNumber(details?.maxCalls);
+    safeDenied(onDenied, {
+      type: "loop",
+      detectionType: loopType ?? "per_key",
+      model: loopModel,
+      callCount: callCount ?? 0,
+      windowSeconds: windowSeconds ?? 60,
+      maxCalls: maxCalls ?? 50,
+    }, onCostError);
+    throw new LoopDetectedError({
+      model: loopModel ?? "unknown",
+      callCount: callCount ?? 0,
+      windowSeconds: windowSeconds ?? 60,
+      maxCalls: maxCalls ?? 50,
+      detectionType: loopType ?? "per_key",
+      recovery: parsed.recovery,
+    });
   }
 
   // Unknown code — by header-gate contract this is a drift signal (proxy
@@ -646,13 +769,19 @@ function injectStreamUsage(bodyStr: string, init?: RequestInit): RequestInit | u
   }
 }
 
+// $1 fallback for unknown models — matches proxy's UNKNOWN_MODEL_FALLBACK_MICRODOLLARS.
+// Returning 0 for unknown models would fail-open on SDK-side budget enforcement,
+// allowing unlimited spend on new/unpriced models. The $1 reserve is conservative
+// enough to catch most requests while not being so high it blocks cheap calls.
+const UNKNOWN_MODEL_FALLBACK_MICRODOLLARS = 1_000_000;
+
 function estimateCostMicrodollars(
   provider: string,
   model: string,
   bodyStr: string | null,
 ): number {
   const pricing = getModelPricing(provider, model);
-  if (!pricing) return 0;
+  if (!pricing) return UNKNOWN_MODEL_FALLBACK_MICRODOLLARS;
 
   let maxTokens = 4096;
   let estimatedInputTokens = 1000;

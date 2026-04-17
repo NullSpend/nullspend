@@ -222,6 +222,12 @@ export interface CostEventInput {
   tags?: Record<string, string>;
   /** Customer identifier for per-customer profitability tracking. */
   customer?: string;
+  /**
+   * Origin of the cost event. Defaults to `"sdk"` when omitted by the dashboard
+   * ingest endpoint. Distinguishes SDK-direct writes from proxy writes
+   * (`"proxy"`) and dashboard API writes (`"api"`). (BIL-2)
+   */
+  source?: "sdk" | "proxy" | "api";
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +254,11 @@ export interface TrackedFetchOptions {
    * skips the reserve.
    */
   finalize?: boolean;
+  /**
+   * Enable client-side loop detection. Pass `true` for defaults (50 calls/60s),
+   * or an options object for custom thresholds. `undefined`/`false` = disabled.
+   */
+  loopDetection?: boolean | { maxCalls?: number; windowSeconds?: number; aggregateMaxKeys?: number };
   /** Called when cost tracking encounters a non-fatal error. */
   onCostError?: (error: Error) => void;
   /** Called before throwing BudgetExceededError, MandateViolationError, or SessionLimitExceededError. */
@@ -259,7 +270,8 @@ export type DenialReason =
   | { type: "mandate"; mandate: string; requested: string; allowed: string[] }
   | { type: "session_limit"; sessionSpend: number; sessionLimit: number }
   | { type: "velocity"; retryAfterSeconds?: number; limit?: number; window?: number; current?: number }
-  | { type: "tag_budget"; tagKey?: string; tagValue?: string; remaining?: number; limit?: number; spend?: number };
+  | { type: "tag_budget"; tagKey?: string; tagValue?: string; remaining?: number; limit?: number; spend?: number }
+  | { type: "loop"; detectionType?: string; model?: string; callCount?: number; windowSeconds?: number; maxCalls?: number };
 
 // ---------------------------------------------------------------------------
 // Customer session

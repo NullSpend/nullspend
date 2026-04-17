@@ -197,20 +197,86 @@ describe("updateBudgetSpend", () => {
     expect(mockEmitMetric).not.toHaveBeenCalledWith("reconcile_dedup_cost_mismatch", expect.anything());
   });
 
-  it("T9: dedup hit with cost mismatch emits reconcile_dedup_cost_mismatch metric", async () => {
+  /*
+   * Why no live-smoke test for P1-7 (context migrated from deleted
+   * smoke-dedup-upward-correction.test.ts, 2026-04-16):
+   *
+   * The dedup-mismatch path fires only when the same reservationId reaches
+   * `updateBudgetSpend` TWICE with different cost values. The only known
+   * live-traffic trigger is a streaming cancellation race where the
+   * estimate cost event is written on one code path and the actual cost
+   * is written on another — both sharing the same reservation. That race
+   * is internal infrastructure; it cannot be reliably triggered from the
+   * outside.
+   *
+   * Attempts to simulate via smoke (each rejected during P1-7 design):
+   *   - Send the same HTTP request twice: each call gets a fresh
+   *     reservationId. No dedup hit.
+   *   - Replay cost events via the ingest queue: no public endpoint
+   *     accepts an arbitrary reservationId.
+   *   - Manually INSERT into `reconciled_requests` + trigger reconcile:
+   *     there is no user-facing endpoint that calls `updateBudgetSpend`
+   *     with an operator-chosen cost — the reconcile queue is fed only
+   *     by real proxy requests, each with their own reservationId.
+   *
+   * Coverage lives in T9a/T9b below + the enriched metric
+   * `reconcile_dedup_cost_mismatch` (emits orgId/entityType/entityId/
+   * delta/corrected) — so if this path DOES fire in production,
+   * operators can identify which budget row is stuck high and manually
+   * repair. Stress suite has a §7.6 replay test that verifies
+   * `inserted: 0` on duplicate reservationId; extending it to assert
+   * the delta-apply path on higher-incoming-cost is tracked as a
+   * Wave 3 stress-gap follow-up.
+   */
+  it("T9a: dedup hit with HIGHER incoming cost corrects upward (regression: P1-7)", async () => {
+    // REGRESSION GUARD: prior behavior logged + emitted a metric but never
+    // corrected the stored value. Streaming requests that wrote an estimate
+    // first and then an actual-cost second silently kept the estimate. P1-7
+    // fix: "higher wins" — update dedup + apply delta to budgets.
     vi.spyOn(console, "error").mockImplementation(() => {});
     mockTx
-      .mockResolvedValueOnce(dedupResult) // INSERT count=0 (dedup)
-      .mockResolvedValueOnce([{ cost_microdollars: 50_000 }]); // SELECT returns DIFFERENT cost
+      .mockResolvedValueOnce(dedupResult)                         // INSERT count=0 (dedup)
+      .mockResolvedValueOnce([{ cost_microdollars: 50_000 }])     // SELECT returns stored < attempted
+      .mockResolvedValueOnce(updatedResult)                       // UPDATE reconciled_requests
+      .mockResolvedValueOnce(updatedResult);                      // UPDATE budgets (delta)
 
-    await updateBudgetSpend(REMOTE_CONN, "org-test", "req-mismatch", [{ entityType: "user", entityId: "u1" }], 100_000);
+    await updateBudgetSpend(REMOTE_CONN, "org-test", "req-correct-up", [{ entityType: "user", entityId: "u1" }], 100_000);
 
-    expect(mockTx).toHaveBeenCalledTimes(2); // INSERT + SELECT
-    expect(console.error).toHaveBeenCalledWith(
-      "[budget-spend] DEDUP COST MISMATCH",
-      expect.objectContaining({ requestId: "req-mismatch", stored: 50_000, attempted: 100_000 }),
+    expect(mockTx).toHaveBeenCalledTimes(4); // INSERT + SELECT + UPDATE dedup + UPDATE budgets
+    expect(mockEmitMetric).toHaveBeenCalledWith(
+      "reconcile_dedup_cost_mismatch",
+      expect.objectContaining({
+        requestId: "req-correct-up",
+        stored: 50_000,
+        attempted: 100_000,
+        delta: 50_000,
+        corrected: true,
+      }),
     );
-    expect(mockEmitMetric).toHaveBeenCalledWith("reconcile_dedup_cost_mismatch", { requestId: "req-mismatch" });
+  });
+
+  it("T9b: dedup hit with LOWER incoming cost does NOT shrink stored spend", async () => {
+    // Defensive: never correct downward. A late-arriving smaller cost
+    // (possible with a retry carrying an estimate) must not erase real
+    // spend that was already reconciled with the actual value.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mockTx
+      .mockResolvedValueOnce(dedupResult)                          // INSERT count=0 (dedup)
+      .mockResolvedValueOnce([{ cost_microdollars: 100_000 }]);    // SELECT stored > attempted
+
+    await updateBudgetSpend(REMOTE_CONN, "org-test", "req-no-shrink", [{ entityType: "user", entityId: "u1" }], 50_000);
+
+    expect(mockTx).toHaveBeenCalledTimes(2); // INSERT + SELECT — NO correction writes
+    expect(mockEmitMetric).toHaveBeenCalledWith(
+      "reconcile_dedup_cost_mismatch",
+      expect.objectContaining({
+        requestId: "req-no-shrink",
+        stored: 100_000,
+        attempted: 50_000,
+        delta: -50_000,
+        corrected: false,
+      }),
+    );
   });
 
   it("T10: INSERT count=1 but UPDATE count=0 — deletes dedup record and throws for alarm retry", async () => {

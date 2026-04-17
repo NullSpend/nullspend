@@ -1,0 +1,195 @@
+name: Publish npm package
+
+# Tag conventions:
+#   sdk-v0.2.1            → @nullspend/sdk
+#   cost-engine-v0.1.0    → @nullspend/cost-engine
+#   claude-agent-v0.1.0   → @nullspend/claude-agent
+#   mcp-server-v0.1.0     → @nullspend/mcp-server
+#   mcp-proxy-v0.1.0      → @nullspend/mcp-proxy
+#
+# Each package gets its own tag so they can release independently.
+# The job derives package directory + npm name from the tag prefix.
+
+on:
+  push:
+    tags:
+      - "sdk-v*"
+      - "cost-engine-v*"
+      - "claude-agent-v*"
+      - "mcp-server-v*"
+      - "mcp-proxy-v*"
+  # Manual dispatch path — validates the auth + build chain without
+  # actually publishing. Use this to confirm NPM_TOKEN wiring after
+  # rotating the token, or to dry-run a release before tagging.
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Which package to dry-run/publish"
+        required: true
+        type: choice
+        options:
+          - sdk
+          - cost-engine
+          - claude-agent
+          - mcp-server
+          - mcp-proxy
+      dry_run:
+        description: "Dry-run mode (no actual publish)"
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  resolve:
+    name: Resolve package from tag
+    runs-on: ubuntu-latest
+    outputs:
+      package_dir: ${{ steps.resolve.outputs.package_dir }}
+      package_name: ${{ steps.resolve.outputs.package_name }}
+      tag_version: ${{ steps.resolve.outputs.tag_version }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+    steps:
+      - name: Resolve
+        id: resolve
+        run: |
+          # Tag-driven path: derive name from GITHUB_REF_NAME prefix.
+          # Dispatch path: read from workflow_dispatch inputs.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PKG="${{ inputs.package }}"
+            echo "package_dir=packages/${PKG}" >> "$GITHUB_OUTPUT"
+            echo "package_name=@nullspend/${PKG}" >> "$GITHUB_OUTPUT"
+            echo "tag_version=" >> "$GITHUB_OUTPUT"
+            echo "dry_run=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TAG="${GITHUB_REF_NAME}"
+          echo "dry_run=false" >> "$GITHUB_OUTPUT"
+          case "$TAG" in
+            sdk-v*)
+              echo "package_dir=packages/sdk" >> "$GITHUB_OUTPUT"
+              echo "package_name=@nullspend/sdk" >> "$GITHUB_OUTPUT"
+              echo "tag_version=${TAG#sdk-v}" >> "$GITHUB_OUTPUT"
+              ;;
+            cost-engine-v*)
+              echo "package_dir=packages/cost-engine" >> "$GITHUB_OUTPUT"
+              echo "package_name=@nullspend/cost-engine" >> "$GITHUB_OUTPUT"
+              echo "tag_version=${TAG#cost-engine-v}" >> "$GITHUB_OUTPUT"
+              ;;
+            claude-agent-v*)
+              echo "package_dir=packages/claude-agent" >> "$GITHUB_OUTPUT"
+              echo "package_name=@nullspend/claude-agent" >> "$GITHUB_OUTPUT"
+              echo "tag_version=${TAG#claude-agent-v}" >> "$GITHUB_OUTPUT"
+              ;;
+            mcp-server-v*)
+              echo "package_dir=packages/mcp-server" >> "$GITHUB_OUTPUT"
+              echo "package_name=@nullspend/mcp-server" >> "$GITHUB_OUTPUT"
+              echo "tag_version=${TAG#mcp-server-v}" >> "$GITHUB_OUTPUT"
+              ;;
+            mcp-proxy-v*)
+              echo "package_dir=packages/mcp-proxy" >> "$GITHUB_OUTPUT"
+              echo "package_name=@nullspend/mcp-proxy" >> "$GITHUB_OUTPUT"
+              echo "tag_version=${TAG#mcp-proxy-v}" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Tag $TAG does not match any expected pattern"
+              exit 1
+              ;;
+          esac
+
+  version-check:
+    name: Verify tag matches package.json
+    runs-on: ubuntu-latest
+    needs: resolve
+    # Tag-driven runs only — dispatch path skips this since there's no tag.
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version match
+        run: |
+          PKG_VERSION=$(node -p "require('./${{ needs.resolve.outputs.package_dir }}/package.json').version")
+          if [ "${{ needs.resolve.outputs.tag_version }}" != "$PKG_VERSION" ]; then
+            echo "::error::Tag version (${{ needs.resolve.outputs.tag_version }}) does not match package.json (${PKG_VERSION})"
+            exit 1
+          fi
+          echo "Version match: ${{ needs.resolve.outputs.tag_version }}"
+
+  test:
+    name: Test before publish
+    runs-on: ubuntu-latest
+    needs: resolve
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace packages
+        uses: ./.github/actions/build-workspace-packages
+
+      - name: Run package tests
+        run: pnpm --filter ${{ needs.resolve.outputs.package_name }} test
+
+  publish:
+    name: Build & Publish to npm
+    runs-on: ubuntu-latest
+    # version-check is skipped on workflow_dispatch; `needs` waits only for
+    # what actually ran. `always()` lets us run even when version-check was
+    # skipped (the default behavior would treat skipped as "not satisfied"
+    # and skip publish too).
+    needs: [resolve, version-check, test]
+    if: |
+      always() &&
+      needs.resolve.result == 'success' &&
+      needs.test.result == 'success' &&
+      (needs['version-check'].result == 'success' || needs['version-check'].result == 'skipped')
+    environment: npm
+    permissions:
+      id-token: write   # Required for npm provenance via sigstore OIDC
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace packages
+        uses: ./.github/actions/build-workspace-packages
+
+      # `pnpm publish` rewrites workspace:* dep specs to the published version
+      # at publish time. --no-git-checks because the tag itself is the gate.
+      # Dispatch runs append --dry-run so the auth + build chain is validated
+      # without burning a real version on npm.
+      - name: Publish to npm
+        working-directory: ${{ needs.resolve.outputs.package_dir }}
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            echo "::notice::Dry-run mode — no actual publish will occur"
+            pnpm publish --access public --no-git-checks --provenance --dry-run
+          else
+            pnpm publish --access public --no-git-checks --provenance
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

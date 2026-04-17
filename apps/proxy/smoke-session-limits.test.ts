@@ -199,42 +199,7 @@ describe("End-to-end session limit enforcement", () => {
 
   // ── Approval flow (no session header = no enforcement) ─────────────
 
-  // ── ST-4: Concurrent session-limit enforcement ─────────────────
-
-  it("ST-4: concurrent same-session requests all get denied after first exceeds limit", async () => {
-    await setupBudgetWithSessionLimit(100_000_000, 1); // 1 microdollar session limit
-
-    const sessionId = `smoke-burst-${Date.now()}`;
-    const concurrency = 5;
-
-    // Fire 5 concurrent requests on the SAME session
-    const requests = Array.from({ length: concurrency }, (_, i) =>
-      fetch(`${BASE}/v1/chat/completions`, {
-        method: "POST",
-        headers: authHeaders({ "x-nullspend-session": sessionId }),
-        body: smallRequest({ messages: [{ role: "user", content: `Burst ${i}` }] }),
-      }),
-    );
-
-    const results = await Promise.all(requests);
-    const statuses: number[] = [];
-    for (const r of results) {
-      statuses.push(r.status);
-      await r.text();
-    }
-
-    const denied = statuses.filter((s) => s === 429).length;
-    const succeeded = statuses.filter((s) => s === 200).length;
-
-    console.log(`[ST-4] Same-session burst: ${succeeded} succeeded, ${denied} denied`);
-
-    // With 1 microdollar limit, most should be denied.
-    // Allow at most 2 successes (DO reservation race window).
-    expect(denied).toBeGreaterThan(0);
-    expect(succeeded).toBeLessThanOrEqual(2);
-    // No 500s
-    expect(statuses.filter((s) => s !== 200 && s !== 429).length).toBe(0);
-  }, 60_000);
+  // [MOVED 2026-04-16] "ST-4: concurrent same-session requests all get denied after first exceeds limit" relocated to stress-feature-concurrency.test.ts — see docs/internal/test-tier-taxonomy.md
 
   it("multiple requests approved when session header omitted", async () => {
     // Proves budget enforcement works (approved) while session enforcement is bypassed.

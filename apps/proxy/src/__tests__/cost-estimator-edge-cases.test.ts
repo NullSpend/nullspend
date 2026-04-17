@@ -15,28 +15,100 @@ const baseBody = (model: string, overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("estimateMaxCost edge cases", () => {
-  // --- max_tokens=0 edge case (nullish coalescing treats 0 as truthy) ---
+  // --- P0-4: invalid max_tokens inputs fall through to model default cap ---
 
-  it("max_tokens: 0 is treated as truthy by ?? — output cap is 0, estimate is input-only", () => {
-    const result = estimateMaxCost("gpt-4o-mini", baseBody("gpt-4o-mini", { max_tokens: 0 }));
-    const resultWithDefault = estimateMaxCost("gpt-4o-mini", baseBody("gpt-4o-mini"));
+  // Fixed bodyByteLength normalizes input-side cost across tests so output-side
+  // behavior can be compared apples-to-apples. Without this, JSON serialization
+  // length differs between baseBody and baseBody-with-extra-field and the
+  // estimate shifts by a few microdollars.
+  const FIXED_BODY_BYTES = 256;
 
-    expect(result).toBeLessThan(resultWithDefault);
-    expect(result).toBeGreaterThan(0); // input cost still contributes
+  it("max_tokens: 0 falls through to model default (P0-4)", () => {
+    const result = estimateMaxCost("gpt-4o-mini", baseBody("gpt-4o-mini", { max_tokens: 0 }), FIXED_BODY_BYTES);
+    const resultWithDefault = estimateMaxCost("gpt-4o-mini", baseBody("gpt-4o-mini"), FIXED_BODY_BYTES);
+
+    // Prior to P0-4, nullish-coalescing treated 0 as truthy and produced a
+    // zero-output estimate. Now 0 is not positive → falls through to default.
+    expect(result).toBe(resultWithDefault);
   });
 
-  it("max_completion_tokens: 0 behaves same as max_tokens: 0", () => {
-    const withZero = estimateMaxCost("gpt-4o", baseBody("gpt-4o", { max_completion_tokens: 0 }));
-    const withDefault = estimateMaxCost("gpt-4o", baseBody("gpt-4o"));
-    expect(withZero).toBeLessThan(withDefault);
+  it("max_completion_tokens: 0 falls through to default (P0-4)", () => {
+    const withZero = estimateMaxCost("gpt-4o", baseBody("gpt-4o", { max_completion_tokens: 0 }), FIXED_BODY_BYTES);
+    const withDefault = estimateMaxCost("gpt-4o", baseBody("gpt-4o"), FIXED_BODY_BYTES);
+    expect(withZero).toBe(withDefault);
   });
 
-  it("max_tokens as negative number — costComponent returns 0 for negative tokens", () => {
-    const result = estimateMaxCost("gpt-4o-mini", baseBody("gpt-4o-mini", { max_tokens: -100 }));
-    // Output cost is 0 (negative tokens), result is input-cost-only with margin
+  it("max_tokens as negative number falls through to default (P0-4)", () => {
+    const result = estimateMaxCost("gpt-4o-mini", baseBody("gpt-4o-mini", { max_tokens: -100 }), FIXED_BODY_BYTES);
+    const withDefault = estimateMaxCost("gpt-4o-mini", baseBody("gpt-4o-mini"), FIXED_BODY_BYTES);
+    // REGRESSION GUARD: negative max_tokens used to produce a degenerate
+    // estimate. Now the gemini validation pattern rejects non-positive and
+    // non-finite values, falling through to the model-specific default cap.
+    expect(result).toBe(withDefault);
+  });
+
+  it.each([
+    ["NaN", Number.NaN],
+    ["Infinity", Number.POSITIVE_INFINITY],
+    ["-Infinity", Number.NEGATIVE_INFINITY],
+    ["string 'unlimited'", "unlimited"],
+    ["null", null],
+    ["undefined", undefined],
+    ["object {value: 100}", { value: 100 }],
+    ["bool true (Codex P2)", true],
+    ["bool false", false],
+    ["array [5000] (Codex P2)", [5000]],
+    ["empty array", []],
+  ])("max_tokens: %s falls through to default (P0-4 regression)", (_label, value) => {
+    // REGRESSION GUARD: these malformed inputs used to cast to Number()
+    // and propagate NaN into the reservation math, producing NaN estimates
+    // that bypassed budget enforcement via the NF-2 hasBudgets:false
+    // mislabel path.
+    const result = estimateMaxCost(
+      "gpt-4o-mini",
+      baseBody("gpt-4o-mini", { max_tokens: value as unknown as number }),
+      FIXED_BODY_BYTES,
+    );
+    const withDefault = estimateMaxCost(
+      "gpt-4o-mini",
+      baseBody("gpt-4o-mini"),
+      FIXED_BODY_BYTES,
+    );
+
+    expect(Number.isFinite(result)).toBe(true);
+    expect(Number.isInteger(result)).toBe(true);
     expect(result).toBeGreaterThan(0);
-    const withZero = estimateMaxCost("gpt-4o-mini", baseBody("gpt-4o-mini", { max_tokens: 0 }));
-    expect(result).toBe(withZero); // both yield 0 output cost
+    expect(result).toBe(withDefault);
+  });
+
+  it("numeric string max_tokens IS coerced via Number() (matches gemini pattern)", () => {
+    // Parity with gemini-cost-estimator.ts: Number() coercion is intentionally
+    // lenient. "1000" → 1000. Documented so future refactors know this is not
+    // a P0-4 bug.
+    const withString = estimateMaxCost(
+      "gpt-4o",
+      baseBody("gpt-4o", { max_tokens: "1000" as unknown as number }),
+      FIXED_BODY_BYTES,
+    );
+    const withNumber = estimateMaxCost(
+      "gpt-4o",
+      baseBody("gpt-4o", { max_tokens: 1000 }),
+      FIXED_BODY_BYTES,
+    );
+    expect(withString).toBe(withNumber);
+  });
+
+  it("max_tokens > 1M is clamped to 1M sanity limit (P0-4)", () => {
+    const clamped = estimateMaxCost("gpt-4o", baseBody("gpt-4o", { max_tokens: 10_000_000 }));
+    const at1m = estimateMaxCost("gpt-4o", baseBody("gpt-4o", { max_tokens: 1_000_000 }));
+    // 10M is clamped to 1M → identical estimate
+    expect(clamped).toBe(at1m);
+  });
+
+  it("max_tokens as fractional number is ceiled (P0-4)", () => {
+    const fractional = estimateMaxCost("gpt-4o", baseBody("gpt-4o", { max_tokens: 100.3 }));
+    const ceiled = estimateMaxCost("gpt-4o", baseBody("gpt-4o", { max_tokens: 101 }));
+    expect(fractional).toBe(ceiled);
   });
 
   // --- Body size edge cases ---
@@ -84,15 +156,17 @@ describe("estimateMaxCost edge cases", () => {
   // --- Safety margin verification ---
 
   it("applies exact 1.1x safety margin", () => {
-    // Use max_tokens=0 to isolate input cost only (output cost = 0)
-    const result = estimateMaxCost("gpt-4o-mini", baseBody("gpt-4o-mini", { max_tokens: 0 }));
+    // Use explicit small max_tokens to keep the expected computation simple.
+    const body = baseBody("gpt-4o-mini", { max_tokens: 100 });
+    const result = estimateMaxCost("gpt-4o-mini", body);
 
     // Compute expected: body stringified, / 4 chars per token, ceiled = input tokens
-    const bodyStr = JSON.stringify(baseBody("gpt-4o-mini", { max_tokens: 0 }));
+    const bodyStr = JSON.stringify(body);
     const inputTokens = Math.ceil(bodyStr.length / 4);
-    // gpt-4o-mini input rate: $0.15/MTok
-    const inputCost = inputTokens * 0.15; // costComponent(tokens, rate) = tokens * rate
-    const expected = Math.round(inputCost * 1.1);
+    // gpt-4o-mini rates: input $0.15/MTok, output $0.60/MTok
+    const inputCost = inputTokens * 0.15;
+    const outputCost = 100 * 0.60;
+    const expected = Math.round((inputCost + outputCost) * 1.1);
 
     expect(result).toBe(expected);
   });

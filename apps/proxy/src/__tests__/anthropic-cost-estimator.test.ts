@@ -160,29 +160,138 @@ describe("estimateAnthropicMaxCost", () => {
     expect(longContext).toBeGreaterThan(longOutputOnly * 0.9); // sanity
   });
 
-  it("does NOT apply long-context multipliers below 200K token threshold", () => {
-    // 700K chars / 4 = 175K tokens — below 200K threshold
-    const content = "a".repeat(700_000);
+  // P0-4: Regression guards for unsanitized max_tokens inputs
+  describe("max_tokens input validation (P0-4)", () => {
+    const FIXED_BODY_BYTES = 256;
+    const baseBody = (overrides: Record<string, unknown> = {}) => ({
+      model: "claude-sonnet-4-5",
+      messages: [{ role: "user", content: "hello" }],
+      ...overrides,
+    });
+
+    it.each([
+      ["NaN", Number.NaN],
+      ["Infinity", Number.POSITIVE_INFINITY],
+      ["-Infinity", Number.NEGATIVE_INFINITY],
+      ["0", 0],
+      ["-100", -100],
+      ["string 'unlimited'", "unlimited"],
+      ["null", null],
+      ["undefined", undefined],
+      ["object {value: 100}", { value: 100 }],
+      ["bool true (Codex P2)", true],
+      ["bool false", false],
+      ["array [5000] (Codex P2)", [5000]],
+      ["empty array", []],
+    ])("max_tokens: %s falls through to default cap (regression)", (_label, value) => {
+      // REGRESSION GUARD: these malformed inputs used to cast via Number()
+      // and propagate NaN/negative into the reservation math, producing NaN
+      // estimates that bypassed budget enforcement via the DO's hasBudgets:false
+      // path mislabeled as stale cache.
+      const result = estimateAnthropicMaxCost(
+        "claude-sonnet-4-5",
+        baseBody({ max_tokens: value }),
+        FIXED_BODY_BYTES,
+      );
+      const withDefault = estimateAnthropicMaxCost(
+        "claude-sonnet-4-5",
+        baseBody(),
+        FIXED_BODY_BYTES,
+      );
+
+      expect(Number.isFinite(result)).toBe(true);
+      expect(Number.isInteger(result)).toBe(true);
+      expect(result).toBeGreaterThan(0);
+      expect(result).toBe(withDefault);
+    });
+
+    it("max_tokens > 1M is clamped to 1M sanity limit", () => {
+      const clamped = estimateAnthropicMaxCost(
+        "claude-sonnet-4-5",
+        baseBody({ max_tokens: 10_000_000 }),
+        FIXED_BODY_BYTES,
+      );
+      const at1m = estimateAnthropicMaxCost(
+        "claude-sonnet-4-5",
+        baseBody({ max_tokens: 1_000_000 }),
+        FIXED_BODY_BYTES,
+      );
+      expect(clamped).toBe(at1m);
+    });
+
+    it("max_tokens as fractional number is ceiled", () => {
+      const fractional = estimateAnthropicMaxCost(
+        "claude-sonnet-4-5",
+        baseBody({ max_tokens: 100.3 }),
+        FIXED_BODY_BYTES,
+      );
+      const ceiled = estimateAnthropicMaxCost(
+        "claude-sonnet-4-5",
+        baseBody({ max_tokens: 101 }),
+        FIXED_BODY_BYTES,
+      );
+      expect(fractional).toBe(ceiled);
+    });
+  });
+
+  it("does NOT apply long-context multipliers below 100K token threshold (P0-5)", () => {
+    // P0-5: Threshold lowered from 200K → 100K (codex review: 50% undercount
+    // worst case = 200K actual / 2 = 100K estimate threshold). Test validates
+    // the new boundary.
+
+    // 300K chars / 4 = 75K tokens — below 100K threshold
+    const content = "a".repeat(300_000);
     const belowThreshold = estimateAnthropicMaxCost("claude-sonnet-4-5", {
       model: "claude-sonnet-4-5",
       max_tokens: 100,
       messages: [{ role: "user", content: content }],
     });
 
-    // 900K chars / 4 = 225K tokens — above 200K threshold
-    const contentAbove = "a".repeat(900_000);
+    // 600K chars / 4 = 150K tokens — above 100K threshold
+    const contentAbove = "a".repeat(600_000);
     const aboveThreshold = estimateAnthropicMaxCost("claude-sonnet-4-5", {
       model: "claude-sonnet-4-5",
       max_tokens: 100,
       messages: [{ role: "user", content: contentAbove }],
     });
 
-    // Above-threshold should be MORE than proportionally higher
-    // because of 2x input multiplier
-    const sizeRatio = 225_000 / 175_000; // ~1.29 token ratio
+    // Above-threshold should be MORE than proportionally higher because
+    // of 2x input multiplier applied only to the above-threshold estimate.
+    const sizeRatio = 150_000 / 75_000; // 2.0 token ratio
     const costRatio = aboveThreshold / belowThreshold;
 
-    // Cost ratio should be > size ratio because of 2x multiplier
+    // Cost ratio should be > size ratio because of 2x multiplier on the
+    // above-threshold side only.
     expect(costRatio).toBeGreaterThan(sizeRatio);
+  });
+
+  it("applies long-context multiplier for 50% worst-case undercount at 200K actual (P0-5 regression)", () => {
+    // REGRESSION GUARD: the calculator uses totalInputTokens > 200_000 (with
+    // cache + image tokens). The estimator uses bodyByteLength/4 which can
+    // under-count by up to ~50% for multimodal/code/CJK content. This test
+    // ensures the estimator applies the 2x multiplier at the 100K estimate
+    // boundary so a request that estimates at 100K+ but will actually be
+    // 200K+ tokens never under-reserves relative to the calculator.
+    //
+    // Codex follow-up flagged 150K as insufficient — 25% buffer vs 50%
+    // worst case. 100K threshold covers the documented worst case exactly.
+    const FIXED_BODY_BYTES = 400_001; // 100_001 estimate tokens — just over new 100K threshold
+    const longContext = estimateAnthropicMaxCost(
+      "claude-sonnet-4-5",
+      { model: "claude-sonnet-4-5", max_tokens: 100, messages: [{ role: "user", content: "x" }] },
+      FIXED_BODY_BYTES,
+    );
+
+    const belowThreshold = estimateAnthropicMaxCost(
+      "claude-sonnet-4-5",
+      { model: "claude-sonnet-4-5", max_tokens: 100, messages: [{ role: "user", content: "x" }] },
+      200_000, // 50K estimate tokens — below threshold
+    );
+
+    // Same model, same max_tokens. The long-context variant applies 2x input
+    // rate to 2x body tokens (400K vs 200K bytes), so the ratio is bounded
+    // below by 2x body-size * 2x rate / 1x = 4x input contribution. Even
+    // with output cost held constant, long-context total should be > 2x.
+    expect(longContext).toBeGreaterThan(belowThreshold * 2);
   });
 });

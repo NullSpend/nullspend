@@ -1484,7 +1484,85 @@ describe("PXY-2: Alarm outbox processing", () => {
     const outboxAfter = await stub.getOutboxEntries();
     expect(outboxAfter).toHaveLength(0);
   });
+});
 
+// ── AUDIT-7: Orphan DO budget sweep ───────────────────────────────────
+
+describe("AUDIT-7: Orphan DO budget sweep", () => {
+  it("synced_at is populated on populateIfEmpty (new row)", async () => {
+    const stub = getStub("audit7-synced-new");
+    const beforeMs = Date.now();
+    await stub.populateIfEmpty("user", "u1", 50_000_000, 0, "strict_block", null, 0);
+
+    const rows = await runInDurableObject<UserBudgetDO, Array<{ synced_at: number }>>(
+      stub,
+      (instance) =>
+        instance.ctx.storage.sql
+          .exec<{ synced_at: number }>("SELECT synced_at FROM budgets WHERE entity_id = 'u1'")
+          .toArray(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].synced_at).toBeGreaterThanOrEqual(beforeMs);
+  });
+
+  it("synced_at is refreshed on repeat populateIfEmpty (UPSERT)", async () => {
+    const stub = getStub("audit7-synced-upsert");
+    await stub.populateIfEmpty("user", "u1", 50_000_000, 0, "strict_block", null, 0);
+
+    // Backdate synced_at to simulate an older sync
+    await runInDurableObject<UserBudgetDO, void>(stub, (instance) => {
+      instance.ctx.storage.sql.exec(
+        "UPDATE budgets SET synced_at = 1 WHERE entity_id = 'u1'",
+      );
+    });
+
+    const beforeMs = Date.now();
+    await stub.populateIfEmpty("user", "u1", 60_000_000, 0, "strict_block", null, 0);
+
+    const rows = await runInDurableObject<UserBudgetDO, Array<{ synced_at: number }>>(
+      stub,
+      (instance) =>
+        instance.ctx.storage.sql
+          .exec<{ synced_at: number }>("SELECT synced_at FROM budgets WHERE entity_id = 'u1'")
+          .toArray(),
+    );
+    expect(rows[0].synced_at).toBeGreaterThanOrEqual(beforeMs);
+  });
+
+  it("alarm orphan sweep skips gracefully when HYPERDRIVE is unavailable", async () => {
+    // Setup: one budget row with an OLD synced_at. If the sweep ran, it would
+    // evict the row (since no Postgres to verify against). Disabling HYPERDRIVE
+    // must short-circuit the sweep before any DELETE fires.
+    const stub = getStub("audit7-skip-hyperdrive");
+    await stub.populateIfEmpty("user", "u1", 50_000_000, 0, "strict_block", null, 0);
+
+    // Backdate synced_at past the 60s safety window
+    await runInDurableObject<UserBudgetDO, void>(stub, (instance) => {
+      instance.ctx.storage.sql.exec(
+        "UPDATE budgets SET synced_at = ? WHERE entity_id = 'u1'",
+        Date.now() - 5 * 60_000,
+      );
+    });
+
+    await disableHyperdrive(stub);
+    await runDurableObjectAlarm(stub);
+
+    // Row still present — sweep could not verify, so it must not evict
+    const state = await stub.getBudgetState();
+    expect(state).toHaveLength(1);
+    expect(state[0].entity_id).toBe("u1");
+  });
+
+  it("alarm orphan sweep skips DOs with no budget rows (short-circuit)", async () => {
+    const stub = getStub("audit7-empty-budgets");
+    // Make sure the empty-budgets path doesn't crash, even with HYPERDRIVE available
+    await runDurableObjectAlarm(stub);
+    const state = await stub.getBudgetState();
+    expect(state).toHaveLength(0);
+  });
+});
+
+describe("UserBudgetDO (threshold alerts)", () => {
   // ── P0-1: Threshold alert dedup ─────────────────────────────────────
 
   it("P0-1: reconcile detects threshold crossing and returns it", async () => {
@@ -1856,5 +1934,78 @@ describe("PXY-2: Alarm outbox processing", () => {
     );
     const result2 = await stub2.checkAndReserve(null, 89_000_000, 30_000, null, [], null, true);
     expect(result2.status).toBe("approved");
+  });
+
+  // ── P1-2: denial priority ordering regression ───────────────────────
+
+  it("P1-2: loop denial takes priority over session denial when both would trigger", async () => {
+    // REGRESSION GUARD: prior to P1-2 the DO checked session BEFORE loop
+    // detection, so a request hitting both a loop limit and a session
+    // limit returned `sessionLimitDenied`. The contract (proxy CLAUDE.md
+    // + shared.ts consumers) requires velocity > loop > session > budget.
+    // After reordering, loop wins.
+    const stub = getStub("user-priority-loop-vs-session");
+    await stub.populateIfEmpty(
+      "user", "u1",
+      100_000_000, 0,               // maxBudget = $100, spend = 0
+      "strict_block", null, 0,       // policy, resetInterval, periodStart
+      null, 60_000, 60_000,          // velocity off
+      [50, 80, 90, 95],              // thresholds
+      5_000,                         // sessionLimit = 5k microdollars ($0.005)
+      0,                             // finalizationReserve
+      2,                             // loopMaxCalls = 2 (trips on 2nd call)
+      60,                            // loopWindowSeconds
+      5,                             // loopAggregateMaxKeys
+    );
+
+    const loopCtx = { provider: "openai", model: "gpt-4o-mini", contentHash: "priority-regression-hash" };
+    const sessionId = "sess-priority";
+
+    // Call 1 — approved. Reconcile fills session spend.
+    const r1 = await stub.checkAndReserve(null, 3_000, 30_000, sessionId, [], null, false, loopCtx);
+    expect(r1.status).toBe("approved");
+    await stub.reconcile(r1.reservationId!, 3_000);
+
+    // Call 2 — BOTH conditions trip:
+    //   loop: existing 1 + pending 1 = 2 calls, threshold = 2 → loop denial
+    //   session: 3k existing + 3k estimate = 6k > 5k session limit
+    // Expected post-P1-2: loop wins (higher priority).
+    const r2 = await stub.checkAndReserve(null, 3_000, 30_000, sessionId, [], null, false, loopCtx);
+    expect(r2.status).toBe("denied");
+    expect(r2.loopDetected).toBe(true);
+    expect(r2.loopDetails?.type).toBe("per_key");
+    // Session limit should NOT be reported — loop has higher priority.
+    expect(r2.sessionLimitDenied).toBeUndefined();
+  });
+
+  it("P1-2: session-only denial still works when loop is disabled (no priority regression)", async () => {
+    // Sanity: the reorder must not break the isolated session-denial path.
+    // With loopMaxCalls=0 (disabled) and a session limit, session denial
+    // still surfaces as `sessionLimitDenied`.
+    const stub = getStub("user-priority-session-only");
+    await stub.populateIfEmpty(
+      "user", "u1",
+      100_000_000, 0,
+      "strict_block", null, 0,
+      null, 60_000, 60_000,
+      [50, 80, 90, 95],
+      5_000,                        // sessionLimit = 5k
+      0,
+      0,                            // loopMaxCalls = 0 → loop detection disabled
+      60,
+      5,
+    );
+
+    const loopCtx = { provider: "openai", model: "gpt-4o-mini", contentHash: "session-only-hash" };
+    const sessionId = "sess-session-only";
+
+    const r1 = await stub.checkAndReserve(null, 3_000, 30_000, sessionId, [], null, false, loopCtx);
+    expect(r1.status).toBe("approved");
+    await stub.reconcile(r1.reservationId!, 3_000);
+
+    const r2 = await stub.checkAndReserve(null, 3_000, 30_000, sessionId, [], null, false, loopCtx);
+    expect(r2.status).toBe("denied");
+    expect(r2.sessionLimitDenied).toBe(true);
+    expect(r2.loopDetected).toBeUndefined();
   });
 });

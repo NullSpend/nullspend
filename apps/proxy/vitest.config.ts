@@ -4,5 +4,6 @@ export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
     exclude: ["src/**/*.do.test.ts"],
+    setupFiles: ["src/__tests__/msw/setup.ts"],
   },
 });

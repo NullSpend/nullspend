@@ -208,10 +208,16 @@ describe("ST-7: Margin sync + proxy interaction", () => {
     console.log(`[ST-7] Revenue verified: ${rows[0].customer_name} = $${(amount / 1_000_000).toFixed(2)}`);
   }, 60_000);
 
-  it("margins API responds and customer_revenue has synced data", async () => {
+  it("customer_revenue has synced data (DB-level verification)", async () => {
     if (skip) return;
 
-    // Verify revenue exists in DB (sync was successful)
+    // Verify revenue exists in DB (sync was successful). This is the
+    // real proof — the margins API endpoint is session-cookie auth only
+    // (see app/api/margins/route.ts:10 → resolveSessionContext), so we
+    // cannot exercise it from a smoke context that only has an API key.
+    // Updated 2026-04-16 per smoke-test-triage: the HTTP-level margins
+    // check was asserting against an endpoint that never accepted API
+    // key auth in the first place.
     const revenueRows = await sql`
       SELECT COUNT(*)::int as count, COALESCE(SUM(amount_microdollars), 0)::text as total
       FROM customer_revenue
@@ -221,31 +227,16 @@ describe("ST-7: Margin sync + proxy interaction", () => {
     const revenueTotal = Number(revenueRows[0].total);
     console.log(`[ST-7] customer_revenue: ${revenueCount} rows, total=${revenueTotal}µ¢`);
     expect(revenueCount).toBeGreaterThan(0);
+    expect(revenueTotal).toBeGreaterThan(0);
 
-    // Check if auto-match created a mapping
+    // Check if auto-match created a mapping (best-effort; requires prior cost events
+    // with matching customer tag, which this test doesn't create).
     const mappingRows = await sql`
       SELECT tag_value, stripe_customer_id, match_type
       FROM customer_mappings
       WHERE org_id = ${orgId} AND tag_value = 'st7-smoke-customer'
     `;
     console.log(`[ST-7] Auto-match mappings: ${mappingRows.length}`);
-
-    // Margins API should respond (may show 0 if no mappings exist yet)
-    const res = await fetch(`${DASHBOARD_URL}/api/margins`, {
-      headers: { "x-nullspend-key": NULLSPEND_API_KEY! },
-    });
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    const data = body.data;
-    console.log(`[ST-7] Margins API: revenue=${data.summary.totalRevenueMicrodollars}µ¢, customers=${data.customers.length}, syncStatus=${data.summary.syncStatus}`);
-
-    // If mappings exist, revenue should be > 0. If not, that's expected —
-    // auto-match requires cost events with matching customer tags.
-    if (mappingRows.length > 0) {
-      expect(data.summary.totalRevenueMicrodollars).toBeGreaterThan(0);
-    } else {
-      console.log("[ST-7] No customer mappings — margins show 0 (expected: auto-match needs cost events with customer tag)");
-    }
   }, 30_000);
 
   it("proxy budget enforcement is unaffected during margin sync", async () => {

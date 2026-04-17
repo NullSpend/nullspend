@@ -98,7 +98,7 @@ describe("checkBudget — DO-first mode", () => {
     expect(result.status).toBe("approved");
     expect(result.reservationId).toBe("rsv-do-1");
     expect(mockDoBudgetCheck).toHaveBeenCalledWith(
-      expect.anything(), "user-1", "key-1", 5_000_000, null, [], null, false,
+      expect.anything(), "user-1", "key-1", 5_000_000, null, [], null, false, null,
     );
   });
 
@@ -147,6 +147,46 @@ describe("checkBudget — DO-first mode", () => {
 
     expect(result.status).toBe("skipped");
     expect(result.budgetEntities).toEqual([]);
+  });
+
+  it("fails CLOSED with denied+invalidEstimate when DO reports invalid estimate (regression: NF-2)", async () => {
+    // REGRESSION GUARD: the DO returns `{ status: "denied", hasBudgets: false }`
+    // ONLY for invalid estimate inputs (NaN / Infinity / negative — see
+    // user-budget.ts:384-385). Previously the orchestrator checked only
+    // `!hasBudgets` and mislabeled this as `budget_cache_stale`, hiding a
+    // validation failure behind a misleading signal AND — worse — letting
+    // the request proceed without budget enforcement (fail-open).
+    //
+    // Now the orchestrator fails CLOSED: returns status:"denied" with
+    // invalidEstimate:true so shared.ts renders a 400 bad_request. Codex
+    // review flagged the prior fail-open behavior as [P1].
+    mockDoBudgetCheck.mockResolvedValue({
+      status: "denied",
+      hasBudgets: false,
+    });
+
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const result = await checkBudget(makeEnv(), makeCtx(), Number.NaN);
+
+    // Fail CLOSED: denied with invalidEstimate flag set.
+    expect(result.status).toBe("denied");
+    expect(result.invalidEstimate).toBe(true);
+    expect(result.budgetEntities).toEqual([]);
+    expect(result.reservationId).toBeNull();
+
+    // Inspect emitted metrics. emitMetric writes JSON to console.log.
+    const metricCalls = consoleLogSpy.mock.calls
+      .map((c) => c[0])
+      .filter((s): s is string => typeof s === "string")
+      .map((s) => { try { return JSON.parse(s); } catch { return null; } })
+      .filter((o) => o && typeof o === "object" && "_metric" in o);
+
+    const metricNames = metricCalls.map((m) => m._metric);
+    expect(metricNames).toContain("budget_check_invalid_estimate");
+    expect(metricNames).not.toContain("budget_cache_stale");
+
+    consoleLogSpy.mockRestore();
   });
 
   it("skipped when no userId", async () => {
@@ -244,7 +284,7 @@ describe("checkBudget — DO-first mode", () => {
     await checkBudget(makeEnv(), ctx, 5_000_000);
 
     expect(mockDoBudgetCheck).toHaveBeenCalledWith(
-      expect.anything(), "user-1", null, 5_000_000, null, [], null, false,
+      expect.anything(), "user-1", null, 5_000_000, null, [], null, false, null,
     );
   });
 
@@ -304,7 +344,7 @@ describe("checkBudget — DO-first mode", () => {
     await checkBudget(makeEnv(), ctx, 5_000_000);
 
     expect(mockDoBudgetCheck).toHaveBeenCalledWith(
-      expect.anything(), "user-1", "key-1", 5_000_000, null, [], "org-xyz", false,
+      expect.anything(), "user-1", "key-1", 5_000_000, null, [], "org-xyz", false, null,
     );
   });
 });
@@ -395,7 +435,7 @@ describe("checkBudget — tag budget", () => {
 
     expect(mockDoBudgetCheck).toHaveBeenCalledWith(
       expect.anything(), "user-1", "key-1", 5_000_000, null,
-      ["project=openclaw", "env=prod"], null, false,
+      ["project=openclaw", "env=prod"], null, false, null,
     );
   });
 
@@ -411,7 +451,7 @@ describe("checkBudget — tag budget", () => {
     await checkBudget(makeEnv(), ctx, 5_000_000);
 
     expect(mockDoBudgetCheck).toHaveBeenCalledWith(
-      expect.anything(), "user-1", "key-1", 5_000_000, null, [], null, false,
+      expect.anything(), "user-1", "key-1", 5_000_000, null, [], null, false, null,
     );
   });
 

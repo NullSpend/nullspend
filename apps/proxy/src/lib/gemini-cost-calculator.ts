@@ -14,6 +14,12 @@
  *   normalInput = promptTokenCount - cachedContentTokenCount
  *   cost = costComponent(normalInput, inputRate) + costComponent(cached, cachedRate) + costComponent(output, outputRate)
  *
+ * Long context: gemini-2.5-pro is the only Gemini model that has a >200K-token
+ * pricing tier. When `promptTokenCount > 200_000` on that model, Google charges
+ * 2x input, 1.5x output, 2x cached input. Other Gemini models (flash family,
+ * 2.0 series, previews) price flat regardless of prompt length.
+ * Ref: https://ai.google.dev/gemini-api/docs/pricing
+ *
  * Follows the same pattern as cost-calculator.ts (OpenAI) and anthropic-cost-calculator.ts.
  * Ref: https://ai.google.dev/gemini-api/docs/tokens
  */
@@ -63,12 +69,25 @@ export function calculateGeminiCost(
     if (pricing) resolvedModel = fallback.resolvedModel;
   }
 
+  // Long-context pricing: only gemini-2.5-pro applies the >200K multiplier
+  // (2x input, 1.5x output, 2x cached). Other Gemini models are flat-rate.
+  const isLongContext = resolvedModel === "gemini-2.5-pro" && promptTokens > 200_000;
+  const inputRate = pricing
+    ? isLongContext ? pricing.inputPerMTok * 2 : pricing.inputPerMTok
+    : 0;
+  const cachedRate = pricing
+    ? isLongContext ? pricing.cachedInputPerMTok * 2 : pricing.cachedInputPerMTok
+    : 0;
+  const outputRate = pricing
+    ? isLongContext ? pricing.outputPerMTok * 1.5 : pricing.outputPerMTok
+    : 0;
+
   let costMicrodollars = 0;
   let costBreakdown: CostEventInsert["costBreakdown"] = null;
   if (pricing) {
-    const input = costComponent(normalInputTokens, pricing.inputPerMTok);
-    const cached = costComponent(cachedTokens, pricing.cachedInputPerMTok);
-    const output = costComponent(candidatesTokens, pricing.outputPerMTok);
+    const input = costComponent(normalInputTokens, inputRate);
+    const cached = costComponent(cachedTokens, cachedRate);
+    const output = costComponent(candidatesTokens, outputRate);
     costMicrodollars = Math.max(0, Math.round(input + cached + output));
 
     // Round components, distribute rounding residual to largest for exact sum
@@ -91,12 +110,12 @@ export function calculateGeminiCost(
 
     // Thinking tokens are a SUBSET of output cost (like OpenAI reasoning), stored for display
     if (thoughtsTokens > 0) {
-      bd.reasoning = Math.round(costComponent(thoughtsTokens, pricing.outputPerMTok));
+      bd.reasoning = Math.round(costComponent(thoughtsTokens, outputRate));
     }
 
     // Tool definition is a SUBSET of input cost, stored for attribution
     if (toolDefinitionTokens && toolDefinitionTokens > 0) {
-      bd.toolDefinition = Math.round(costComponent(toolDefinitionTokens, pricing.inputPerMTok));
+      bd.toolDefinition = Math.round(costComponent(toolDefinitionTokens, inputRate));
     }
 
     costBreakdown = bd;

@@ -14,6 +14,7 @@ from nullspend.errors import (
     TimeoutError,
     RejectedError,
     BudgetExceededError,
+    LoopDetectedError,
     MandateViolationError,
     SessionLimitExceededError,
     VelocityExceededError,
@@ -39,6 +40,7 @@ from nullspend.types import (
     ListBudgetsResponse,
     ListCostEventsOptions,
     ListCostEventsResponse,
+    LoopDetectionConfig,
     MarkResultInput,
     MutateActionResponse,
     NullSpendConfig,
@@ -58,6 +60,7 @@ __all__ = [
     "TimeoutError",
     "RejectedError",
     "BudgetExceededError",
+    "LoopDetectedError",
     "MandateViolationError",
     "SessionLimitExceededError",
     "VelocityExceededError",
@@ -80,6 +83,7 @@ __all__ = [
     "ListBudgetsResponse",
     "ListCostEventsOptions",
     "ListCostEventsResponse",
+    "LoopDetectionConfig",
     "MarkResultInput",
     "MutateActionResponse",
     "NullSpendConfig",
@@ -96,4 +100,4 @@ __all__ = [
     "cost_component",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

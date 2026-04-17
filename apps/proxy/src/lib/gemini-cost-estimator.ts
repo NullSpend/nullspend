@@ -102,8 +102,15 @@ export function estimateGeminiMaxCost(
 
   const outputTokenEstimate = explicitOutputCap ?? (MODEL_OUTPUT_CAPS[resolvedModel] ?? MODEL_OUTPUT_CAPS[model] ?? DEFAULT_OUTPUT_CAP);
 
-  const inputCost = costComponent(inputTokenEstimate, pricing.inputPerMTok);
-  const outputCost = costComponent(outputTokenEstimate, pricing.outputPerMTok);
+  // Long-context pricing: only gemini-2.5-pro has the >200K multiplier
+  // (2x input, 1.5x output). Must match the calculator in gemini-cost-calculator.ts
+  // so reservations cover actual cost on long-context requests.
+  const isLongContext = resolvedModel === "gemini-2.5-pro" && inputTokenEstimate > 200_000;
+  const inputRate = isLongContext ? pricing.inputPerMTok * 2 : pricing.inputPerMTok;
+  const outputRate = isLongContext ? pricing.outputPerMTok * 1.5 : pricing.outputPerMTok;
+
+  const inputCost = costComponent(inputTokenEstimate, inputRate);
+  const outputCost = costComponent(outputTokenEstimate, outputRate);
 
   return Math.round((inputCost + outputCost) * SAFETY_MARGIN);
 }

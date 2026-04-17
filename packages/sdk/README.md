@@ -125,8 +125,26 @@ When using the proxy, the SDK also intercepts proxy-side 429 denials and throws 
 | `VelocityExceededError` | `velocity_exceeded` | Spend rate exceeds velocity limit |
 | `SessionLimitExceededError` | `session_limit_exceeded` | Session spend cap reached |
 | `TagBudgetExceededError` | `tag_budget_exceeded` | Tag-level budget exhausted |
+| `LoopDetectedError` | `loop_detected` | Same model+content called 50+ times in 60s |
 
 All denial types fire the `onDenied` callback before throwing. Proxy 429s with non-NullSpend codes (e.g. an upstream OpenAI rate limit forwarded through the proxy) pass through as raw `Response` objects.
+
+Every denial error includes an optional `recovery` property with machine-readable hints:
+
+```typescript
+try {
+  await trackedFetch(url, init);
+} catch (err) {
+  if (err instanceof BudgetExceededError) {
+    console.log(err.recovery?.retryable);          // false
+    console.log(err.recovery?.ownerActionRequired); // true — needs human/config action
+    console.log(err.recovery?.retryAfterSeconds);   // null (not retryable)
+    console.log(err.recovery?.docs);                // docs URL or null
+  }
+}
+```
+
+The `Recovery` type is exported from `@nullspend/sdk` for consumers who want to type it. The `recovery` property is `undefined` when connecting to an older proxy that doesn't include it.
 
 **Proxy detection** — the SDK takes the proxied path (skipping client-side cost tracking to avoid double-counting against the proxy's own write) when EITHER:
 1. `proxyUrl` is set on the `NullSpend` constructor AND the request URL's origin matches it (strict on scheme + host + **port** — include the port if your proxy uses a non-default one), OR
@@ -142,6 +160,7 @@ import {
   TimeoutError,
   NullSpendError,
   BudgetExceededError,
+  LoopDetectedError,
   MandateViolationError,
   SessionLimitExceededError,
   VelocityExceededError,
@@ -155,15 +174,51 @@ try {
     // Human rejected (or action expired)
   } else if (err instanceof TimeoutError) {
     // No decision within timeoutMs
+  } else if (err instanceof LoopDetectedError) {
+    // Agent stuck in loop — err.model, err.callCount, err.detectionType
+    // err.recovery?.retryable is true (retry after backoff)
   } else if (err instanceof VelocityExceededError) {
     // Spending too fast — err.retryAfterSeconds, err.limitMicrodollars
+    // err.recovery?.retryable is true, err.recovery?.retryAfterSeconds has the wait
   } else if (err instanceof TagBudgetExceededError) {
     // Tag budget exhausted — err.tagKey, err.tagValue, err.remainingMicrodollars
+    // err.recovery?.ownerActionRequired is true
   } else if (err instanceof NullSpendError) {
     // API error (err.statusCode has the HTTP status)
   }
 }
 ```
+
+## Loop Detection
+
+Detects agents stuck in infinite loops — repeated identical calls that burn budget without progress.
+
+**Proxy users:** Loop detection is on by default. If your agent calls the same model with identical content 50+ times in 60 seconds, the proxy returns a 429 with `code: "loop_detected"`. No configuration needed.
+
+**SDK users:** Opt in with one line:
+
+```typescript
+const openai = new OpenAI({
+  fetch: ns.createTrackedFetch("openai", { loopDetection: true }),
+});
+```
+
+Customize thresholds:
+
+```typescript
+const openai = new OpenAI({
+  fetch: ns.createTrackedFetch("openai", {
+    loopDetection: {
+      maxCalls: 100,        // higher for batch workloads
+      windowSeconds: 120,   // wider window
+    },
+  }),
+});
+```
+
+**Disabling:** Set `loopMaxCalls: 0` on the budget entity via the API or dashboard.
+
+**Multi-model detection:** If 5+ distinct model patterns each show 3+ repeated calls in the window, aggregate loop detection triggers — catching agents that alternate between models while stuck.
 
 ## Demos
 

@@ -8,13 +8,14 @@
  *
  * Requires: live proxy, ANTHROPIC_API_KEY, NULLSPEND_API_KEY, DATABASE_URL
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import postgres from "postgres";
 import {
   BASE,
   ANTHROPIC_API_KEY,
   DATABASE_URL,
   anthropicAuthHeaders,
+  anthropicRateLimitPace,
   isServerUp,
   waitForCostEvent,
 } from "./smoke-test-helpers.js";
@@ -39,6 +40,10 @@ function expectedAnthropicCost(
 
 describe("Anthropic pricing accuracy", () => {
   let sql: postgres.Sql;
+
+  // Pace requests to stay under the smoke Anthropic account's RPM limit
+  // during full-suite runs. See anthropicRateLimitPace docblock.
+  beforeEach(anthropicRateLimitPace);
 
   beforeAll(async () => {
     const up = await isServerUp();

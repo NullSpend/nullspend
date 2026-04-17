@@ -5,6 +5,22 @@ Error message formula (Stripe pattern): what + why + fix + url.
 from __future__ import annotations
 
 
+# Per-error-class default docs URLs (D-1). Used when the proxy doesn't
+# supply a `recovery["docs"]` URL — gives every error a stable place to point
+# developers for resolution guidance. Keyed by class name.
+_DEFAULT_ERROR_DOCS_URL = {
+    "NullSpendError": "https://nullspend.dev/docs/errors",
+    "PollTimeoutError": "https://nullspend.dev/docs/errors/timeout",
+    "RejectedError": "https://nullspend.dev/docs/errors/rejected",
+    "BudgetExceededError": "https://nullspend.dev/docs/errors/budget-exceeded",
+    "MandateViolationError": "https://nullspend.dev/docs/errors/mandate-violation",
+    "SessionLimitExceededError": "https://nullspend.dev/docs/errors/session-limit",
+    "VelocityExceededError": "https://nullspend.dev/docs/errors/velocity",
+    "LoopDetectedError": "https://nullspend.dev/docs/errors/loop-detected",
+    "TagBudgetExceededError": "https://nullspend.dev/docs/errors/tag-budget",
+}
+
+
 class NullSpendError(Exception):
     """Base exception for NullSpend SDK errors."""
 
@@ -17,6 +33,24 @@ class NullSpendError(Exception):
         super().__init__(message)
         self.status_code = status_code
         self.code = code
+
+    @property
+    def docs_url(self) -> str:
+        """Documentation URL for this error type. (D-1)
+
+        Subclasses with a `recovery` dict prefer `recovery["docs"]` if present
+        (proxy-supplied, may be customer-customized) and fall back to a stable
+        per-class default.
+        """
+        recovery = getattr(self, "recovery", None)
+        if isinstance(recovery, dict):
+            docs = recovery.get("docs")
+            if isinstance(docs, str) and docs:
+                return docs
+        return _DEFAULT_ERROR_DOCS_URL.get(
+            type(self).__name__,
+            _DEFAULT_ERROR_DOCS_URL["NullSpendError"],
+        )
 
 
 class PollTimeoutError(NullSpendError):
@@ -60,6 +94,7 @@ class BudgetExceededError(NullSpendError):
         *,
         finalization_reserve_microdollars: int | None = None,
         finalization_remaining_microdollars: int | None = None,
+        recovery: dict | None = None,
     ):
         remaining_dollars = remaining_microdollars / 1_000_000
         parts = [f"Budget exceeded. ${remaining_dollars:.2f} remaining"]
@@ -82,6 +117,7 @@ class BudgetExceededError(NullSpendError):
         self.upgrade_url = upgrade_url
         self.finalization_reserve_microdollars = finalization_reserve_microdollars
         self.finalization_remaining_microdollars = finalization_remaining_microdollars
+        self.recovery = recovery
 
 
 class MandateViolationError(NullSpendError):
@@ -111,6 +147,7 @@ class SessionLimitExceededError(NullSpendError):
         self,
         session_spend_microdollars: int,
         session_limit_microdollars: int,
+        recovery: dict | None = None,
     ):
         spend_d = session_spend_microdollars / 1_000_000
         limit_d = session_limit_microdollars / 1_000_000
@@ -120,6 +157,7 @@ class SessionLimitExceededError(NullSpendError):
         )
         self.session_spend_microdollars = session_spend_microdollars
         self.session_limit_microdollars = session_limit_microdollars
+        self.recovery = recovery
 
 
 class VelocityExceededError(NullSpendError):
@@ -131,6 +169,7 @@ class VelocityExceededError(NullSpendError):
         limit_microdollars: int | None = None,
         window_seconds: int | None = None,
         current_microdollars: int | None = None,
+        recovery: dict | None = None,
     ):
         parts = ["Velocity limit exceeded."]
         if retry_after_seconds is not None:
@@ -143,6 +182,35 @@ class VelocityExceededError(NullSpendError):
         self.limit_microdollars = limit_microdollars
         self.window_seconds = window_seconds
         self.current_microdollars = current_microdollars
+        self.recovery = recovery
+
+
+class LoopDetectedError(NullSpendError):
+    """Raised when repeated identical calls exceed the loop detection threshold."""
+
+    def __init__(
+        self,
+        model: str,
+        call_count: int,
+        window_seconds: int,
+        max_calls: int,
+        detection_type: str = "per_key",
+        recovery: dict | None = None,
+    ):
+        self.model = model
+        self.call_count = call_count
+        self.window_seconds = window_seconds
+        self.max_calls = max_calls
+        self.detection_type = detection_type
+        self.recovery = recovery
+        super().__init__(
+            f"Loop detected: {model} called {call_count} times with identical "
+            f"content in {window_seconds}s (limit: {max_calls}). "
+            f"Check for retry loops or stuck agent logic. "
+            f"Adjust at https://nullspend.dev/app/budgets or set loop_max_calls=0 to disable.",
+            status_code=429,
+            code="loop_detected",
+        )
 
 
 class TagBudgetExceededError(NullSpendError):
@@ -155,6 +223,7 @@ class TagBudgetExceededError(NullSpendError):
         remaining_microdollars: int | None = None,
         limit_microdollars: int | None = None,
         spend_microdollars: int | None = None,
+        recovery: dict | None = None,
     ):
         parts = ["Tag budget exceeded"]
         if tag_key and tag_value:
@@ -173,3 +242,4 @@ class TagBudgetExceededError(NullSpendError):
         self.remaining_microdollars = remaining_microdollars
         self.limit_microdollars = limit_microdollars
         self.spend_microdollars = spend_microdollars
+        self.recovery = recovery

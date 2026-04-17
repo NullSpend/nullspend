@@ -213,4 +213,57 @@ describe("calculateOpenAICost edge cases", () => {
     // total: 1200
     expect(result.costMicrodollars).toBe(1200);
   });
+
+  it("clamps cached > prompt to prevent normal-input undercharge (regression: P0-6)", () => {
+    // REGRESSION GUARD: OpenAI's documented invariant is
+    // cached_tokens <= prompt_tokens (cached is a subset). Without a clamp,
+    // an upstream bug returning cached > prompt would drive normalInputTokens
+    // negative, zero the normal-input cost, but still charge cached — a
+    // massive undercharge. P0-6 fix mirrors the gemini clamp.
+    //
+    // Scenario: prompt=1000, cached=2000 (invalid). Correct behavior: clamp
+    // cached to 1000, normalInput becomes 0, total cost is cached-only.
+    const result = calculateOpenAICost(
+      "gpt-4o",
+      null,
+      {
+        prompt_tokens: 1000,
+        completion_tokens: 100,
+        prompt_tokens_details: { cached_tokens: 2000 }, // INVALID: exceeds prompt
+      },
+      "req-cached-gt-prompt",
+      200,
+    );
+
+    // After clamp: cachedInputTokens clamped to 1000 (matches prompt).
+    expect(result.cachedInputTokens).toBe(1000);
+    // normalInput: (1000 - 1000) * 2.50 = 0
+    // cached: 1000 * 1.25 = 1250
+    // output: 100 * 10.00 = 1000
+    // total: 2250 (same as all-cached scenario above)
+    expect(result.costMicrodollars).toBe(2250);
+    // inputTokens field reports the raw promptTokens, not the clamped value,
+    // so cross-provider analytics against prompt_tokens stay consistent.
+    expect(result.inputTokens).toBe(1000);
+  });
+
+  it("no clamp fires when cached === prompt (valid boundary, no metric noise)", () => {
+    // Boundary: cached equals prompt exactly. Clamp is a no-op. The metric
+    // should NOT emit because rawCachedTokens is not strictly greater.
+    const result = calculateOpenAICost(
+      "gpt-4o",
+      null,
+      {
+        prompt_tokens: 1000,
+        completion_tokens: 100,
+        prompt_tokens_details: { cached_tokens: 1000 }, // VALID: equal
+      },
+      "req-cached-eq-prompt",
+      200,
+    );
+
+    expect(result.cachedInputTokens).toBe(1000);
+    // Same cost math as P0-6 regression above, same numbers.
+    expect(result.costMicrodollars).toBe(2250);
+  });
 });

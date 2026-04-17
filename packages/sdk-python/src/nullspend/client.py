@@ -44,7 +44,7 @@ logger = logging.getLogger("nullspend")
 
 _DEFAULT_BASE_URL = "https://nullspend.dev"
 _API_KEY_HEADER = "x-nullspend-key"
-_SDK_VERSION = "0.2.0"
+_SDK_VERSION = "0.2.1"
 _SAFE_PATH_SEGMENT_RE = __import__("re").compile(r"^[a-zA-Z0-9_\-.:]+$")
 
 
@@ -376,6 +376,109 @@ class NullSpend:
                 "to NullSpend() to enable batched cost reporting."
             )
         self._cost_reporter.enqueue(event)
+
+    def track_tool(
+        self,
+        cost: float,
+        tool_name: str,
+        *,
+        tool_server: str | None = None,
+        provider: str = "tool",
+        model: str = "custom",
+        tags: dict[str, str] | None = None,
+        customer: str | None = None,
+    ):
+        """Decorator that reports a tool cost event after the function executes.
+
+        Usage:
+            @ns.track_tool(cost=0.02, tool_name="web_search")
+            def search(query: str) -> str:
+                return requests.get(f"https://api.example.com/search?q={query}").text
+        """
+        import functools
+        cost_microdollars = int(cost * 1_000_000)
+
+        def decorator(fn):
+            import inspect
+            if inspect.iscoroutinefunction(fn):
+                raise TypeError(
+                    f"@track_tool cannot wrap async function {fn.__name__!r}. "
+                    "Use track() inline instead: result = await ns.track(await coro(), cost=...)"
+                )
+
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                start = time.monotonic()
+                error_occurred = False
+                try:
+                    result = fn(*args, **kwargs)
+                    return result
+                except BaseException:
+                    error_occurred = True
+                    raise
+                finally:
+                    duration_ms = int((time.monotonic() - start) * 1000)
+                    event = CostEventInput(
+                        provider=provider,
+                        model=model,
+                        input_tokens=0,
+                        output_tokens=0,
+                        cost_microdollars=cost_microdollars,
+                        duration_ms=duration_ms,
+                        event_type="tool",
+                        tool_name=tool_name,
+                        tool_server=tool_server,
+                        tags={**(tags or {}), **({ "_ns_error": "true" } if error_occurred else {})},
+                        customer=customer,
+                    )
+                    try:
+                        if self._cost_reporter:
+                            self._cost_reporter.enqueue(event)
+                        else:
+                            self.report_cost(event)
+                    except Exception as err:
+                        logger.warning("nullspend: track_tool cost report failed: %s", err)
+            return wrapper
+        return decorator
+
+    def track(
+        self,
+        result: Any,
+        cost: float,
+        tool_name: str,
+        *,
+        tool_server: str | None = None,
+        provider: str = "tool",
+        model: str = "custom",
+        tags: dict[str, str] | None = None,
+        customer: str | None = None,
+    ) -> Any:
+        """Report a tool cost event inline and return the result.
+
+        Usage:
+            result = ns.track(call_api(), cost=0.01, tool_name="search")
+        """
+        cost_microdollars = int(cost * 1_000_000)
+        event = CostEventInput(
+            provider=provider,
+            model=model,
+            input_tokens=0,
+            output_tokens=0,
+            cost_microdollars=cost_microdollars,
+            event_type="tool",
+            tool_name=tool_name,
+            tool_server=tool_server,
+            tags=tags,
+            customer=customer,
+        )
+        try:
+            if self._cost_reporter:
+                self._cost_reporter.enqueue(event)
+            else:
+                self.report_cost(event)
+        except Exception as err:
+            logger.warning("nullspend: track cost report failed: %s", err)
+        return result
 
     def flush(self) -> None:
         """Flush any pending batched cost events immediately."""

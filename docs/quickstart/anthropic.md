@@ -85,6 +85,8 @@ curl https://proxy.nullspend.dev/v1/messages \
   }'
 ```
 
+> **About the `/v1` path:** The Anthropic SDKs append `/v1/messages` internally, so set `ANTHROPIC_BASE_URL`/`baseURL`/`base_url` to `https://proxy.nullspend.dev` (no `/v1`). cURL needs the full `/v1/messages` path explicitly because it doesn't do any appending for you. Including `/v1` in the SDK base URL would produce `/v1/v1/messages` and fail.
+
 **Tip:** Use the full model name including the date suffix (e.g., `claude-sonnet-4-20250514`, not just `claude-sonnet-4`). The proxy resolves model aliases, but the full name ensures accurate pricing.
 
 ## Step 3: Check the Dashboard

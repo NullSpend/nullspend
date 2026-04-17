@@ -9,7 +9,7 @@
  *   - ANTHROPIC_API_KEY, NULLSPEND_API_KEY
  *   - DATABASE_URL for direct Supabase queries
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
 import postgres from "postgres";
 import {
   BASE,
@@ -18,6 +18,7 @@ import {
   NULLSPEND_SMOKE_KEY_ID,
   DATABASE_URL,
   anthropicAuthHeaders,
+  anthropicRateLimitPace,
   smallAnthropicRequest,
   isServerUp,
   waitForCostEvent,
@@ -28,6 +29,9 @@ describe("Anthropic known issues: cost logging & budget edge cases", () => {
   let sql: postgres.Sql;
   let orgId: string;
   const usersToCleanup: string[] = [];
+
+  // Pace requests to stay under tier-1 Anthropic RPM during full-suite runs.
+  beforeEach(anthropicRateLimitPace);
 
   function trackUser(id: string) {
     if (!usersToCleanup.includes(id)) usersToCleanup.push(id);
@@ -78,82 +82,7 @@ describe("Anthropic known issues: cost logging & budget edge cases", () => {
 
   // --- Cost logging reliability ---
 
-  it("5 concurrent Anthropic requests all produce cost events (connection concurrency guard)", async () => {
-    const requestIds: string[] = [];
-
-    const requests = Array.from({ length: 5 }, (_, i) =>
-      fetch(`${BASE}/v1/messages`, {
-        method: "POST",
-        headers: anthropicAuthHeaders(),
-        body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
-          max_tokens: 5,
-          messages: [{ role: "user", content: `Connection guard ${i}` }],
-        }),
-      }),
-    );
-
-    const responses = await Promise.all(requests);
-    for (const res of responses) {
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      requestIds.push(res.headers.get("x-request-id") ?? body.id);
-    }
-
-    await new Promise((r) => setTimeout(r, 10_000));
-
-    let foundCount = 0;
-    for (const id of requestIds) {
-      const row = await waitForCostEvent(sql, id, 15_000, "anthropic");
-      if (row) foundCount++;
-    }
-
-    expect(foundCount).toBe(5);
-  }, 120_000);
-
-  it("10 requests in 2 batches all produce cost events (waitUntil reliability)", async () => {
-    const allRequestIds: string[] = [];
-    const BATCH_SIZE = 5;
-    const BATCHES = 2;
-
-    for (let batch = 0; batch < BATCHES; batch++) {
-      const requests = Array.from({ length: BATCH_SIZE }, (_, i) =>
-        fetch(`${BASE}/v1/messages`, {
-          method: "POST",
-          headers: anthropicAuthHeaders(),
-          body: JSON.stringify({
-            model: "claude-3-haiku-20240307",
-            max_tokens: 5,
-            messages: [
-              {
-                role: "user",
-                content: `waitUntil batch ${batch} req ${i}`,
-              },
-            ],
-          }),
-        }),
-      );
-
-      const responses = await Promise.all(requests);
-      for (const res of responses) {
-        expect(res.status).toBe(200);
-        const body = await res.json();
-        allRequestIds.push(res.headers.get("x-request-id") ?? body.id);
-      }
-
-      await new Promise((r) => setTimeout(r, 1_500));
-    }
-
-    await new Promise((r) => setTimeout(r, 15_000));
-
-    let foundCount = 0;
-    for (const id of allRequestIds) {
-      const row = await waitForCostEvent(sql, id, 10_000, "anthropic");
-      if (row) foundCount++;
-    }
-
-    expect(foundCount).toBe(BATCH_SIZE * BATCHES);
-  }, 180_000);
+  // [MOVED 2026-04-16] "5 concurrent Anthropic requests..." and "10 requests in 2 batches..." relocated to stress-feature-concurrency.test.ts — see docs/internal/test-tier-taxonomy.md
 
   it("3 sequential Anthropic requests with 1s delays all produce cost events (Hyperdrive reuse)", async () => {
     const requestIds: string[] = [];

@@ -120,7 +120,26 @@ describe("handleCostEventDlq", () => {
     expect(mockLogCostEvent).toHaveBeenCalledWith(
       "postgres://test:test@localhost:5432/test",
       expect.objectContaining({ requestId: "req-write-test" }),
+      expect.objectContaining({ throwOnError: true }),
     );
+  });
+
+  it("passes throwOnError:true to logCostEvent (regression: P0-2)", async () => {
+    // REGRESSION GUARD: without throwOnError:true, logCostEvent swallows its
+    // own pg errors and returns normally. That makes dbWriteOk always true
+    // and renders the R2 fallback below unreachable in production.
+    // This test ensures the flag is present; the "persists to R2 when DB
+    // write fails" test validates the outer catch + R2 persistence path.
+    mockLogCostEvent.mockResolvedValue(undefined);
+
+    const msg = makeMessage(makeCostEventMessage({ requestId: "req-flag-test" }));
+    const batch = makeBatch([msg]);
+
+    await handleCostEventDlq(batch, makeEnv());
+
+    const callArgs = mockLogCostEvent.mock.calls[0];
+    expect(callArgs).toHaveLength(3);
+    expect(callArgs[2]).toEqual({ throwOnError: true });
   });
 
   it("acks even when logCostEvent throws", async () => {
@@ -171,16 +190,95 @@ describe("handleCostEventDlq", () => {
     const msg2 = makeMessage(makeCostEventMessage({ requestId: "r2" }));
     const batch = makeBatch([msg1, msg2]);
 
-    const brokenEnv = {} as unknown as Env; // no HYPERDRIVE
+    const brokenEnv = {} as unknown as Env; // no HYPERDRIVE, no R2
 
     await handleCostEventDlq(batch, brokenEnv);
 
     // All messages acked despite binding failure
     expect(msg1.ack).toHaveBeenCalledTimes(1);
     expect(msg2.ack).toHaveBeenCalledTimes(1);
-    // Metric emitted for each
-    expect(mockEmitMetric).toHaveBeenCalledTimes(2);
+    // P2 fix: each message emits cost_event_dlq + cost_event_dlq_lost (no R2 in broken env)
+    expect(mockEmitMetric).toHaveBeenCalledTimes(4);
     // No DB write attempted
     expect(mockLogCostEvent).not.toHaveBeenCalled();
+  });
+
+  it("persists to R2 when DB write fails and R2 is available", async () => {
+    mockLogCostEvent.mockRejectedValue(new Error("DB down"));
+
+    const mockR2Put = vi.fn().mockResolvedValue(undefined);
+    const envWithR2 = {
+      HYPERDRIVE: { connectionString: "postgres://test:test@localhost:5432/test" },
+      BODY_STORAGE: { put: mockR2Put },
+    } as unknown as Env;
+
+    const msg = makeMessage(makeCostEventMessage({ requestId: "req-r2-test" }));
+    const batch = makeBatch([msg]);
+
+    await handleCostEventDlq(batch, envWithR2);
+
+    expect(msg.ack).toHaveBeenCalledTimes(1);
+    // DB write attempted and failed
+    expect(mockLogCostEvent).toHaveBeenCalledTimes(1);
+    // R2 persistence attempted
+    expect(mockR2Put).toHaveBeenCalledTimes(1);
+    const r2Key = mockR2Put.mock.calls[0][0] as string;
+    expect(r2Key).toMatch(/^_dlq\/req-r2-test-\d+\.json$/);
+    // Persisted metric emitted (not lost)
+    const persistedCalls = mockEmitMetric.mock.calls.filter(
+      (c: unknown[]) => c[0] === "cost_event_dlq_persisted_r2",
+    );
+    expect(persistedCalls).toHaveLength(1);
+    expect(persistedCalls[0][1].requestId).toBe("req-r2-test");
+  });
+
+  it("emits cost_event_dlq_lost when both DB and R2 fail", async () => {
+    mockLogCostEvent.mockRejectedValue(new Error("DB down"));
+
+    const mockR2Put = vi.fn().mockRejectedValue(new Error("R2 down"));
+    const envWithBrokenR2 = {
+      HYPERDRIVE: { connectionString: "postgres://test:test@localhost:5432/test" },
+      BODY_STORAGE: { put: mockR2Put },
+    } as unknown as Env;
+
+    const msg = makeMessage(makeCostEventMessage({ requestId: "req-lost" }));
+    const batch = makeBatch([msg]);
+
+    await handleCostEventDlq(batch, envWithBrokenR2);
+
+    expect(msg.ack).toHaveBeenCalledTimes(1);
+    expect(mockLogCostEvent).toHaveBeenCalledTimes(1);
+    expect(mockR2Put).toHaveBeenCalledTimes(1);
+    // Lost metric emitted
+    const lostCalls = mockEmitMetric.mock.calls.filter(
+      (c: unknown[]) => c[0] === "cost_event_dlq_lost",
+    );
+    expect(lostCalls).toHaveLength(1);
+    expect(lostCalls[0][1].requestId).toBe("req-lost");
+  });
+
+  it("skips R2 persistence when DB write succeeds", async () => {
+    mockLogCostEvent.mockResolvedValue(undefined);
+
+    const mockR2Put = vi.fn();
+    const envWithR2 = {
+      HYPERDRIVE: { connectionString: "postgres://test:test@localhost:5432/test" },
+      BODY_STORAGE: { put: mockR2Put },
+    } as unknown as Env;
+
+    const msg = makeMessage(makeCostEventMessage({ requestId: "req-ok" }));
+    const batch = makeBatch([msg]);
+
+    await handleCostEventDlq(batch, envWithR2);
+
+    expect(msg.ack).toHaveBeenCalledTimes(1);
+    expect(mockLogCostEvent).toHaveBeenCalledTimes(1);
+    // R2 NOT called when DB write succeeds
+    expect(mockR2Put).not.toHaveBeenCalled();
+    // No lost or persisted metrics
+    const r2Calls = mockEmitMetric.mock.calls.filter(
+      (c: unknown[]) => c[0] === "cost_event_dlq_persisted_r2" || c[0] === "cost_event_dlq_lost",
+    );
+    expect(r2Calls).toHaveLength(0);
   });
 });

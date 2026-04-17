@@ -242,6 +242,41 @@ class TestTagBudgetExceededError:
         assert "$0.00 remaining" in str(err)
 
 
+# ---- docs_url field (D-1) ----
+
+
+class TestDocsUrl:
+    def test_base_returns_generic_url(self):
+        from nullspend.errors import NullSpendError
+        assert NullSpendError("test").docs_url == "https://nullspend.dev/docs/errors"
+
+    def test_each_subclass_has_class_specific_default(self):
+        from nullspend.errors import (
+            BudgetExceededError, MandateViolationError,
+            SessionLimitExceededError, VelocityExceededError,
+            TagBudgetExceededError, LoopDetectedError, PollTimeoutError, RejectedError,
+        )
+        assert "timeout" in PollTimeoutError("act_1", 1000).docs_url
+        assert "rejected" in RejectedError("act_1", "rejected").docs_url
+        assert "budget-exceeded" in BudgetExceededError(0).docs_url
+        assert "mandate-violation" in MandateViolationError("m", "r", []).docs_url
+        assert "session-limit" in SessionLimitExceededError(0, 0).docs_url
+        assert "velocity" in VelocityExceededError().docs_url
+        assert "tag-budget" in TagBudgetExceededError().docs_url
+        assert "loop-detected" in LoopDetectedError("m", 1, 60, 50).docs_url
+
+    def test_recovery_docs_overrides_default(self):
+        from nullspend.errors import BudgetExceededError
+        recovery = {"docs": "https://example.com/custom-docs"}
+        err = BudgetExceededError(0, recovery=recovery)
+        assert err.docs_url == "https://example.com/custom-docs"
+
+    def test_falls_back_when_recovery_docs_is_none(self):
+        from nullspend.errors import BudgetExceededError
+        err = BudgetExceededError(0, recovery={"docs": None})
+        assert "budget-exceeded" in err.docs_url
+
+
 # ---- Env-var Fallback ----
 
 
@@ -1001,7 +1036,7 @@ class TestSDKVersionHeader:
         ns = NullSpend(api_key="key")
         ns.check_budget()
         req = respx.calls[0].request
-        assert req.headers["x-nullspend-sdk"] == "python/0.2.0"
+        assert req.headers["x-nullspend-sdk"] == "python/0.2.1"
         ns.close()
 
     @respx.mock
@@ -1013,7 +1048,7 @@ class TestSDKVersionHeader:
         async with AsyncNullSpend(api_key="key") as ns:
             await ns.check_budget()
             req = respx.calls[0].request
-            assert req.headers["x-nullspend-sdk"] == "python/0.2.0"
+            assert req.headers["x-nullspend-sdk"] == "python/0.2.1"
 
 
 class TestCostReporterDroppedLogging:

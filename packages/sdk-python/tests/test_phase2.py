@@ -162,6 +162,23 @@ class TestOpenAICostBasic:
         assert result.cost_microdollars == 0
         assert result.cost_breakdown is None
 
+    # BIL-3
+    def test_unknown_model_tagged_unpriced(self):
+        result = calculate_openai_cost_event(
+            "gpt-99-future",
+            {"prompt_tokens": 10, "completion_tokens": 5},
+            metadata={"tags": {"team": "research"}},
+        )
+        assert result.tags == {"team": "research", "_ns_unpriced": "true"}
+
+    def test_known_model_no_unpriced_tag(self):
+        result = calculate_openai_cost_event(
+            "gpt-4o",
+            {"prompt_tokens": 10, "completion_tokens": 5},
+            metadata={"tags": {"team": "research"}},
+        )
+        assert result.tags == {"team": "research"}
+
     def test_zero_tokens(self):
         result = calculate_openai_cost_event("gpt-4o", {
             "prompt_tokens": 0,

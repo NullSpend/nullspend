@@ -357,6 +357,7 @@ describe("handleMcpBudgetCheck", () => {
       [],
       "org-test",
       false,
+      null,
     );
   });
 });
@@ -836,5 +837,62 @@ describe("handleMcpEvents", () => {
     expect(mockLogCostEventsBatch).toHaveBeenCalledTimes(1);
     expect(mockLookupBudgetsForDO).not.toHaveBeenCalled();
     expect(mockDoBudgetReconcile).not.toHaveBeenCalled();
+  });
+
+  it("passes orgId in lookupBudgetsForDO identity arg (regression: NF-1)", async () => {
+    // REGRESSION GUARD: the MCP event path previously called
+    // lookupBudgetsForDO WITHOUT orgId. lookupBudgetsForDO queries
+    // `WHERE org_id = ${orgId}` (budget-do-lookup.ts:112), so without
+    // orgId the lookup returned zero rows, which combined with the
+    // `budgetEntities.length > 0` gate made EVERY MCP reservation leak
+    // until alarm expiry.
+    mockLogCostEventsBatch.mockResolvedValue(undefined);
+    mockLookupBudgetsForDO.mockResolvedValue([doEntity]);
+
+    const request = makeRequest("/v1/mcp/events", {});
+    const env = makeEnv();
+
+    const events = [
+      { toolName: "t1", serverName: "s", durationMs: 100, costMicrodollars: 5000, status: "success", reservationId: "rsv-1" },
+    ];
+
+    await handleMcpEvents(request, env, makeCtx({ events }));
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(mockLookupBudgetsForDO).toHaveBeenCalledTimes(1);
+    const identityArg = mockLookupBudgetsForDO.mock.calls[0][1];
+    expect(identityArg).toMatchObject({
+      keyId: "key-1",
+      userId: "user-1",
+      orgId: "org-test",
+    });
+  });
+
+  it("reconciles reservations even when lookup returns zero budgets (regression: NF-1 gate)", async () => {
+    // REGRESSION GUARD: reconcile was previously gated on
+    // `budgetEntities.length > 0 && eventsWithReservations.length > 0`.
+    // doBudgetReconcile finds reservations by reservationId alone (see
+    // budget-do-client.ts:68 `_entities`), so empty budget lookup should
+    // NOT skip reconciliation. The leak happened because a failed lookup
+    // (missing orgId in caller) caused every reservation to be skipped.
+    mockLogCostEventsBatch.mockResolvedValue(undefined);
+    mockLookupBudgetsForDO.mockResolvedValue([]); // empty lookup result
+    mockDoBudgetReconcile.mockResolvedValue({ status: "ok", thresholdCrossings: [] });
+
+    const request = makeRequest("/v1/mcp/events", {});
+    const env = makeEnv();
+
+    const events = [
+      { toolName: "t1", serverName: "s", durationMs: 100, costMicrodollars: 5000, status: "success", reservationId: "rsv-1" },
+      { toolName: "t2", serverName: "s", durationMs: 200, costMicrodollars: 8000, status: "success", reservationId: "rsv-2" },
+    ];
+
+    await handleMcpEvents(request, env, makeCtx({ events }));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Lookup still runs (for webhook threshold detection)
+    expect(mockLookupBudgetsForDO).toHaveBeenCalledTimes(1);
+    // Reconcile runs for BOTH reservations even though lookup returned empty
+    expect(mockDoBudgetReconcile).toHaveBeenCalledTimes(2);
   });
 });

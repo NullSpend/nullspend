@@ -66,6 +66,37 @@ describe("calculateOpenAICostEvent — OpenAI", () => {
     expect(result.outputTokens).toBe(50);
   });
 
+  it("tags unknown-model events with _ns_unpriced (BIL-3)", () => {
+    mockedGetModelPricing.mockReturnValue(null as ReturnType<typeof getModelPricing>);
+
+    const result = calculateOpenAICostEvent(
+      "gpt-99-future",
+      { prompt_tokens: 10, completion_tokens: 5 },
+      100,
+      { tags: { team: "research" } },
+    );
+
+    expect(result.tags).toEqual({ team: "research", _ns_unpriced: "true" });
+  });
+
+  it("does NOT add _ns_unpriced tag for known models", () => {
+    mockedGetModelPricing.mockReturnValue({
+      inputPerMTok: 2_500_000,
+      outputPerMTok: 10_000_000,
+      cachedInputPerMTok: 1_250_000,
+    } as ReturnType<typeof getModelPricing>);
+
+    const result = calculateOpenAICostEvent(
+      "gpt-4o",
+      { prompt_tokens: 10, completion_tokens: 5 },
+      100,
+      { tags: { team: "research" } },
+    );
+
+    expect(result.tags).toEqual({ team: "research" });
+    expect(result.tags?._ns_unpriced).toBeUndefined();
+  });
+
   it("reduces input cost with cached tokens", () => {
     mockedGetModelPricing.mockReturnValue({
       inputPerMTok: 2_500_000,
@@ -134,7 +165,11 @@ describe("calculateOpenAICostEvent — OpenAI", () => {
   });
 
   it("passes through metadata (sessionId, traceId, tags)", () => {
-    mockedGetModelPricing.mockReturnValue(null as ReturnType<typeof getModelPricing>);
+    mockedGetModelPricing.mockReturnValue({
+      inputPerMTok: 2_500_000,
+      outputPerMTok: 10_000_000,
+      cachedInputPerMTok: 1_250_000,
+    } as ReturnType<typeof getModelPricing>);
 
     const result = calculateOpenAICostEvent(
       "gpt-4o",
@@ -149,6 +184,7 @@ describe("calculateOpenAICostEvent — OpenAI", () => {
 
     expect(result.sessionId).toBe("sess-123");
     expect(result.traceId).toBe("trace-abc");
+    // Known model → no _ns_unpriced tag injected (BIL-3 only fires for unknown).
     expect(result.tags).toEqual({ env: "prod", team: "ml" });
   });
 
@@ -352,7 +388,11 @@ describe("calculateAnthropicCostEvent — Anthropic", () => {
   });
 
   it("passes through metadata (sessionId, traceId, tags)", () => {
-    mockedGetModelPricing.mockReturnValue(null as ReturnType<typeof getModelPricing>);
+    mockedGetModelPricing.mockReturnValue({
+      inputPerMTok: 3_000_000,
+      outputPerMTok: 15_000_000,
+      cachedInputPerMTok: 300_000,
+    } as unknown as ReturnType<typeof getModelPricing>);
 
     const result = calculateAnthropicCostEvent(
       "claude-sonnet-4-20250514",
@@ -368,6 +408,7 @@ describe("calculateAnthropicCostEvent — Anthropic", () => {
 
     expect(result.sessionId).toBe("sess-456");
     expect(result.traceId).toBe("trace-def");
+    // Known model → no _ns_unpriced tag injected (BIL-3 only fires for unknown).
     expect(result.tags).toEqual({ environment: "staging" });
   });
 

@@ -188,6 +188,50 @@ describe("upstream timeout / error — reservation cleanup", () => {
     );
   });
 
+  it("propagates client abort to upstream fetch signal (regression: P1-6)", async () => {
+    // REGRESSION GUARD: prior to P1-6, only `AbortSignal.timeout(timeoutMs)`
+    // was wired to the upstream fetch. If the client disconnected mid-stream,
+    // the proxy kept paying the upstream provider for the full generation
+    // because the client disconnect never propagated. Post-fix uses
+    // `AbortSignal.any([timeout, request.signal])` so either condition
+    // cancels the upstream fetch.
+    mockDoBudgetCheck.mockResolvedValue({
+      status: "approved",
+      hasBudgets: true,
+      reservationId: "rsv-client-abort",
+      checkedEntities: [checkedEntity],
+    });
+
+    const clientAbort = new AbortController();
+    let capturedSignal: AbortSignal | undefined;
+
+    globalThis.fetch = vi.fn().mockImplementation(async (_url: unknown, init: { signal?: AbortSignal } | undefined) => {
+      capturedSignal = init?.signal;
+      // Simulate client disconnect during the upstream fetch.
+      clientAbort.abort(new Error("client disconnected"));
+      await new Promise((r) => setTimeout(r, 10));
+      // AbortSignal.any should have fired — surface as AbortError.
+      throw new DOMException("The operation was aborted", "AbortError");
+    });
+
+    const req = new Request("http://localhost/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(defaultBody),
+      signal: clientAbort.signal,
+    });
+
+    await expect(
+      handleChatCompletions(req, makeEnv(), makeCtx(defaultBody)),
+    ).rejects.toThrow();
+
+    expect(capturedSignal).toBeDefined();
+    // When the client's AbortController was aborted, the captured upstream
+    // signal should also reflect aborted=true (that's the whole point of
+    // AbortSignal.any — it propagates from any source).
+    expect(capturedSignal!.aborted).toBe(true);
+  });
+
   it("upstream network error triggers reservation cleanup", async () => {
     mockDoBudgetCheck.mockResolvedValue({
       status: "approved",

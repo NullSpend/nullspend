@@ -4,11 +4,15 @@ export {
   TimeoutError,
   RejectedError,
   BudgetExceededError,
+  LoopDetectedError,
   MandateViolationError,
   SessionLimitExceededError,
   VelocityExceededError,
   TagBudgetExceededError,
 } from "./errors.js";
+export type { Recovery } from "./errors.js";
+export { LoopDetector } from "./loop-detector.js";
+export type { LoopCheck, LoopDetectionOptions } from "./loop-detector.js";
 export { waitWithAbort, interruptibleSleep } from "./polling.js";
 export type {
   ActionStatus,

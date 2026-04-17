@@ -29,6 +29,22 @@ const MODEL_OUTPUT_CAPS: Record<string, number> = {
 const DEFAULT_OUTPUT_CAP = 16_384;
 
 /**
+ * Convert a user-supplied max-tokens-like field to a sanitized positive integer,
+ * or `undefined` if the value is absent / malformed.
+ *
+ * Accepts: numbers (finite, positive), numeric strings ("1000" → 1000).
+ * Rejects: booleans, arrays, objects, NaN, Infinity, negative, zero.
+ * Clamps: values > 1M are clamped to 1M (sanity upper bound).
+ */
+function normalizeOutputCap(raw: unknown): number | undefined {
+  if (typeof raw === "boolean" || Array.isArray(raw)) return undefined;
+  if (raw === null || raw === undefined) return undefined;
+  const asNumber = Number(raw);
+  if (!Number.isFinite(asNumber) || asNumber <= 0) return undefined;
+  return Math.min(Math.ceil(asNumber), 1_000_000);
+}
+
+/**
  * Estimate the maximum cost of a request in microdollars.
  *
  * Uses body byte-length as a rough proxy for input tokens (~4 chars/token)
@@ -50,9 +66,18 @@ export function estimateMaxCost(
 
   const inputTokenEstimate = Math.ceil((bodyByteLength ?? JSON.stringify(body).length) / CHARS_PER_TOKEN);
 
-  const explicitOutputCap =
-    (body.max_completion_tokens as number | undefined) ??
-    (body.max_tokens as number | undefined);
+  // P0-4: Sanitize user-supplied max_completion_tokens / max_tokens. Clamp to
+  // finite positive integer. NaN, Infinity, negative, booleans, arrays, and
+  // object values fall through to the model-specific default cap instead of
+  // propagating NaN/negative/absurd-cap into the reservation math.
+  //
+  // Codex review P2: also reject boolean and array types explicitly, because
+  // Number(true) === 1 and Number([5000]) === 5000. Those values would slide
+  // past a pure `Number() + isFinite()` check and get treated as real caps.
+  // Numeric strings ("1000" → 1000) remain accepted for OpenAI SDK parity.
+  const explicitFromMaxCompletion = normalizeOutputCap(body.max_completion_tokens);
+  const explicitFromMaxTokens = normalizeOutputCap(body.max_tokens);
+  const explicitOutputCap = explicitFromMaxCompletion ?? explicitFromMaxTokens;
 
   const outputTokenEstimate = explicitOutputCap ?? (MODEL_OUTPUT_CAPS[model] ?? DEFAULT_OUTPUT_CAP);
 

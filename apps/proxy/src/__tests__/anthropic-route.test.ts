@@ -630,6 +630,57 @@ describe("handleAnthropicMessages", () => {
     );
   });
 
+  it("does NOT store body when requestLoggingEnabled: false (tier-gate closed)", async () => {
+    // Regression guard: body capture is tier-gated via ctx.requestLoggingEnabled,
+    // which flows from the api_keys auth lookup's COALESCE((SELECT tier IN ('pro','enterprise')
+    // ...), false) expression. If the requesting org has no active pro/enterprise
+    // subscription, body-storage must silently no-op — this test asserts that.
+    //
+    // Previously only verified at smoke-tier (smoke-body-capture.test.ts "Body
+    // capture disabled" describe block), which was deleted in the Phase B fix
+    // because it required the smoke org to STAY on free tier, conflicting with
+    // the positive-path smoke tests that need it on pro.
+    mockStoreRequestBody.mockClear();
+    mockStoreStreamingResponseBody.mockClear();
+    const sseChunks = [
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_01","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","usage":{"input_tokens":25,"output_tokens":0}}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ];
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(makeAnthropicSSEStream(sseChunks), {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "request-id": "req-no-log",
+        },
+      }),
+    );
+
+    const body = {
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 100,
+      messages: [{ role: "user", content: "hi" }],
+      stream: true,
+    };
+
+    const mockBucket = { put: vi.fn().mockResolvedValue(undefined), get: vi.fn().mockResolvedValue(null) };
+    const res = await handleAnthropicMessages(
+      makeRequest(body),
+      makeEnv({ BODY_STORAGE: mockBucket }),
+      makeCtx(body, { requestLoggingEnabled: false }),
+    );
+
+    expect(res.status).toBe(200);
+    await res.text();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockStoreStreamingResponseBody).not.toHaveBeenCalled();
+    expect(mockStoreRequestBody).not.toHaveBeenCalled();
+    // The R2 put on the bucket binding itself must also never happen,
+    // since the early-return in provider-handler.ts gates on the flag.
+    expect(mockBucket.put).not.toHaveBeenCalled();
+  });
+
   it("echoes X-NullSpend-Session header when session ID is present", async () => {
     globalThis.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(ANTHROPIC_NON_STREAMING_RESPONSE), {

@@ -10,6 +10,7 @@ import {
   buildTagBudgetExceededPayload,
   buildCustomerBudgetExceededPayload,
   buildBudgetExceededPayload,
+  buildLoopDetectedPayload,
   buildCostEventPayload,
   buildThinCostEventPayload,
   buildThresholdPayload,
@@ -23,6 +24,41 @@ import { emitMetric } from "../lib/metrics.js";
 export type Provider = "openai" | "anthropic" | "google" | "mcp";
 
 export type Attribution = { userId: string | null; apiKeyId: string | null; actionId: string | null };
+
+/** Machine-readable recovery hints on every 429 denial. */
+export interface Recovery {
+  retryable: boolean;
+  owner_action_required: boolean;
+  retry_after_seconds: number | null;
+  docs: string | null;
+}
+
+/** Build a Recovery object for a given denial code. */
+export function buildRecovery(
+  code: string,
+  retryAfterSeconds?: number | null,
+): Recovery {
+  const retryable = code === "velocity_exceeded" || code === "loop_detected";
+  const ownerAction = ["budget_exceeded", "customer_budget_exceeded", "tag_budget_exceeded"].includes(code);
+  return {
+    retryable,
+    owner_action_required: ownerAction,
+    retry_after_seconds: retryable && retryAfterSeconds != null && Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0
+      ? retryAfterSeconds
+      : null,
+    docs: null, // populated when per-error docs pages ship
+  };
+}
+
+/** Hardcoded backoff for loop detection denials (seconds). Used in both
+ *  Retry-After header and recovery.retry_after_seconds body field. */
+export const LOOP_RETRY_AFTER_SECONDS = 5;
+
+/** Format microdollars as a dollar string like "$5.00".
+ *  Display-only — all programmatic fields remain integer microdollars. */
+export function fmtDollars(microdollars: number): string {
+  return "$" + (microdollars / 1_000_000).toFixed(2);
+}
 
 /**
  * Build X-NullSpend-Budget-* response headers from the budget entities
@@ -127,9 +163,20 @@ interface BudgetCheckOutcome {
   status: "approved" | "denied" | "skipped";
   reservationId: string | null;
   budgetEntities: BudgetEntity[];
+  /** Set when the denial is due to an invalid cost estimate (NaN/Infinity/negative). */
+  invalidEstimate?: boolean;
   velocityDenied?: boolean;
   sessionLimitDenied?: boolean;
   tagBudgetDenied?: boolean;
+  loopDetected?: boolean;
+  loopDetails?: {
+    type: "per_key" | "aggregate";
+    model: string;
+    provider: string;
+    callCount: number;
+    windowSeconds: number;
+    maxCalls: number;
+  };
   deniedEntityType?: string;
   deniedEntityId?: string;
   velocityDetails?: { limitMicrodollars: number; windowSeconds: number; currentMicrodollars: number };
@@ -180,6 +227,7 @@ export async function handleBudgetDenials(
   // all branches share a single source of truth.
   const reason = outcome.status === "denied"
     ? (outcome.velocityDenied ? "velocity_exceeded"
+       : outcome.loopDetected ? "loop_detected"
        : outcome.sessionLimitDenied ? "session_limit_exceeded"
        : outcome.tagBudgetDenied ? "tag_budget_exceeded"
        : outcome.deniedEntityType === "customer" ? "customer_budget_exceeded"
@@ -201,6 +249,49 @@ export async function handleBudgetDenials(
   // right before this (rejected) request.
   const budgetHeaders = buildBudgetHeaders(budgetEntities, 0);
 
+  // NF-2: Invalid cost estimate — client/caller produced NaN / Infinity /
+  // negative microdollars (see budget-orchestrator.ts validation-denial
+  // branch). Fail closed with 422 Unprocessable Entity so the request
+  // cannot bypass budget enforcement.
+  //
+  // Status code choice — 422, not 400: the body is well-formed JSON but
+  // `max_tokens` / `max_completion_tokens` is semantically invalid. 400 is
+  // reserved for "server can't parse the request" (malformed JSON, missing
+  // required headers). 422 distinguishes "parsed fine, body is semantically
+  // wrong" from 429 enforcement denials. Clients can branch on status alone
+  // without inspecting the code field.
+  //
+  // With estimator sanitization (P0-4) this path should never fire on real
+  // traffic; the metric `budget_check_invalid_estimate` emitted upstream in
+  // the orchestrator makes any future regression visible.
+  if (outcome.status === "denied" && outcome.invalidEstimate) {
+    emitMetric("budget_denied", {
+      reason: "invalid_estimate",
+      provider,
+      entityType: "n/a",
+      upgradeUrlEmitted: false,
+      upgradeUrlSource: "none",
+    });
+    return new Response(
+      JSON.stringify({
+        error: {
+          code: "invalid_estimate",
+          message: "Cost estimate could not be computed for this request. The request body may contain a semantically invalid max_tokens or max_completion_tokens value (e.g. NaN, Infinity, negative number).",
+          details: null,
+        },
+      }),
+      {
+        status: 422,
+        headers: {
+          "Content-Type": "application/json",
+          "X-NullSpend-Trace-Id": ctx.traceId,
+          "X-NullSpend-Denied": "1",
+          ...budgetHeaders,
+        },
+      },
+    );
+  }
+
   // Velocity denial
   if (outcome.status === "denied" && outcome.velocityDenied) {
     emitDenialMetric(false, "none"); // upgrade_url never included on velocity
@@ -216,19 +307,76 @@ export async function handleBudgetDenials(
         provider,
       }, ctx.auth.apiVersion),
     );
+    const velRetryAfter = outcome.retryAfterSeconds ?? 60;
+    const velDetails = outcome.velocityDetails;
+    const velLimit = velDetails?.limitMicrodollars ?? 0;
+    const velCurrent = velDetails?.currentMicrodollars ?? 0;
+    const velWindow = velDetails?.windowSeconds ?? 60;
+    const velMessage = velLimit > 0
+      ? `Rate limit exceeded: ${fmtDollars(velCurrent)} spent in ${velWindow}s window (limit: ${fmtDollars(velLimit)}). Retry after ${velRetryAfter}s.`
+      : "Request blocked: spending rate exceeds velocity limit. Retry after cooldown.";
     return new Response(
       JSON.stringify({
         error: {
           code: "velocity_exceeded",
-          message: "Request blocked: spending rate exceeds velocity limit. Retry after cooldown.",
-          details: outcome.velocityDetails ?? null,
+          message: velMessage,
+          details: velDetails ?? null,
+          recovery: buildRecovery("velocity_exceeded", velRetryAfter),
         },
       }),
       {
         status: 429,
         headers: {
           "Content-Type": "application/json",
-          "Retry-After": String(outcome.retryAfterSeconds ?? 60),
+          "Retry-After": String(velRetryAfter),
+          "X-NullSpend-Trace-Id": ctx.traceId,
+          "X-NullSpend-Denied": "1",
+          ...budgetHeaders,
+        },
+      },
+    );
+  }
+
+  // Loop detection denial
+  if (outcome.status === "denied" && outcome.loopDetected && outcome.loopDetails) {
+    emitDenialMetric(false, "none");
+    dispatchDenialWebhook(ctx, env, logPrefix, () =>
+      buildLoopDetectedPayload({
+        detectionType: outcome.loopDetails!.type,
+        model: outcome.loopDetails!.model,
+        provider: outcome.loopDetails!.provider,
+        callCount: outcome.loopDetails!.callCount,
+        windowSeconds: outcome.loopDetails!.windowSeconds,
+        maxCalls: outcome.loopDetails!.maxCalls,
+      }, ctx.auth.apiVersion),
+    );
+
+    const isAggregate = outcome.loopDetails.type === "aggregate";
+    const message = isAggregate
+      ? `Loop detected: ${outcome.loopDetails.callCount} distinct model patterns showed repeated calls in ${outcome.loopDetails.windowSeconds}s. This usually indicates a multi-model agent stuck in a loop. Adjust at https://nullspend.dev/app/budgets or set loop_max_calls=0 to disable.`
+      : `Loop detected: ${outcome.loopDetails.model} called ${outcome.loopDetails.callCount} times with identical content in ${outcome.loopDetails.windowSeconds}s. Check for retry loops or stuck agent logic. Adjust at https://nullspend.dev/app/budgets or set loop_max_calls=0 to disable.`;
+
+    return new Response(
+      JSON.stringify({
+        error: {
+          code: "loop_detected",
+          message,
+          details: {
+            type: outcome.loopDetails.type,
+            model: isAggregate ? "aggregate" : outcome.loopDetails.model,
+            provider: isAggregate ? "multiple" : outcome.loopDetails.provider,
+            callCount: outcome.loopDetails.callCount,
+            windowSeconds: outcome.loopDetails.windowSeconds,
+            maxCalls: outcome.loopDetails.maxCalls,
+          },
+          recovery: buildRecovery("loop_detected", LOOP_RETRY_AFTER_SECONDS),
+        },
+      }),
+      {
+        status: 429,
+        headers: {
+          "Content-Type": "application/json",
+          "Retry-After": String(LOOP_RETRY_AFTER_SECONDS),
           "X-NullSpend-Trace-Id": ctx.traceId,
           "X-NullSpend-Denied": "1",
           ...budgetHeaders,
@@ -251,16 +399,22 @@ export async function handleBudgetDenials(
         provider,
       }, ctx.auth.apiVersion),
     );
+    const sessSpend = outcome.sessionSpend ?? 0;
+    const sessLimit = outcome.sessionLimit ?? 0;
+    const sessMessage = sessLimit > 0
+      ? `Session limit reached: ${fmtDollars(sessSpend)} of ${fmtDollars(sessLimit)}. Start a new session.`
+      : "Request blocked: session spend exceeds session limit. Start a new session.";
     return new Response(
       JSON.stringify({
         error: {
           code: "session_limit_exceeded",
-          message: "Request blocked: session spend exceeds session limit. Start a new session.",
+          message: sessMessage,
           details: {
             session_id: outcome.sessionId ?? null,
-            session_spend_microdollars: outcome.sessionSpend ?? 0,
-            session_limit_microdollars: outcome.sessionLimit ?? 0,
+            session_spend_microdollars: sessSpend,
+            session_limit_microdollars: sessLimit,
           },
+          recovery: buildRecovery("session_limit_exceeded"),
         },
       }),
       {
@@ -290,17 +444,24 @@ export async function handleBudgetDenials(
         provider,
       }, ctx.auth.apiVersion),
     );
+    const tagLimit = outcome.maxBudget ?? 0;
+    const tagSpend = (outcome.spend ?? 0) + (outcome.reserved ?? 0);
+    const tagRemaining = Math.max(0, tagLimit - tagSpend);
+    const tagMessage = tagLimit > 0
+      ? `Tag budget exceeded for ${outcome.tagKey ?? "unknown"}=${outcome.tagValue ?? "unknown"}: ${fmtDollars(tagRemaining)} of ${fmtDollars(tagLimit)} remaining.`
+      : "Request blocked: estimated cost exceeds tag budget limit.";
     return new Response(
       JSON.stringify({
         error: {
           code: "tag_budget_exceeded",
-          message: "Request blocked: estimated cost exceeds tag budget limit.",
+          message: tagMessage,
           details: {
             tag_key: outcome.tagKey ?? null,
             tag_value: outcome.tagValue ?? null,
-            budget_limit_microdollars: outcome.maxBudget ?? 0,
-            budget_spend_microdollars: (outcome.spend ?? 0) + (outcome.reserved ?? 0),
+            budget_limit_microdollars: tagLimit,
+            budget_spend_microdollars: tagSpend,
           },
+          recovery: buildRecovery("tag_budget_exceeded"),
         },
       }),
       {
@@ -356,22 +517,29 @@ export async function handleBudgetDenials(
       : (upgradeUrl != null ? "org" : "none");
     emitDenialMetric(upgradeUrl != null, source);
 
+    const custLimit = outcome.maxBudget ?? 0;
+    const custSpend = (outcome.spend ?? 0) + (outcome.reserved ?? 0);
+    const custRemaining = Math.max(0, custLimit - custSpend);
+    const custMessage = custLimit > 0
+      ? `Customer budget exceeded for ${outcome.deniedEntityId ?? "unknown"}: ${fmtDollars(custRemaining)} of ${fmtDollars(custLimit)} remaining.`
+      : "Request blocked: estimated cost exceeds customer budget limit.";
     return new Response(
       JSON.stringify({
         error: {
           code: "customer_budget_exceeded",
-          message: "Request blocked: estimated cost exceeds customer budget limit.",
+          message: custMessage,
           ...(upgradeUrl ? { upgrade_url: upgradeUrl } : {}),
           details: {
             customer_id: outcome.deniedEntityId ?? null,
-            budget_limit_microdollars: outcome.maxBudget ?? 0,
-            budget_spend_microdollars: (outcome.spend ?? 0) + (outcome.reserved ?? 0),
+            budget_limit_microdollars: custLimit,
+            budget_spend_microdollars: custSpend,
             // CX-9: Include finalization reserve details on customer denials (parity with budget_exceeded)
             ...(outcome.finalizationReserve ? {
               finalization_reserve_microdollars: outcome.finalizationReserve,
-              finalization_remaining_microdollars: Math.max(0, (outcome.maxBudget ?? 0) - (outcome.spend ?? 0) - (outcome.reserved ?? 0) - (outcome.finalizationReserve ?? 0)),
+              finalization_remaining_microdollars: Math.max(0, custLimit - custSpend - (outcome.finalizationReserve ?? 0)),
             } : {}),
           },
+          recovery: buildRecovery("customer_budget_exceeded"),
         },
       }),
       {
@@ -417,11 +585,15 @@ export async function handleBudgetDenials(
       genericUpgradeUrl != null ? "org" : "none",
     );
 
+    const budgetRemaining = Math.max(0, budgetLimit - budgetSpend);
+    const budgetMessage = budgetLimit > 0
+      ? `Budget exceeded: ${fmtDollars(budgetRemaining)} of ${fmtDollars(budgetLimit)} remaining. Request a budget increase or switch to a cheaper model.`
+      : "Request blocked: estimated cost exceeds remaining budget.";
     return new Response(
       JSON.stringify({
         error: {
           code: "budget_exceeded",
-          message: "Request blocked: estimated cost exceeds remaining budget.",
+          message: budgetMessage,
           ...(genericUpgradeUrl ? { upgrade_url: genericUpgradeUrl } : {}),
           details: {
             entity_type: entityType,
@@ -434,6 +606,7 @@ export async function handleBudgetDenials(
               finalization_remaining_microdollars: Math.max(0, budgetLimit - budgetSpend - (outcome.finalizationReserve ?? 0)),
             } : {}),
           },
+          recovery: buildRecovery("budget_exceeded"),
         },
       }),
       {

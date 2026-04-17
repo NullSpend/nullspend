@@ -10,8 +10,16 @@
   },
   "homepage": "https://nullspend.dev",
   "author": "NullSpend <chris@nullspend.dev>",
-  "keywords": ["nullspend", "mcp", "model-context-protocol", "approval", "human-in-the-loop"],
-  "engines": { "node": ">=20.11.0" },
+  "keywords": [
+    "nullspend",
+    "mcp",
+    "model-context-protocol",
+    "approval",
+    "human-in-the-loop"
+  ],
+  "engines": {
+    "node": ">=20.11.0"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -31,7 +39,9 @@
       }
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
@@ -39,13 +49,13 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@nullspend/sdk": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.27.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "tsup": "^8.4.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.0"
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4"
   }
 }

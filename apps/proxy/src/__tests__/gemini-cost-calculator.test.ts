@@ -521,3 +521,129 @@ describe("calculateGeminiCost — eventType", () => {
     expect(result.eventType).toBe("llm");
   });
 });
+
+describe("calculateGeminiCost — long-context pricing (gemini-2.5-pro only)", () => {
+  it("gemini-2.5-pro >200K tokens applies 2x input, 1.5x output", () => {
+    // Base rates: input $1.25/MTok, output $10.00/MTok
+    // Long-context: input $2.50/MTok, output $15.00/MTok
+    const result = calculateGeminiCost(
+      "gemini-2.5-pro",
+      null,
+      { promptTokenCount: 250_000, candidatesTokenCount: 1000 },
+      "req-long-context",
+      500,
+    );
+
+    // input: 250_000 * 2_500_000 / 1_000_000 = 625_000
+    // output: 1000 * 15_000_000 / 1_000_000 = 15_000
+    // total: 640_000
+    expect(result.costMicrodollars).toBe(640_000);
+    expect(result.costBreakdown).toEqual({ input: 625_000, cached: 0, output: 15_000 });
+  });
+
+  it("gemini-2.5-pro exactly 200K tokens uses base rates (boundary)", () => {
+    const result = calculateGeminiCost(
+      "gemini-2.5-pro",
+      null,
+      { promptTokenCount: 200_000, candidatesTokenCount: 1000 },
+      "req-boundary",
+      500,
+    );
+
+    // input: 200_000 * 1_250_000 / 1_000_000 = 250_000
+    // output: 1000 * 10_000_000 / 1_000_000 = 10_000
+    // total: 260_000
+    expect(result.costMicrodollars).toBe(260_000);
+    expect(result.costBreakdown).toEqual({ input: 250_000, cached: 0, output: 10_000 });
+  });
+
+  it("gemini-2.5-pro long-context with cached input applies 2x cached rate", () => {
+    // Base cached rate: $0.125/MTok. Long-context cached: $0.25/MTok
+    const result = calculateGeminiCost(
+      "gemini-2.5-pro",
+      null,
+      {
+        promptTokenCount: 210_000,
+        candidatesTokenCount: 500,
+        cachedContentTokenCount: 50_000,
+      },
+      "req-long-cached",
+      500,
+    );
+
+    // normalInput: 210_000 - 50_000 = 160_000
+    // input: 160_000 * 2_500_000 / 1_000_000 = 400_000
+    // cached: 50_000 * 250_000 / 1_000_000 = 12_500
+    // output: 500 * 15_000_000 / 1_000_000 = 7_500
+    // total: 420_000
+    expect(result.costMicrodollars).toBe(420_000);
+    expect(result.costBreakdown).toEqual({ input: 400_000, cached: 12_500, output: 7_500 });
+  });
+
+  it("gemini-2.5-pro dated alias (preview variant) also applies long-context at >200K", () => {
+    // gemini-2.5-pro-preview-XX-XX should resolve to gemini-2.5-pro pricing AND multiplier
+    const result = calculateGeminiCost(
+      "gemini-2.5-pro-preview-03-25",
+      null,
+      { promptTokenCount: 300_000, candidatesTokenCount: 100 },
+      "req-dated-alias",
+      500,
+    );
+
+    expect(result.model).toBe("gemini-2.5-pro");
+    // input: 300_000 * 2_500_000 / 1_000_000 = 750_000
+    // output: 100 * 15_000_000 / 1_000_000 = 1_500
+    // total: 751_500
+    expect(result.costMicrodollars).toBe(751_500);
+  });
+
+  it("gemini-2.5-flash at >200K uses base rates (flash has no long-context tier)", () => {
+    // Per Google pricing, only gemini-2.5-pro has a >200K tier. Flash is flat.
+    const result = calculateGeminiCost(
+      "gemini-2.5-flash",
+      null,
+      { promptTokenCount: 250_000, candidatesTokenCount: 1000 },
+      "req-flash-big",
+      500,
+    );
+
+    // input: 250_000 * 300_000 / 1_000_000 = 75_000
+    // output: 1000 * 2_500_000 / 1_000_000 = 2_500
+    // total: 77_500
+    expect(result.costMicrodollars).toBe(77_500);
+    expect(result.costBreakdown).toEqual({ input: 75_000, cached: 0, output: 2_500 });
+  });
+
+  it("gemini-2.0-flash at >200K uses base rates (no long-context tier)", () => {
+    const result = calculateGeminiCost(
+      "gemini-2.0-flash",
+      null,
+      { promptTokenCount: 250_000, candidatesTokenCount: 1000 },
+      "req-flash20-big",
+      500,
+    );
+
+    // input: 250_000 * 100_000 / 1_000_000 = 25_000
+    // output: 1000 * 400_000 / 1_000_000 = 400
+    // total: 25_400
+    expect(result.costMicrodollars).toBe(25_400);
+  });
+
+  it("long-context multiplier applies to thoughts tokens breakdown", () => {
+    const result = calculateGeminiCost(
+      "gemini-2.5-pro",
+      null,
+      {
+        promptTokenCount: 210_000,
+        candidatesTokenCount: 1000,
+        thoughtsTokenCount: 500, // subset of candidates
+      },
+      "req-thoughts-longctx",
+      500,
+    );
+
+    // breakdown.reasoning should use long-context output rate
+    // 500 * 15_000_000 / 1_000_000 = 7_500
+    expect(result.costBreakdown?.reasoning).toBe(7_500);
+  });
+});

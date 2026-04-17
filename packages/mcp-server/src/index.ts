@@ -2,8 +2,17 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { loadConfig, ConfigError } from "./config.js";
 import { registerTools } from "./tools.js";
+import { runSetup } from "./setup.js";
 
 async function main() {
+  // Subcommand dispatch — `nullspend-mcp setup [...]` runs the config-snippet
+  // generator instead of starting the server. (D-5)
+  const argv = process.argv.slice(2);
+  if (argv[0] === "setup") {
+    const code = runSetup(argv.slice(1));
+    process.exit(code);
+  }
+
   let config;
   try {
     config = loadConfig();

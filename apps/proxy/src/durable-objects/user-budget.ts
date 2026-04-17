@@ -29,6 +29,9 @@ export interface BudgetRow {
   finalization_reserve: number;
   avg_recent_cost: number;
   last_alerted_threshold: number;
+  loop_max_calls: number | null;
+  loop_window_seconds: number | null;
+  loop_aggregate_max_keys: number | null;
 }
 
 export interface CheckedEntity {
@@ -80,6 +83,18 @@ export interface CheckResult {
   sessionSpend?: number;
   sessionLimit?: number;
   finalizationReserve?: number;
+  loopDetected?: boolean;
+  loopDetails?: {
+    type: "per_key" | "aggregate";
+    model: string;
+    provider: string;
+    callCount: number;
+    windowSeconds: number;
+    maxCalls: number;
+  };
+  /** Loop call count for warning header (set when count >= 80% of threshold) */
+  loopCount?: number;
+  loopMaxCalls?: number;
 }
 
 export interface ThresholdCrossing {
@@ -181,9 +196,51 @@ export function parseThresholds(raw: string | null): number[] {
   }
 }
 
+/**
+ * AUDIT-7 orphan sweep: compute which DO budget rows have no matching Postgres row
+ * and are old enough to safely evict.
+ *
+ * A DO row is an orphan iff:
+ *   - No row in `pgRows` matches its (entity_type, entity_id) pair
+ *   - Its `synced_at` is older than `now - safetyMs` (guards against a Postgres
+ *     commit-visibility race where a newly populated DO row could be misread
+ *     as deleted upstream)
+ *
+ * Pure function — no side effects. The caller owns DELETE + metric emission.
+ */
+export function findOrphanedBudgets(
+  doRows: ReadonlyArray<{ entity_type: string; entity_id: string; synced_at: number }>,
+  pgRows: ReadonlyArray<{ entity_type: string; entity_id: string }>,
+  now: number,
+  safetyMs: number = 60_000,
+): Array<{ entity_type: string; entity_id: string }> {
+  const pgSet = new Set(pgRows.map((r) => `${r.entity_type}:${r.entity_id}`));
+  const cutoff = now - safetyMs;
+  const orphans: Array<{ entity_type: string; entity_id: string }> = [];
+  for (const row of doRows) {
+    if (pgSet.has(`${row.entity_type}:${row.entity_id}`)) continue;
+    if (row.synced_at >= cutoff) continue;
+    orphans.push({ entity_type: row.entity_type, entity_id: row.entity_id });
+  }
+  return orphans;
+}
+
 // ── Durable Object ──────────────────────────────────────────────────
 
+/** Cached loop denial: stores the original details so cached responses are accurate. */
+interface CachedLoopDenial {
+  expiry: number;
+  details: NonNullable<CheckResult["loopDetails"]>;
+}
+
 export class UserBudgetDO extends DurableObject {
+  /** Loop denial backoff cache: key+hash → expiry + original details. Prevents the
+   *  denial path from becoming a hot loop when a stuck agent retries after a 429.
+   *  Lazily evicted on each check; hard cap of 1000 entries. */
+  private loopDenialCache = new Map<string, CachedLoopDenial>();
+  private static readonly LOOP_DENIAL_BACKOFF_MS = 5_000;
+  private static readonly LOOP_DENIAL_CACHE_MAX = 1_000;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
@@ -317,6 +374,29 @@ export class UserBudgetDO extends DurableObject {
       try { this.ctx.storage.sql.exec("ALTER TABLE budgets ADD COLUMN last_alerted_threshold INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
       this.ctx.storage.sql.exec("INSERT OR IGNORE INTO _schema_version(version) VALUES (7)");
     }
+
+    // v8 migration: loop detection call log + budget config columns
+    if (version < 8) {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS loop_call_log (
+          key TEXT NOT NULL,
+          content_hash TEXT NOT NULL,
+          ts INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_loop_key_hash ON loop_call_log(key, content_hash);
+        CREATE INDEX IF NOT EXISTS idx_loop_ts ON loop_call_log(ts);
+      `);
+      try { this.ctx.storage.sql.exec("ALTER TABLE budgets ADD COLUMN loop_max_calls INTEGER"); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec("ALTER TABLE budgets ADD COLUMN loop_window_seconds INTEGER"); } catch { /* already exists */ }
+      try { this.ctx.storage.sql.exec("ALTER TABLE budgets ADD COLUMN loop_aggregate_max_keys INTEGER"); } catch { /* already exists */ }
+      this.ctx.storage.sql.exec("INSERT OR IGNORE INTO _schema_version(version) VALUES (8)");
+    }
+
+    // v9 migration: AUDIT-7 orphan sweep — track last-synced-at for race-safe eviction
+    if (version < 9) {
+      try { this.ctx.storage.sql.exec("ALTER TABLE budgets ADD COLUMN synced_at INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
+      this.ctx.storage.sql.exec("INSERT OR IGNORE INTO _schema_version(version) VALUES (9)");
+    }
   }
 
   // ── RPC Methods ────────────────────────────────────────────────────
@@ -334,6 +414,7 @@ export class UserBudgetDO extends DurableObject {
     tagEntityIds: string[] = [],
     orgId: string | null = null,
     finalize: boolean = false,
+    loopContext: { provider: string; model: string; contentHash: string } | null = null,
   ): Promise<CheckResult> {
     if (estimateMicrodollars < 0 || !Number.isFinite(estimateMicrodollars)) {
       return { status: "denied", hasBudgets: false };
@@ -345,6 +426,9 @@ export class UserBudgetDO extends DurableObject {
     let result: CheckResult = { status: "approved", hasBudgets: false };
     let reserved = false;
     let finalizeZoneDenied = false; // CX-1: tracks when finalize=true was denied because entity wasn't in zone
+    let loopCallCount = 0;
+    let loopMaxCallsForWarning = 0;
+    let loopDenialCached = false;
     const periodResets: Array<{ entityType: string; entityId: string; newPeriodStart: number }> = [];
     const checkedEntities: CheckedEntity[] = [];
     const velocityRecovered: Array<{
@@ -425,38 +509,6 @@ export class UserBudgetDO extends DurableObject {
           finalizationReserve: row.finalization_reserve ?? 0,
           avgRecentCost: row.avg_recent_cost ?? 0,
         });
-      }
-
-      // ── Session limit check (before velocity) ──────────────────────
-      // Session denial exits before velocity logic runs — denied requests
-      // should not affect velocity counters (same as budget denial).
-      if (sessionId) {
-        for (const row of rows) {
-          if (row.session_limit == null) continue;
-
-          const entityKey = `${row.entity_type}:${row.entity_id}`;
-          const sessionRow = this.ctx.storage.sql.exec<{ spend: number }>(
-            "SELECT spend FROM session_spend WHERE entity_key = ? AND session_id = ?",
-            entityKey, sessionId,
-          ).toArray()[0];
-
-          const currentSessionSpend = sessionRow?.spend ?? 0;
-          if (currentSessionSpend + estimateMicrodollars > row.session_limit) {
-            console.log(
-              `[UserBudgetDO] session denied: entity=${entityKey} session=${sessionId} spend=${currentSessionSpend} limit=${row.session_limit} estimate=${estimateMicrodollars}`,
-            );
-            result = {
-              status: "denied",
-              hasBudgets: true,
-              sessionLimitDenied: true,
-              deniedEntity: entityKey,
-              sessionId,
-              sessionSpend: currentSessionSpend,
-              sessionLimit: row.session_limit,
-            };
-            return; // exit transactionSync
-          }
-        }
       }
 
       // ── Phase 0: Velocity check (before budget check) ──────────────
@@ -585,6 +637,153 @@ export class UserBudgetDO extends DurableObject {
         });
       }
 
+      // ── Phase 1: Loop detection (after velocity, before budget) ─────
+      // Default-on: loopMaxCalls null → use default 50. Set to 0 to disable.
+      // Prefers user-type entity for config (EC-3 fix). INSERT is DEFERRED to
+      // Phase 2.5 (after budget check passes) to prevent budget-denied requests
+      // from inflating the loop counter (BUG-1 fix).
+      let pendingLoopInsert: { loopKey: string; contentHash: string; ts: number } | null = null;
+      if (loopContext) {
+        // EC-3: prefer user-type entity for loop config (deterministic)
+        const loopEntity = rows.find((r) => r.entity_type === "user") ?? rows[0];
+        const maxCalls = loopEntity.loop_max_calls ?? 50;
+
+        if (maxCalls > 0) {
+          const loopKey = `${loopContext.provider}:${loopContext.model}`;
+          const windowSeconds = loopEntity.loop_window_seconds ?? 60;
+          const windowMs = windowSeconds * 1000;
+          const cacheKey = `${loopKey}:${loopContext.contentHash}`;
+
+          // EC-1: Lazily evict expired denial cache entries + enforce size cap
+          if (this.loopDenialCache.size > 0) {
+            for (const [k, v] of this.loopDenialCache) {
+              if (now >= v.expiry) this.loopDenialCache.delete(k);
+            }
+            if (this.loopDenialCache.size > UserBudgetDO.LOOP_DENIAL_CACHE_MAX) {
+              this.loopDenialCache.clear();
+            }
+          }
+
+          // Denial backoff: if this key+hash was denied within 5s, skip SQL entirely
+          const cached = this.loopDenialCache.get(cacheKey);
+          if (cached && now < cached.expiry) {
+            // EC-6: return the original detection details, not hardcoded per_key
+            loopDenialCached = true;
+            result = {
+              status: "denied",
+              hasBudgets: true,
+              loopDetected: true,
+              loopDetails: cached.details,
+            };
+            return; // exit transactionSync — cached denial, no SQL
+          }
+
+          // Prune old entries + count existing (WITHOUT inserting yet)
+          this.ctx.storage.sql.exec("DELETE FROM loop_call_log WHERE ts < ?", now - windowMs);
+          // Count existing + 1 (the pending insert that will happen if budget passes)
+          const existingCount = this.ctx.storage.sql.exec<{ cnt: number }>(
+            "SELECT COUNT(*) as cnt FROM loop_call_log WHERE key = ? AND content_hash = ?",
+            loopKey, loopContext.contentHash,
+          ).toArray()[0]?.cnt ?? 0;
+          const loopCount = existingCount + 1; // +1 for the pending insert
+
+          if (loopCount >= maxCalls) {
+            const details: NonNullable<CheckResult["loopDetails"]> = {
+              type: "per_key",
+              model: loopContext.model,
+              provider: loopContext.provider,
+              callCount: loopCount,
+              windowSeconds,
+              maxCalls,
+            };
+            this.loopDenialCache.set(cacheKey, { expiry: now + UserBudgetDO.LOOP_DENIAL_BACKOFF_MS, details });
+            console.log(
+              `[UserBudgetDO] loop denied: key=${loopKey} count=${loopCount}/${maxCalls} window=${windowSeconds}s type=per_key`,
+            );
+            result = { status: "denied", hasBudgets: true, loopDetected: true, loopDetails: details };
+            return; // exit transactionSync
+          }
+
+          // Aggregate: count distinct keys with 3+ same-content repeats
+          // Scoped to the configured window to prevent stale entries from
+          // the alarm's wider 2-minute prune window from triggering aggregate.
+          const aggregateMaxKeys = loopEntity.loop_aggregate_max_keys ?? 5;
+          if (aggregateMaxKeys > 0) {
+            const windowCutoff = now - windowMs;
+            const qualifyingKeys = this.ctx.storage.sql.exec<{ cnt: number }>(`
+              SELECT COUNT(DISTINCT key) as cnt
+              FROM loop_call_log
+              WHERE ts >= ? AND key IN (
+                SELECT key FROM loop_call_log
+                WHERE ts >= ?
+                GROUP BY key, content_hash HAVING COUNT(*) >= 3
+              )
+            `, windowCutoff, windowCutoff).toArray()[0]?.cnt ?? 0;
+
+            if (qualifyingKeys >= aggregateMaxKeys) {
+              const details: NonNullable<CheckResult["loopDetails"]> = {
+                type: "aggregate",
+                model: "aggregate",
+                provider: "multiple",
+                callCount: qualifyingKeys,
+                windowSeconds,
+                maxCalls: aggregateMaxKeys,
+              };
+              this.loopDenialCache.set(cacheKey, { expiry: now + UserBudgetDO.LOOP_DENIAL_BACKOFF_MS, details });
+              console.log(
+                `[UserBudgetDO] loop denied: qualifyingKeys=${qualifyingKeys}/${aggregateMaxKeys} window=${windowSeconds}s type=aggregate`,
+              );
+              result = { status: "denied", hasBudgets: true, loopDetected: true, loopDetails: details };
+              return; // exit transactionSync
+            }
+          }
+
+          // Defer INSERT to Phase 2.5 (only if budget check passes)
+          pendingLoopInsert = { loopKey, contentHash: loopContext.contentHash, ts: now };
+
+          // Warning: set loopCount/loopMaxCalls on result when approaching threshold (>= 80%)
+          loopCallCount = loopCount;
+          loopMaxCallsForWarning = maxCalls;
+        }
+      }
+
+      // ── Session limit check (after velocity + loop, before budget) ──
+      // P1-2: Priority order is velocity > loop > session > budget. The
+      // session check lives here so that a request hitting both a velocity
+      // limit and a session limit surfaces `velocity_exceeded` (the
+      // higher-priority denial code) rather than `session_limit_exceeded`.
+      // Same rationale for loop > session. Session denial exits before
+      // budget logic runs — denied requests should not affect budget
+      // counters (same invariant as velocity and budget denials).
+      if (sessionId) {
+        for (const row of rows) {
+          if (row.session_limit == null) continue;
+
+          const entityKey = `${row.entity_type}:${row.entity_id}`;
+          const sessionRow = this.ctx.storage.sql.exec<{ spend: number }>(
+            "SELECT spend FROM session_spend WHERE entity_key = ? AND session_id = ?",
+            entityKey, sessionId,
+          ).toArray()[0];
+
+          const currentSessionSpend = sessionRow?.spend ?? 0;
+          if (currentSessionSpend + estimateMicrodollars > row.session_limit) {
+            console.log(
+              `[UserBudgetDO] session denied: entity=${entityKey} session=${sessionId} spend=${currentSessionSpend} limit=${row.session_limit} estimate=${estimateMicrodollars}`,
+            );
+            result = {
+              status: "denied",
+              hasBudgets: true,
+              sessionLimitDenied: true,
+              deniedEntity: entityKey,
+              sessionId,
+              sessionSpend: currentSessionSpend,
+              sessionLimit: row.session_limit,
+            };
+            return; // exit transactionSync
+          }
+        }
+      }
+
       // Phase 2: Check each entity's budget (with finalization reserve)
       for (const row of rows) {
         const remaining = row.max_budget - row.spend - row.reserved;
@@ -619,7 +818,13 @@ export class UserBudgetDO extends DurableObject {
         }
       }
 
-      // Phase 2.5: Apply deferred velocity increments (only reached if budget check passed)
+      // Phase 2.5: Apply deferred loop insert + velocity increments (only reached if budget check passed)
+      if (pendingLoopInsert) {
+        this.ctx.storage.sql.exec(
+          "INSERT INTO loop_call_log (key, content_hash, ts) VALUES (?, ?, ?)",
+          pendingLoopInsert.loopKey, pendingLoopInsert.contentHash, pendingLoopInsert.ts,
+        );
+      }
       for (const vi of pendingVelocityIncrements) {
         this.ctx.storage.sql.exec(
           `INSERT INTO velocity_state (entity_key, window_size_ms, window_start_ms, current_count, current_spend, prev_count, prev_spend)
@@ -695,6 +900,24 @@ export class UserBudgetDO extends DurableObject {
     }
     if (velocityRecovered.length > 0) {
       result.velocityRecovered = velocityRecovered;
+    }
+
+    // Loop detection metric (outside transaction, fire-and-forget)
+    if (result.loopDetected && result.loopDetails) {
+      emitMetric("loop_detected", {
+        type: result.loopDetails.type,
+        model: result.loopDetails.model,
+        provider: result.loopDetails.provider,
+        callCount: result.loopDetails.callCount,
+        maxCalls: result.loopDetails.maxCalls,
+        cached: loopDenialCached,
+      });
+    }
+
+    // Loop count warning: attach when approaching threshold (>= 80%)
+    if (loopCallCount > 0 && loopMaxCallsForWarning > 0 && loopCallCount >= Math.floor(loopMaxCallsForWarning * 0.8)) {
+      result.loopCount = loopCallCount;
+      result.loopMaxCalls = loopMaxCallsForWarning;
     }
 
     // Update in-memory cache
@@ -936,6 +1159,9 @@ export class UserBudgetDO extends DurableObject {
     thresholdPercentages: number[] = [...DEFAULT_THRESHOLDS],
     sessionLimit: number | null = null,
     finalizationReserve: number = 0,
+    loopMaxCalls: number | null = null,
+    loopWindowSeconds: number | null = null,
+    loopAggregateMaxKeys: number | null = null,
   ): Promise<boolean> {
     // Check if entity already exists (for return value)
     const existed = this.ctx.storage.sql.exec<{ cnt: number }>(
@@ -945,12 +1171,14 @@ export class UserBudgetDO extends DurableObject {
 
     this.ctx.storage.transactionSync(() => {
       // Single UPSERT with all fields — avoids separate UPDATE statements
+      // synced_at stamped on both INSERT and UPDATE so the orphan sweep can
+      // tell recently-synced rows apart from stale ones (AUDIT-7).
       this.ctx.storage.sql.exec(
         `INSERT INTO budgets
          (entity_type, entity_id, max_budget, spend, reserved, policy, reset_interval, period_start,
           velocity_limit, velocity_window, velocity_cooldown, threshold_percentages, session_limit,
-          finalization_reserve)
-         VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          finalization_reserve, loop_max_calls, loop_window_seconds, loop_aggregate_max_keys, synced_at)
+         VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(entity_type, entity_id) DO UPDATE SET
            max_budget = excluded.max_budget,
            policy = excluded.policy,
@@ -963,7 +1191,11 @@ export class UserBudgetDO extends DurableObject {
              WHEN budgets.threshold_percentages != excluded.threshold_percentages THEN 0
              ELSE budgets.last_alerted_threshold END,
            session_limit = excluded.session_limit,
-           finalization_reserve = excluded.finalization_reserve`,
+           finalization_reserve = excluded.finalization_reserve,
+           loop_max_calls = excluded.loop_max_calls,
+           loop_window_seconds = excluded.loop_window_seconds,
+           loop_aggregate_max_keys = excluded.loop_aggregate_max_keys,
+           synced_at = excluded.synced_at`,
         entityType,
         entityId,
         maxBudget,
@@ -977,6 +1209,10 @@ export class UserBudgetDO extends DurableObject {
         JSON.stringify(thresholdPercentages),
         sessionLimit,
         finalizationReserve,
+        loopMaxCalls,
+        loopWindowSeconds,
+        loopAggregateMaxKeys,
+        Date.now(),
       );
 
       // Create/update velocity_state row
@@ -1013,7 +1249,7 @@ export class UserBudgetDO extends DurableObject {
   /** Read-only budget state (for dashboard queries or debugging). */
   async getBudgetState(): Promise<BudgetRow[]> {
     return this.ctx.storage.sql.exec<BudgetRow>(
-      "SELECT entity_type, entity_id, max_budget, spend, reserved, policy, reset_interval, period_start, velocity_limit, velocity_window, velocity_cooldown, threshold_percentages, session_limit, finalization_reserve, avg_recent_cost, last_alerted_threshold FROM budgets",
+      "SELECT entity_type, entity_id, max_budget, spend, reserved, policy, reset_interval, period_start, velocity_limit, velocity_window, velocity_cooldown, threshold_percentages, session_limit, finalization_reserve, avg_recent_cost, last_alerted_threshold, loop_max_calls, loop_window_seconds, loop_aggregate_max_keys FROM budgets",
     ).toArray();
   }
 
@@ -1158,7 +1394,15 @@ export class UserBudgetDO extends DurableObject {
         "DELETE FROM session_spend WHERE entity_key = ?",
         entityKey,
       );
+
+      // Loop call log is NOT cleared here — entries are per-DO (not per-entity)
+      // and are time-pruned by the 60s window. Clearing would affect unrelated
+      // entities sharing this DO. The denial backoff cache is cleared so the
+      // entity can immediately resume normal operation.
     });
+
+    // Clear loop denial backoff cache on spend reset
+    this.loopDenialCache.clear();
 
   }
 
@@ -1212,8 +1456,30 @@ export class UserBudgetDO extends DurableObject {
 
       }
 
+    // Loop call log cleanup: prune entries older than the max configured window.
+    // Use the largest loop_window_seconds across all budget entities (or 120s minimum)
+    // to avoid deleting entries that are still within a user's configured detection window.
+    const maxLoopWindowRow = this.ctx.storage.sql.exec<{ max_win: number | null }>(
+      "SELECT MAX(loop_window_seconds) as max_win FROM budgets",
+    ).toArray()[0];
+    const loopPruneMs = Math.max(120_000, ((maxLoopWindowRow?.max_win ?? 60) + 60) * 1000);
+    this.ctx.storage.sql.exec("DELETE FROM loop_call_log WHERE ts < ?", now - loopPruneMs);
+    // Safety cap: if table exceeds 5000 rows after pruning, truncate to most recent 1000
+    const loopRowCount = this.ctx.storage.sql.exec<{ cnt: number }>(
+      "SELECT COUNT(*) as cnt FROM loop_call_log",
+    ).toArray()[0]?.cnt ?? 0;
+    if (loopRowCount > 5000) {
+      this.ctx.storage.sql.exec(`
+        DELETE FROM loop_call_log WHERE rowid NOT IN (
+          SELECT rowid FROM loop_call_log ORDER BY ts DESC LIMIT 1000
+        )
+      `);
+    }
+
     // Session cleanup: delete stale sessions (last_seen > 24h)
     const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+    // AUDIT-7: hourly orphan sweep cadence for idle DOs with budget rows.
+    const ORPHAN_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
     const cutoff = now - SESSION_TTL_MS;
     const deleted = this.ctx.storage.sql.exec(
       "DELETE FROM session_spend WHERE last_seen < ?",
@@ -1298,6 +1564,53 @@ export class UserBudgetDO extends DurableObject {
       } catch { /* best-effort pruning — connection may have gone stale */ }
     }
 
+    // AUDIT-7: Sweep DO budget rows whose Postgres counterpart has been deleted.
+    // Catches cases where DELETE FROM budgets happened without a paired
+    // /internal/budget/invalidate action=remove — prevents permanent orphans
+    // that mislead /v1/policy and break test isolation. ownerId comes from the
+    // DO ID's name (idFromName). Safe skips: no ownerId, no DO budgets, or
+    // HYPERDRIVE unavailable. findOrphanedBudgets enforces a 60s safety window
+    // so a just-synced row that Postgres can't yet see is never evicted.
+    const sweepOwnerId = this.ctx.id.name;
+    if (sweepOwnerId) {
+      const sweepDoRows = this.ctx.storage.sql
+        .exec<{ entity_type: string; entity_id: string; synced_at: number }>(
+          "SELECT entity_type, entity_id, synced_at FROM budgets",
+        )
+        .toArray();
+      if (sweepDoRows.length > 0) {
+        if (!connectionString) {
+          try { connectionString = this.env.HYPERDRIVE.connectionString; } catch { /* unavailable — skip sweep */ }
+        }
+        if (connectionString) {
+          try {
+            const sweepSql = getSql(connectionString);
+            const sweepPgRows = await sweepSql<{ entity_type: string; entity_id: string }[]>`
+              SELECT entity_type, entity_id FROM budgets WHERE org_id = ${sweepOwnerId}
+            `;
+            const orphans = findOrphanedBudgets(sweepDoRows, sweepPgRows, now);
+            for (const orphan of orphans) {
+              await this.removeBudget(orphan.entity_type, orphan.entity_id);
+              emitMetric("do_budget_orphan_evicted", {
+                ownerId: sweepOwnerId,
+                entityType: orphan.entity_type,
+                entityId: orphan.entity_id,
+              });
+              console.warn(
+                `[UserBudgetDO] AUDIT-7: evicted orphan budget ${orphan.entity_type}:${orphan.entity_id} (owner=${sweepOwnerId})`,
+              );
+            }
+          } catch (err) {
+            console.error("[UserBudgetDO] alarm: orphan sweep failed:", err);
+            emitMetric("do_budget_orphan_sweep_error", {
+              ownerId: sweepOwnerId,
+              error: err instanceof Error ? err.message : "unknown",
+            });
+          }
+        }
+      }
+    }
+
     // Reschedule: next reservation expiry OR session cleanup OR outbox retry
     const next = this.ctx.storage.sql
       .exec<{ next_exp: number | null }>(
@@ -1324,6 +1637,17 @@ export class UserBudgetDO extends DurableObject {
       ).toArray()[0]?.next;
     if (nextOutbox) {
       nextAlarm = nextAlarm ? Math.min(nextAlarm, nextOutbox) : nextOutbox;
+    }
+
+    // AUDIT-7: Housekeeping wake so idle DOs with budgets still run the orphan
+    // sweep. Without this, a DO whose activity died before its Postgres peer
+    // was deleted would keep the phantom budget forever.
+    const hasBudgetRows = this.ctx.storage.sql
+      .exec<{ cnt: number }>("SELECT COUNT(*) as cnt FROM budgets")
+      .toArray()[0]?.cnt ?? 0;
+    if (hasBudgetRows > 0) {
+      const housekeeping = now + ORPHAN_SWEEP_INTERVAL_MS;
+      nextAlarm = nextAlarm ? Math.min(nextAlarm, housekeeping) : housekeeping;
     }
 
     if (nextAlarm) {

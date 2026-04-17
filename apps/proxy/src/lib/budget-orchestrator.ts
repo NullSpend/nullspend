@@ -15,6 +15,8 @@ interface BudgetCheckOutcome {
   status: "approved" | "denied" | "skipped";
   reservationId: string | null;
   budgetEntities: BudgetEntity[];
+  /** Set when the denial is due to an invalid cost estimate (NaN/Infinity/negative). */
+  invalidEstimate?: boolean;
   deniedEntityType?: string;
   deniedEntityId?: string;
   remaining?: number;
@@ -43,6 +45,18 @@ interface BudgetCheckOutcome {
   tagKey?: string;
   tagValue?: string;
   finalizationReserve?: number;
+  /** Loop call count for warning header (set when count >= 80% of threshold) */
+  loopCount?: number;
+  loopMaxCalls?: number;
+  loopDetected?: boolean;
+  loopDetails?: {
+    type: "per_key" | "aggregate";
+    model: string;
+    provider: string;
+    callCount: number;
+    windowSeconds: number;
+    maxCalls: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -54,12 +68,17 @@ export async function checkBudget(
   ctx: RequestContext,
   estimateMicrodollars: number,
   finalize: boolean = false,
+  loopContext: { provider: string; model: string; contentHash: string } | null = null,
 ): Promise<BudgetCheckOutcome> {
   if (!ctx.auth.hasBudgets) {
-    emitMetric("budget_check_skipped", { ownerId: ctx.ownerId });
+    // P1 note: hasBudgets is cached for up to 120s (POSITIVE_TTL_MS) in the auth
+    // cache. If an org adds its first budget and invalidation misses, requests
+    // skip enforcement during the cache window. This metric makes the gap
+    // observable — operators can correlate with budget creation timestamps.
+    emitMetric("budget_check_skipped", { ownerId: ctx.ownerId, orgId: ctx.auth.orgId ?? "unknown" });
     return { status: "skipped", reservationId: null, budgetEntities: [] };
   }
-  return checkBudgetDO(env, ctx.connectionString, ctx.auth.keyId, ctx.ownerId, ctx.auth.orgId, estimateMicrodollars, ctx.sessionId, ctx.tags, finalize);
+  return checkBudgetDO(env, ctx.connectionString, ctx.auth.keyId, ctx.ownerId, ctx.auth.orgId, estimateMicrodollars, ctx.sessionId, ctx.tags, finalize, loopContext);
 }
 
 // ---------------------------------------------------------------------------
@@ -83,13 +102,31 @@ export async function reconcileBudget(
         entityId: e.entityId,
       }));
       const result = await doBudgetReconcile(env, ownerId, orgId, reservationId, actualCost, entities);
-      if (options?.throwOnError && result.status !== "ok") {
-        throw new Error(`Reconciliation failed with status: ${result.status}`);
+      if (result.status !== "ok") {
+        // P0 fix: make DO reconcile failures observable. Previously, non-ok
+        // results were silently swallowed unless throwOnError was set (it never
+        // was). The reservation hangs until alarm expiry, then gets reversed,
+        // erasing the real spend. Now we always emit a metric so operators
+        // can detect and investigate reconcile failures.
+        emitMetric("reconcile_do_failure", {
+          status: result.status,
+          reservationId,
+          actualCost,
+          ownerId,
+        });
+        console.error(`[budget-orchestrator] DO reconcile returned non-ok: status=${result.status} reservation=${reservationId} cost=${actualCost}`);
+        if (options?.throwOnError) {
+          throw new Error(`Reconciliation failed with status: ${result.status}`);
+        }
       }
       return { thresholdCrossings: result.thresholdCrossings };
     }
   } catch (err) {
     console.error("[budget-orchestrator] Reconciliation failed:", err);
+    emitMetric("reconcile_exception", {
+      reservationId: reservationId ?? "none",
+      actualCost,
+    });
     if (options?.throwOnError) throw err;
   }
   return {};
@@ -143,6 +180,7 @@ async function checkBudgetDO(
   sessionId: string | null = null,
   tags: Record<string, string>,
   finalize: boolean = false,
+  loopContext: { provider: string; model: string; contentHash: string } | null = null,
 ): Promise<BudgetCheckOutcome> {
   if (!ownerId) {
     return { status: "skipped", reservationId: null, budgetEntities: [] };
@@ -152,7 +190,35 @@ async function checkBudgetDO(
   const tagEntityIds = Object.entries(tags).map(([k, v]) => `${k}=${v}`);
 
   // Single DO RPC — no Postgres lookup, no cache
-  const checkResult = await doBudgetCheck(env, ownerId, keyId, estimateMicrodollars, sessionId, tagEntityIds, orgId, finalize);
+  const checkResult = await doBudgetCheck(env, ownerId, keyId, estimateMicrodollars, sessionId, tagEntityIds, orgId, finalize, loopContext);
+
+  // NF-2: The DO returns `{ status: "denied", hasBudgets: false }` ONLY when
+  // the incoming estimate is invalid (NaN / Infinity / negative — see
+  // user-budget.ts:384-385). Previously the bare `!hasBudgets` branch below
+  // treated this as stale auth cache and emitted `budget_cache_stale`, hiding
+  // a real validation failure behind a misleading signal AND letting the
+  // request proceed without budget enforcement (fail-open).
+  //
+  // With estimator sanitization (P0-4) invalid estimates cannot reach the DO
+  // through normal request paths, so this branch is defense-in-depth. When
+  // it DOES fire, we FAIL CLOSED: return "denied" with `invalidEstimate:true`
+  // so the downstream denial handler rejects the request with 400 bad_request.
+  // Any future estimator miss, new provider adapter, or internal caller that
+  // leaks an invalid estimate will be caught here instead of silently
+  // bypassing budgets.
+  if (checkResult.status === "denied" && !checkResult.hasBudgets) {
+    emitMetric("budget_check_invalid_estimate", {
+      ownerId,
+      estimateIsFinite: Number.isFinite(estimateMicrodollars),
+      estimateIsNegative: estimateMicrodollars < 0,
+    });
+    return {
+      status: "denied",
+      reservationId: null,
+      budgetEntities: [],
+      invalidEstimate: true,
+    };
+  }
 
   if (!checkResult.hasBudgets) {
     // Auth cache said hasBudgets=true (we got here), but DO says false — stale cache
@@ -212,6 +278,17 @@ async function checkBudgetDO(
       };
     }
 
+    // Loop detection denial — separate from velocity and budget exhaustion
+    if (checkResult.loopDetected) {
+      return {
+        status: "denied",
+        reservationId: null,
+        budgetEntities,
+        loopDetected: true,
+        loopDetails: checkResult.loopDetails,
+      };
+    }
+
     // Session limit denial — separate from both velocity and budget exhaustion
     if (checkResult.sessionLimitDenied) {
       return {
@@ -266,5 +343,6 @@ async function checkBudgetDO(
     reservationId: checkResult.reservationId ?? null,
     budgetEntities,
     ...(checkResult.velocityRecovered?.length && { velocityRecovered: checkResult.velocityRecovered }),
+    ...(checkResult.loopCount != null && { loopCount: checkResult.loopCount, loopMaxCalls: checkResult.loopMaxCalls }),
   };
 }

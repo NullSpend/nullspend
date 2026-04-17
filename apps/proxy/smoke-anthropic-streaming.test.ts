@@ -10,8 +10,8 @@
  *
  * Run with: npx vitest run smoke-anthropic-streaming.test.ts
  */
-import { describe, it, expect, beforeAll } from "vitest";
-import { ANTHROPIC_API_KEY, anthropicAuthHeaders, BASE, isServerUp } from "./smoke-test-helpers.js";
+import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { ANTHROPIC_API_KEY, anthropicAuthHeaders, anthropicRateLimitPace, BASE, isServerUp } from "./smoke-test-helpers.js";
 
 function parseSSEEvents(text: string): Array<{ event?: string; data?: string }> {
   const events: Array<{ event?: string; data?: string }> = [];
@@ -36,6 +36,9 @@ function parseSSEEvents(text: string): Array<{ event?: string; data?: string }> 
 }
 
 describe("Anthropic streaming format smoke tests", () => {
+  // Pace requests to stay under tier-1 Anthropic RPM during full-suite runs.
+  beforeEach(anthropicRateLimitPace);
+
   beforeAll(async () => {
     const up = await isServerUp();
     if (!up) {

@@ -133,6 +133,56 @@ describe("createPolicyCache", () => {
   });
 
   // -----------------------------------------------------------------------
+  // Fetch timeout (PERF-2)
+  // -----------------------------------------------------------------------
+
+  it("times out a hung fetch and falls open to null when no cache exists", async () => {
+    const onError = vi.fn();
+    fetchPolicy.mockReturnValue(new Promise<PolicyResponse>(() => {})); // never resolves
+
+    const cache = createPolicyCache(fetchPolicy, 60_000, onError, 100);
+    const promise = cache.getPolicy();
+
+    await vi.advanceTimersByTimeAsync(150);
+    const result = await promise;
+
+    expect(result).toBeNull();
+    expect(onError).toHaveBeenCalledTimes(1);
+    const err = onError.mock.calls[0][0] as Error;
+    expect(err.message).toMatch(/timed out after 100ms/);
+  });
+
+  it("times out and falls open to stale cache when one exists", async () => {
+    const policy = makePolicy();
+    let resolveFirst: (v: PolicyResponse) => void = () => {};
+    fetchPolicy.mockImplementationOnce(
+      () => new Promise<PolicyResponse>((r) => { resolveFirst = r; }),
+    );
+
+    const cache = createPolicyCache(fetchPolicy, 100, vi.fn(), 100);
+    const populate = cache.getPolicy();
+    resolveFirst(policy);
+    await populate;
+
+    // Trigger re-fetch by aging past TTL
+    await vi.advanceTimersByTimeAsync(150);
+    fetchPolicy.mockReturnValueOnce(new Promise<PolicyResponse>(() => {})); // never resolves
+
+    const stalePromise = cache.getPolicy();
+    await vi.advanceTimersByTimeAsync(150);
+    const result = await stalePromise;
+
+    expect(result).toEqual(policy); // stale cache preserved on timeout
+  });
+
+  it("disables timeout when fetchTimeoutMs <= 0", async () => {
+    fetchPolicy.mockResolvedValue(makePolicy());
+    const cache = createPolicyCache(fetchPolicy, 60_000, vi.fn(), 0);
+    const result = await cache.getPolicy();
+    expect(result).not.toBeNull();
+  });
+
+  // -----------------------------------------------------------------------
   // invalidate
   // -----------------------------------------------------------------------
 

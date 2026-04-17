@@ -74,17 +74,62 @@ export async function updateBudgetSpend(
           );
         }
       } else {
-        // C10: Dedup hit — check for cost mismatch (corruption signal)
+        // C10 / P1-7: Dedup hit — check for cost mismatch (corruption signal).
+        //
+        // Prior behavior logged + emitted a metric and did nothing else, so
+        // the first-write-wins outcome was permanent. A streaming request
+        // that's cancelled mid-flight writes an estimate cost via one path
+        // and then the actual cost via another — both reach this branch
+        // with the same requestId, and the SECOND (more accurate) cost was
+        // silently dropped.
+        //
+        // P1-7 fix: if the incoming cost is HIGHER than stored, correct
+        // upward — update the dedup record to the new value and apply the
+        // delta to the budgets row. "Higher wins" prevents erroneous low
+        // re-writes from erasing real spend, while still catching the
+        // common case (estimate written first, actual arrives later). The
+        // metric is always emitted so observability stays intact.
         const existing = await tx`
           SELECT cost_microdollars FROM reconciled_requests
           WHERE request_id = ${requestId} AND entity_type = ${entity.entityType} AND entity_id = ${entity.entityId}
         `;
         if (existing[0] && Number(existing[0].cost_microdollars) !== actualCostMicrodollars) {
+          const storedCost = Number(existing[0].cost_microdollars);
+          const delta = actualCostMicrodollars - storedCost;
           console.error("[budget-spend] DEDUP COST MISMATCH", {
             requestId, entityType: entity.entityType,
-            stored: existing[0].cost_microdollars, attempted: actualCostMicrodollars,
+            stored: storedCost, attempted: actualCostMicrodollars, delta,
           });
-          emitMetric("reconcile_dedup_cost_mismatch", { requestId });
+          emitMetric("reconcile_dedup_cost_mismatch", {
+            requestId,
+            orgId,
+            entityType: entity.entityType,
+            entityId: entity.entityId,
+            stored: storedCost,
+            attempted: actualCostMicrodollars,
+            delta,
+            corrected: delta > 0,
+          });
+
+          // Only correct upward — never shrink stored spend based on a
+          // late-arriving smaller cost.
+          if (delta > 0) {
+            await tx`
+              UPDATE reconciled_requests
+              SET cost_microdollars = ${actualCostMicrodollars}
+              WHERE request_id = ${requestId}
+                AND entity_type = ${entity.entityType}
+                AND entity_id = ${entity.entityId}
+            `;
+            await tx`
+              UPDATE budgets
+              SET spend_microdollars = spend_microdollars + ${delta},
+                  updated_at = NOW()
+              WHERE entity_type = ${entity.entityType}
+                AND entity_id = ${entity.entityId}
+                AND org_id = ${orgId}
+            `;
+          }
         }
       }
     }

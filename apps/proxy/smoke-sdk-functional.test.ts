@@ -83,6 +83,28 @@ function makeAgentId(testName: string): string {
   return `${AGENT_PREFIX}-${testName}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+// Fast synchronous prerequisite check. Skips the whole file if the user
+// has not configured NULLSPEND_DASHBOARD_URL (which means they probably
+// don't intend to run this specific test during a full smoke-suite run).
+// If they DID set it but it's not reachable, beforeAll still fails fast
+// with a clear error — this file is explicitly manual-runs-only and
+// "dashboard unreachable when the user said it should be there" is a
+// real problem worth surfacing loudly.
+//
+// Updated 2026-04-16 per smoke-test-triage-20260416.md: was throwing
+// for missing env in beforeAll, which in a full-suite run surfaces as
+// a file-level bail and was miscategorized as a bug.
+const dashboardUrlConfigured =
+  !!(process.env.NULLSPEND_DASHBOARD_URL ?? "").trim();
+const describeWithPrereqs = dashboardUrlConfigured ? describe : describe.skip;
+if (!dashboardUrlConfigured) {
+  console.log(
+    "[smoke-sdk-functional] Skipping entire file — NULLSPEND_DASHBOARD_URL " +
+      "not set. Start `pnpm dev` locally or set to a deployed dashboard URL " +
+      "and re-run. See smoke-sdk-functional.test.ts header for details.",
+  );
+}
+
 /**
  * Strip the `ns_act_` prefix from a SDK-returned action ID and return the
  * raw UUID for direct SQL queries against `actions.id` (uuid column).
@@ -290,7 +312,7 @@ afterAll(async () => {
 // a fixture fetch — the SDK config field under test (`fetch`) is
 // itself the observation point.
 // ─────────────────────────────────────────────────────────────────
-describe("Section 3 — Config behavior (fetch injection)", () => {
+describeWithPrereqs("Section 3 — Config behavior (fetch injection)", () => {
   it("F7 — custom fetch is called for outgoing requests", async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const spy: typeof fetch = async (url, init) => {
@@ -475,7 +497,7 @@ describe("Section 3 — Config behavior (fetch injection)", () => {
 // endpoint is session-cookie-only). Each test schedules SQL approve
 // AFTER createAction resolves to avoid the race in Risk 1.
 // ─────────────────────────────────────────────────────────────────
-describe("Section 1 — HITL action lifecycle (live dashboard)", () => {
+describeWithPrereqs("Section 1 — HITL action lifecycle (live dashboard)", () => {
   it("F1 — createAction → SQL approve → getAction → markResult lifecycle", async () => {
     const agentId = makeAgentId("f1");
 
@@ -745,7 +767,7 @@ describe("Section 1 — HITL action lifecycle (live dashboard)", () => {
 // F6 works around an SDK type/server schema mismatch — server expects
 // cursor as JSON-stringified object.
 // ─────────────────────────────────────────────────────────────────
-describe("Section 2 — Read APIs (live dashboard)", () => {
+describeWithPrereqs("Section 2 — Read APIs (live dashboard)", () => {
   it("F5 — getCostSummary returns the expected shape for all 3 periods", async () => {
     for (const period of ["7d", "30d", "90d"] as const) {
       const summary = await liveClient.getCostSummary(period);
@@ -882,7 +904,7 @@ describe("Section 2 — Read APIs (live dashboard)", () => {
 // F2-B and F3-B already validate behavior; F11 is a focused
 // publish-time guard against built-vs-source drift.
 // ─────────────────────────────────────────────────────────────────
-describe("Section 4 — HITL error class fields", () => {
+describeWithPrereqs("Section 4 — HITL error class fields", () => {
   it("F11 — TimeoutError + RejectedError instanceof, name, and field validation", () => {
     const timeoutErr = new TimeoutError("act_test_x", 1_500);
     expect(timeoutErr).toBeInstanceOf(TimeoutError);
@@ -918,7 +940,7 @@ describe("Section 4 — HITL error class fields", () => {
 //   - PROXY_URL (deployed proxy, e.g. https://nullspend.cjones6489.workers.dev)
 //   - OPENAI_API_KEY (real spend, ~$0.005 per run)
 // ─────────────────────────────────────────────────────────────────
-describe("Section 5 — Customer attribution end-to-end", () => {
+describeWithPrereqs("Section 5 — Customer attribution end-to-end", () => {
   it("F12 — customer() → proxy → cost_events.customer_id → listCostEvents round-trip", async () => {
     if (!OPENAI_API_KEY) {
       throw new Error("F12 requires OPENAI_API_KEY in .env.smoke");
@@ -1024,7 +1046,7 @@ async function pollForCostEventByCustomerId(
 // proximity headers; clients monitor remaining without separate
 // API calls.
 // ─────────────────────────────────────────────────────────────────
-describe("Section 6 — Budget remaining response headers", () => {
+describeWithPrereqs("Section 6 — Budget remaining response headers", () => {
   const userId = NULLSPEND_SMOKE_USER_ID!;
 
   async function setupUserBudget(maxMicrodollars: number, spendMicrodollars: number) {
@@ -1172,7 +1194,7 @@ describe("Section 6 — Budget remaining response headers", () => {
 // Postgres query, no caching). That means each F15 run uses its own
 // unique customer ID and cannot collide with previous runs.
 // ─────────────────────────────────────────────────────────────────
-describe("Section 8 — customer_budget_exceeded + per-customer upgrade URL", () => {
+describeWithPrereqs("Section 8 — customer_budget_exceeded + per-customer upgrade URL", () => {
   async function setCustomerUpgradeUrl(customerId: string, url: string | null): Promise<void> {
     await sql`
       INSERT INTO customer_settings (org_id, customer_id, upgrade_url, updated_at)

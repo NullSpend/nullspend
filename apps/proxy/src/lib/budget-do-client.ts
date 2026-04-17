@@ -24,10 +24,11 @@ export async function doBudgetCheck(
   tagEntityIds: string[],
   orgId: string | null = null,
   finalize: boolean = false,
+  loopContext: { provider: string; model: string; contentHash: string } | null = null,
 ): Promise<CheckResult> {
   const startMs = Date.now();
   const stub = env.USER_BUDGET.get(env.USER_BUDGET.idFromName(ownerId));
-  const result = await stub.checkAndReserve(keyId, estimateMicrodollars, 30_000, sessionId, tagEntityIds, orgId, finalize);
+  const result = await stub.checkAndReserve(keyId, estimateMicrodollars, 30_000, sessionId, tagEntityIds, orgId, finalize, loopContext);
   emitMetric("do_budget_check", {
     status: result.status,
     hasBudgets: result.hasBudgets,
@@ -36,6 +37,7 @@ export async function doBudgetCheck(
     velocityRecovered: (result.velocityRecovered?.length ?? 0) > 0,
     sessionLimitDenied: result.sessionLimitDenied ?? false,
     tagBudgetDenied: result.status === "denied" && (result.deniedEntity?.startsWith("tag:") ?? false),
+    loopDetected: result.loopDetected ?? false,
   });
   return result;
 }
@@ -194,6 +196,7 @@ export async function doBudgetUpsertEntities(
       e.policy, e.resetInterval, e.periodStart,
       e.velocityLimit, e.velocityWindow, e.velocityCooldown,
       e.thresholdPercentages, e.sessionLimit, e.finalizationReserve,
+      e.loopMaxCalls ?? null, e.loopWindowSeconds ?? null, e.loopAggregateMaxKeys ?? null,
     );
   }
 

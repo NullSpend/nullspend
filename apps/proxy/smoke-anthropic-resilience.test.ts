@@ -5,17 +5,21 @@
  *
  * Requires: live proxy, ANTHROPIC_API_KEY, NULLSPEND_API_KEY
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import {
   BASE,
   ANTHROPIC_API_KEY,
   NULLSPEND_API_KEY,
   anthropicAuthHeaders,
+  anthropicRateLimitPace,
   smallAnthropicRequest,
   isServerUp,
 } from "./smoke-test-helpers.js";
 
 describe("Anthropic resilience", () => {
+  // Pace requests to stay under tier-1 Anthropic RPM during full-suite runs.
+  beforeEach(anthropicRateLimitPace);
+
   beforeAll(async () => {
     const up = await isServerUp();
     if (!up) throw new Error("Proxy not reachable.");
@@ -177,6 +181,7 @@ describe("Anthropic resilience", () => {
     expect(body.type).toBe("message");
   }, 30_000);
 
+  // tier-check-allow: concurrent-name — 3 parallel requests, isolation-correctness test at low concurrency. Re-audit in followup (DX-2 grandfather list).
   it("concurrent valid and invalid Anthropic requests are isolated", async () => {
     const requests = [
       fetch(`${BASE}/v1/messages`, {

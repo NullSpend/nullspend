@@ -1014,6 +1014,54 @@ describe("Worker entry point routing", () => {
       const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
       expect(res.status).not.toBe(413);
     });
+
+    it("rejects oversized body when Content-Length is understated (regression: P0-3)", async () => {
+      // REGRESSION GUARD: prior to P0-3 the proxy only enforced the 1MB limit
+      // via the Content-Length header pre-check. A client could send a small
+      // (or absent) Content-Length and push the full Workers runtime limit
+      // (~100MB) through, violating the 1MB contract in apps/proxy/CLAUDE.md
+      // and .claude/rules/security.md. Post-read enforcement closes the gap.
+      //
+      // Build a body > 1MB but send a tiny Content-Length. If the pre-check
+      // were the only defense, this would slip through.
+      const largeBody = JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: "x".repeat(1_200_000) }],
+      });
+      const req = new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer sk-test",
+          "Content-Type": "application/json",
+          "Content-Length": "100", // LIE: actual body is >1MB
+        },
+        body: largeBody,
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(413);
+      const body = await res.json();
+      expect(body.error.code).toBe("payload_too_large");
+    });
+
+    it("rejects oversized body when Content-Length is absent (regression: P0-3)", async () => {
+      // Same as above but the client omits Content-Length entirely.
+      const largeBody = JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: "x".repeat(1_200_000) }],
+      });
+      const req = new Request("http://localhost/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer sk-test",
+          "Content-Type": "application/json",
+        },
+        body: largeBody,
+      });
+
+      const res = await entrypoint.fetch(req, makeEnv(), makeCtx());
+      expect(res.status).toBe(413);
+    });
   });
 
   describe("rate limiting", () => {

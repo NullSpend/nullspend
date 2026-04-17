@@ -19,6 +19,7 @@ export type WebhookEventType =
   | "session.limit_exceeded"
   | "tag_budget.exceeded"
   | "customer_budget.exceeded"
+  | "loop.detected"
   | "test.ping";
 
 export interface WebhookEvent {
@@ -410,6 +411,39 @@ export function buildCustomerBudgetExceededPayload(
         estimated_request_cost_microdollars: data.estimatedRequestCostMicrodollars,
         model: data.model,
         provider: data.provider,
+        blocked_at: new Date().toISOString(),
+      },
+    },
+  };
+}
+
+interface LoopDetectedData {
+  detectionType: "per_key" | "aggregate";
+  model: string;
+  provider: string;
+  callCount: number;
+  windowSeconds: number;
+  maxCalls: number;
+}
+
+export function buildLoopDetectedPayload(
+  data: LoopDetectedData,
+  apiVersion: string = CURRENT_API_VERSION,
+): WebhookEvent {
+  return {
+    id: `evt_${crypto.randomUUID()}`,
+    type: "loop.detected",
+    api_version: apiVersion,
+    created_at: Math.floor(Date.now() / 1000),
+    data: {
+      object: {
+        detection_type: data.detectionType,
+        model: data.model,
+        provider: data.provider,
+        call_count: data.callCount,
+        window_seconds: data.windowSeconds,
+        max_calls: data.maxCalls,
+        // contentHash intentionally omitted — prompt fingerprint leakage risk
         blocked_at: new Date().toISOString(),
       },
     },

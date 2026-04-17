@@ -45,7 +45,27 @@ The server requires two environment variables:
 
 ### 3. Connect to an MCP client
 
-#### Claude Desktop
+#### Generate the snippet automatically
+
+The fastest path:
+
+```bash
+# Print a config snippet pre-filled with the absolute path to the binary
+nullspend-mcp setup --api-key ns_live_sk_your-api-key-here
+
+# Or merge it into your Claude Desktop config in one shot (refuses to
+# overwrite an existing 'nullspend' entry — print-only fallback if so)
+nullspend-mcp setup --write --api-key ns_live_sk_your-api-key-here
+```
+
+Flags: `--api-key`, `--url` (default `https://nullspend.dev`), `--agent-id`, `--print` (default), `--write`. Run `nullspend-mcp setup --help` for full usage.
+
+`--write` resolves the platform-specific Claude Desktop config path:
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%/Claude/claude_desktop_config.json`
+- Linux: `~/.config/Claude/claude_desktop_config.json`
+
+#### Claude Desktop (manual)
 
 Add to your Claude Desktop config (`claude_desktop_config.json`):
 

@@ -86,18 +86,60 @@ async function parseRequestBody(
     };
   }
 
-  let bodyText: string;
+  // P0-3 (codex follow-up): stream the body and enforce MAX_BODY_SIZE on
+  // the running total. The prior Wave 2 implementation used
+  // `await request.text()` which buffers the FULL body before our check
+  // could fire — so a client lying about or omitting Content-Length could
+  // still force the Worker to allocate up to the runtime limit (~100MB)
+  // before we returned 413. That closed the accounting contract but left
+  // the DoS window open. Streaming + early-cancel closes both.
+  if (!request.body) {
+    return {
+      error: errorResponse("bad_request", "Missing request body", 400),
+    };
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
   try {
-    bodyText = await request.text();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_BODY_SIZE) {
+        // Cancel the upstream reader so the Worker doesn't continue
+        // buffering bytes from a malicious or buggy client. Fire-and-forget
+        // — failures here are irrelevant because we're returning 413 anyway.
+        reader.cancel("body exceeds MAX_BODY_SIZE").catch(() => {});
+        emitMetric("body_size_post_read_exceeded", {
+          bodyByteLength: totalBytes, // lower bound: at least this many bytes
+          declaredContentLength: contentLength ?? "absent",
+        });
+        return {
+          error: errorResponse("payload_too_large", `Body exceeds ${MAX_BODY_SIZE} bytes`, 413),
+        };
+      }
+      chunks.push(value);
+    }
   } catch {
     return {
       error: errorResponse("bad_request", "Could not read request body", 400),
     };
   }
 
-  // Content-Length pre-check above catches well-behaved clients.
-  // Workers runtime enforces its own body size limits on request.text().
-  // No need for a redundant TextEncoder().encode() copy just to check byte length.
+  // Combine accumulated chunks and decode UTF-8 on the full buffer
+  // (decoding chunk-by-chunk could split multi-byte sequences at
+  // boundaries — a single decode call at the end is safe).
+  const combined = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const bodyText = new TextDecoder("utf-8").decode(combined);
+  const bodyByteLength = totalBytes;
 
   try {
     const parsed = JSON.parse(bodyText);
@@ -106,7 +148,7 @@ async function parseRequestBody(
         error: errorResponse("bad_request", "Request body must be a JSON object", 400),
       };
     }
-    return { body: parsed, bodyText, bodyByteLength: new TextEncoder().encode(bodyText).byteLength };
+    return { body: parsed, bodyText, bodyByteLength };
   } catch {
     return {
       error: errorResponse("bad_request", "Invalid JSON body", 400),

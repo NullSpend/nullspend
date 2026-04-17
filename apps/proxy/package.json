@@ -11,23 +11,28 @@
     "typecheck": "pnpm generate-types && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:smoke": "vitest run --config vitest.smoke.config.ts",
+    "test:smoke": "tsx scripts/smoke-gate.ts",
     "test:do": "vitest run --config vitest.do.config.mts",
     "test:stress": "vitest run --config vitest.stress.config.ts",
     "stress:cleanup": "tsx scripts/cleanup-stress-sdk.ts",
-    "jsonb:repair": "tsx scripts/repair-jsonb-tags.ts"
+    "jsonb:repair": "tsx scripts/repair-jsonb-tags.ts",
+    "smoke:record": "cross-env RECORD=1 tsx scripts/record-cassettes.ts",
+    "cassette:age-check": "tsx scripts/check-cassette-age.ts",
+    "tier:check": "tsx scripts/check-test-tier-taxonomy.ts"
   },
   "dependencies": {
     "@nullspend/cost-engine": "workspace:*",
     "@nullspend/db": "workspace:*",
-    "postgres": "^3.4.7"
+    "postgres": "^3.4.9"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.13.5",
     "@nullspend/sdk": "workspace:*",
-    "@types/node": "^25.3.5",
-    "typescript": "^5.9.3",
-    "@cloudflare/vitest-pool-workers": "^0.13.2",
-    "vitest": "^4.1.0",
-    "wrangler": "^4.71.0"
+    "@types/node": "^25.6.0",
+    "cross-env": "^10.1.0",
+    "msw": "^2.13.4",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4",
+    "wrangler": "^4.83.0"
   }
 }

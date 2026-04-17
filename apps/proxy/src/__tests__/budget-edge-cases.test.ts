@@ -211,6 +211,7 @@ describe("Budget Edge Cases", () => {
       [],
       "org-test",
       false,
+      expect.anything(),
     );
   });
 
@@ -257,6 +258,7 @@ describe("Budget Edge Cases", () => {
       [],
       "org-test",
       false,
+      expect.anything(),
     );
   });
 

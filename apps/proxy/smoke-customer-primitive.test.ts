@@ -11,7 +11,7 @@
  *
  * Run: cd apps/proxy && npx vitest run --config vitest.smoke.config.ts smoke-customer-primitive.test.ts
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import postgres from "postgres";
 import {
   BASE,
@@ -20,6 +20,7 @@ import {
   DATABASE_URL,
   OPENAI_API_KEY,
   authHeaders,
+  openaiRateLimitPace,
   smallRequest,
   waitForCostEvent,
   invalidateBudget,
@@ -44,6 +45,9 @@ function parseTags(raw: unknown): Record<string, string> {
 }
 
 describe("customer primitive — end-to-end", () => {
+  // Pace requests to stay under OpenAI RPM during full-suite runs.
+  beforeEach(openaiRateLimitPace);
+
   beforeAll(async () => {
     if (!NULLSPEND_API_KEY) throw new Error("NULLSPEND_API_KEY required");
     if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY required");

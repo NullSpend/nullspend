@@ -5,7 +5,7 @@
  *
  * Requires: live proxy, ANTHROPIC_API_KEY, NULLSPEND_API_KEY, DATABASE_URL
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import postgres from "postgres";
 import {
   BASE,
@@ -13,12 +13,16 @@ import {
   NULLSPEND_SMOKE_USER_ID,
   DATABASE_URL,
   anthropicAuthHeaders,
+  anthropicRateLimitPace,
   isServerUp,
   waitForCostEvent,
 } from "./smoke-test-helpers.js";
 
 describe("Anthropic security", () => {
   let sql: postgres.Sql;
+
+  // Pace requests to stay under tier-1 Anthropic RPM during full-suite runs.
+  beforeEach(anthropicRateLimitPace);
 
   beforeAll(async () => {
     const up = await isServerUp();

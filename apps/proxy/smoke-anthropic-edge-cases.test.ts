@@ -5,16 +5,20 @@
  *
  * Requires: live proxy, ANTHROPIC_API_KEY, NULLSPEND_API_KEY
  */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import {
   BASE,
   ANTHROPIC_API_KEY,
   anthropicAuthHeaders,
+  anthropicRateLimitPace,
   smallAnthropicRequest,
   isServerUp,
 } from "./smoke-test-helpers.js";
 
 describe("Anthropic edge cases", () => {
+  // Pace requests to stay under tier-1 Anthropic RPM during full-suite runs.
+  beforeEach(anthropicRateLimitPace);
+
   beforeAll(async () => {
     const up = await isServerUp();
     if (!up) throw new Error("Proxy not reachable.");
@@ -184,88 +188,7 @@ describe("Anthropic edge cases", () => {
     expect(health.ok).toBe(true);
   }, 30_000);
 
-  it("handles 5 concurrent streaming requests without errors", async () => {
-    const requests = Array.from({ length: 5 }, (_, i) =>
-      fetch(`${BASE}/v1/messages`, {
-        method: "POST",
-        headers: anthropicAuthHeaders(),
-        body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
-          max_tokens: 10,
-          messages: [{ role: "user", content: `Concurrent stream ${i}` }],
-          stream: true,
-        }),
-      }),
-    );
-
-    const responses = await Promise.all(requests);
-    for (const res of responses) {
-      expect(res.status).toBe(200);
-      const text = await res.text();
-      expect(text).toContain("event: message_stop");
-    }
-  }, 60_000);
-
-  it("handles 5 concurrent non-streaming requests without errors", async () => {
-    const requests = Array.from({ length: 5 }, (_, i) =>
-      fetch(`${BASE}/v1/messages`, {
-        method: "POST",
-        headers: anthropicAuthHeaders(),
-        body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
-          max_tokens: 5,
-          messages: [{ role: "user", content: `Concurrent ns ${i}` }],
-        }),
-      }),
-    );
-
-    const responses = await Promise.all(requests);
-    for (const res of responses) {
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.type).toBe("message");
-    }
-  }, 60_000);
-
-  it("handles mixed streaming and non-streaming requests concurrently", async () => {
-    const requests = [
-      fetch(`${BASE}/v1/messages`, {
-        method: "POST",
-        headers: anthropicAuthHeaders(),
-        body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
-          max_tokens: 10,
-          messages: [{ role: "user", content: "Mixed streaming" }],
-          stream: true,
-        }),
-      }),
-      fetch(`${BASE}/v1/messages`, {
-        method: "POST",
-        headers: anthropicAuthHeaders(),
-        body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
-          max_tokens: 5,
-          messages: [{ role: "user", content: "Mixed non-streaming" }],
-        }),
-      }),
-      fetch(`${BASE}/v1/messages`, {
-        method: "POST",
-        headers: anthropicAuthHeaders(),
-        body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
-          max_tokens: 10,
-          messages: [{ role: "user", content: "Mixed streaming 2" }],
-          stream: true,
-        }),
-      }),
-    ];
-
-    const responses = await Promise.all(requests);
-    for (const res of responses) {
-      expect(res.status).toBe(200);
-      await res.text();
-    }
-  }, 60_000);
+  // [MOVED 2026-04-16] 3 concurrent streaming/non-streaming/mixed tests relocated to stress-feature-concurrency.test.ts — see docs/internal/test-tier-taxonomy.md
 
   it("x-request-id is unique across two sequential requests", async () => {
     const res1 = await fetch(`${BASE}/v1/messages`, {

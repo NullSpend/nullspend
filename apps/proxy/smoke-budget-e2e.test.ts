@@ -212,6 +212,7 @@ describe("End-to-end budget enforcement", () => {
     expect(body.error.details).toBeDefined();
   }, 30_000);
 
+  // tier-check-allow: concurrent-name — 5 parallel requests, budget-race test. This test IS stress-class by threshold (5+) but is load-bearing in the budget-e2e flow. Re-audit in followup (DX-2 grandfather list) — likely split/move to stress-budget-races.
   it("concurrent requests against tight budget don't overspend", async () => {
     // Set budget to ~15 microdollars — enough for ~2 gpt-4o-mini requests (~6µ¢ each)
     await setupBudget(15);

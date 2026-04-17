@@ -29,12 +29,14 @@ from nullspend._sse_parser import SSEAccumulator
 from nullspend.errors import (
     NullSpendError,
     BudgetExceededError,
+    LoopDetectedError,
     MandateViolationError,
     SessionLimitExceededError,
     VelocityExceededError,
     TagBudgetExceededError,
 )
-from nullspend.types import CostEventInput
+from nullspend.types import CostEventInput, LoopDetectionConfig
+from nullspend._loop_detector import LoopDetector
 
 logger = logging.getLogger("nullspend")
 
@@ -171,11 +173,30 @@ def _parse_denial_payload(response: httpx.Response) -> dict[str, Any] | None:
         except (ValueError, TypeError):
             pass
 
+    # Parse recovery object if present (added in proxy recovery-field feature).
+    raw_recovery = error.get("recovery")
+    recovery = None
+    if isinstance(raw_recovery, dict):
+        import math as _math
+        ra_val = raw_recovery.get("retry_after_seconds")
+        recovery = {
+            "retryable": raw_recovery.get("retryable") is True,
+            "owner_action_required": raw_recovery.get("owner_action_required") is True,
+            "retry_after_seconds": (
+                ra_val
+                if isinstance(ra_val, (int, float))
+                and _math.isfinite(ra_val) and ra_val >= 0
+                else None
+            ),
+            "docs": raw_recovery.get("docs") if isinstance(raw_recovery.get("docs"), str) and raw_recovery.get("docs") else None,
+        }
+
     return {
         "code": code,
         "details": details,
         "retry_after_seconds": retry_after,
         "upgrade_url": upgrade_url,
+        "recovery": recovery,
     }
 
 
@@ -189,6 +210,7 @@ def _dispatch_denial(
     details = parsed.get("details") or {}
     upgrade_url = parsed.get("upgrade_url")
     retry_after = parsed.get("retry_after_seconds")
+    recovery = parsed.get("recovery")
 
     if code == "budget_exceeded":
         remaining = _to_finite_number(details.get("remaining_microdollars")) or 0
@@ -213,6 +235,7 @@ def _dispatch_denial(
             upgrade_url=upgrade_url,
             finalization_reserve_microdollars=fin_reserve,
             finalization_remaining_microdollars=fin_remaining,
+            recovery=recovery,
         )
 
     elif code == "customer_budget_exceeded":
@@ -238,6 +261,7 @@ def _dispatch_denial(
             upgrade_url=upgrade_url,
             finalization_reserve_microdollars=fin_reserve,
             finalization_remaining_microdollars=fin_remaining,
+            recovery=recovery,
         )
 
     elif code == "velocity_exceeded":
@@ -253,6 +277,7 @@ def _dispatch_denial(
             limit_microdollars=_to_finite_number(details.get("limitMicrodollars")),
             window_seconds=_to_finite_number(details.get("windowSeconds")),
             current_microdollars=_to_finite_number(details.get("currentMicrodollars")),
+            recovery=recovery,
         )
 
     elif code == "session_limit_exceeded":
@@ -266,6 +291,7 @@ def _dispatch_denial(
         raise SessionLimitExceededError(
             session_spend_microdollars=spend,
             session_limit_microdollars=limit,
+            recovery=recovery,
         )
 
     elif code == "tag_budget_exceeded":
@@ -284,6 +310,25 @@ def _dispatch_denial(
             remaining_microdollars=remaining,
             limit_microdollars=_to_finite_number(details.get("budget_limit_microdollars")),
             spend_microdollars=_to_finite_number(details.get("budget_spend_microdollars")),
+            recovery=recovery,
+        )
+
+    elif code == "loop_detected":
+        _safe_denied(on_denied, {
+            "type": "loop",
+            "detection_type": details.get("type", "per_key"),
+            "model": details.get("model"),
+            "call_count": details.get("callCount", 0),
+            "window_seconds": details.get("windowSeconds", 60),
+            "max_calls": details.get("maxCalls", 50),
+        }, on_cost_error)
+        raise LoopDetectedError(
+            model=details.get("model", "unknown"),
+            call_count=details.get("callCount", 0),
+            window_seconds=details.get("windowSeconds", 60),
+            max_calls=details.get("maxCalls", 50),
+            detection_type=details.get("type", "per_key"),
+            recovery=recovery,
         )
 
     else:
@@ -319,6 +364,11 @@ def _safe_denied(
 # ---- Cost estimation ----
 
 
+# $1 fallback for unknown models — matches proxy's UNKNOWN_MODEL_FALLBACK_MICRODOLLARS.
+# Returning 0 would fail-open on SDK-side budget enforcement, allowing unlimited spend.
+_UNKNOWN_MODEL_FALLBACK_MICRODOLLARS = 1_000_000
+
+
 def _estimate_cost_microdollars(
     provider: str,
     model: str | None,
@@ -326,10 +376,10 @@ def _estimate_cost_microdollars(
 ) -> int:
     """Estimate the cost of a request for budget pre-check."""
     if not model:
-        return 0
+        return _UNKNOWN_MODEL_FALLBACK_MICRODOLLARS
     pricing = get_model_pricing(provider, model)
     if not pricing:
-        return 0
+        return _UNKNOWN_MODEL_FALLBACK_MICRODOLLARS
 
     max_tokens = _DEFAULT_MAX_TOKENS
     if body:
@@ -442,6 +492,7 @@ class TrackedTransport(httpx.BaseTransport):
         queue_cost: Callable[[CostEventInput], None] | None = None,
         on_cost_error: Callable[[Exception], None] | None = None,
         on_denied: Callable[[dict[str, Any]], None] | None = None,
+        loop_detection: LoopDetectionConfig | bool | None = None,
     ):
         self._transport = transport
         self._provider = provider
@@ -462,6 +513,21 @@ class TrackedTransport(httpx.BaseTransport):
         self._on_denied = on_denied
         self._session_spend = 0
         self._first_error_logged = False
+        # BIL-1: warn once per (proxyUrl, request origin) when proxyUrl is set
+        # but the request falls through to direct path. Surfaces port/host
+        # misconfiguration at deploy time.
+        self._warned_fallthrough_origins: set[str] = set()
+
+        # Loop detection (opt-in)
+        self._loop_detector: LoopDetector | None = None
+        if loop_detection is True:
+            self._loop_detector = LoopDetector()
+        elif isinstance(loop_detection, LoopDetectionConfig):
+            self._loop_detector = LoopDetector(
+                max_calls=loop_detection.max_calls,
+                window_seconds=loop_detection.window_seconds,
+                aggregate_max_keys=loop_detection.aggregate_max_keys,
+            )
 
     def _default_cost_error(self, err: Exception) -> None:
         if not self._first_error_logged:
@@ -479,6 +545,17 @@ class TrackedTransport(httpx.BaseTransport):
         body = request.content
 
         # Phase 1: Header injection
+        # Proxy auth headers — only when routing through the NullSpend proxy.
+        # In direct mode these would leak the API key to the LLM provider.
+        # Use URL-based proxy detection (not header-based, since we haven't
+        # injected headers yet). The x-nullspend-key header we inject here
+        # IS the header that _is_proxied checks as fallback, so we gate on
+        # URL match only via proxy_url presence + origin comparison.
+        if self._proxy_url and _is_proxied(url, self._proxy_url, None):
+            if self._api_key:
+                request.headers["x-nullspend-key"] = self._api_key
+            if self._api_version:
+                request.headers["nullspend-version"] = self._api_version
         if self._customer:
             request.headers["x-nullspend-customer"] = self._customer
         if self._tags:
@@ -495,6 +572,28 @@ class TrackedTransport(httpx.BaseTransport):
             return self._transport.handle_request(request)
 
         model = _extract_model_from_body(body)
+
+        # Phase 1.5: Loop detection (before ANY upstream call)
+        if self._loop_detector:
+            call_key = f"{self._provider}:{model or 'unknown'}"
+            body_hash = LoopDetector.content_hash(body)
+            loop_result = self._loop_detector.check(call_key, body_hash)
+            if loop_result.is_warning:
+                logger.warning(
+                    "nullspend: approaching loop threshold for %s "
+                    "(%d/%d calls in %ds window)",
+                    model, loop_result.call_count, self._loop_detector._max_calls,
+                    int(self._loop_detector._window),
+                )
+            if loop_result.is_loop:
+                raise LoopDetectedError(
+                    model=model or "unknown",
+                    call_count=loop_result.call_count,
+                    window_seconds=int(self._loop_detector._window),
+                    max_calls=self._loop_detector._max_calls,
+                    detection_type=loop_result.detection_type,
+                )
+
         # Use post-injection headers for proxy detection (header fallback needs
         # to see injected x-nullspend-key if present)
         is_proxied = _is_proxied(url, self._proxy_url, dict(request.headers))
@@ -508,6 +607,25 @@ class TrackedTransport(httpx.BaseTransport):
                 if parsed:
                     _dispatch_denial(parsed, self._on_denied, self._on_cost_error)
             return response
+
+        # BIL-1: proxyUrl configured but request fell through. Warn once per
+        # origin so misconfiguration surfaces at deploy time.
+        if self._proxy_url:
+            try:
+                from urllib.parse import urlparse
+                parsed_req = urlparse(url)
+                req_origin = f"{parsed_req.scheme}://{parsed_req.netloc}"
+                if req_origin and req_origin not in self._warned_fallthrough_origins:
+                    self._warned_fallthrough_origins.add(req_origin)
+                    logger.warning(
+                        "nullspend: proxy_url is configured (%s) but request to %s "
+                        "did not match — taking direct path. If this request also "
+                        "reaches the proxy, cost events may be double-counted. "
+                        "Verify proxy_url includes the correct port/host.",
+                        self._proxy_url, req_origin,
+                    )
+            except Exception:
+                pass  # URL parse failed — non-blocking
 
         # Phase 3: Client-side enforcement (direct mode)
         if self._enforcement and self._policy_cache:
@@ -568,7 +686,21 @@ class TrackedTransport(httpx.BaseTransport):
             except (MandateViolationError, BudgetExceededError, SessionLimitExceededError):
                 raise
             except Exception as err:
-                # Policy fetch failed — fail-open, but still enforce manual session limit
+                # Policy fetch failed — fail-open on mandates/budgets, but still
+                # enforce the explicit session limit from the constructor (parity
+                # with TS SDK, which does the same fallback at tracked-fetch.ts:252).
+                if self._session_id and self._session_limit is not None:
+                    estimate = _estimate_cost_microdollars(self._provider, model, body)
+                    if (self._session_spend + estimate) > self._session_limit:
+                        _safe_denied(self._on_denied, {
+                            "type": "session_limit",
+                            "session_spend": self._session_spend,
+                            "session_limit": self._session_limit,
+                        }, self._on_cost_error)
+                        raise SessionLimitExceededError(
+                            session_spend_microdollars=self._session_spend,
+                            session_limit_microdollars=self._session_limit,
+                        )
                 try:
                     self._on_cost_error(err)
                 except Exception:
@@ -724,6 +856,7 @@ def create_tracked_client(
     queue_cost: Callable[[CostEventInput], None] | None = None,
     on_cost_error: Callable[[Exception], None] | None = None,
     on_denied: Callable[[dict[str, Any]], None] | None = None,
+    loop_detection: LoopDetectionConfig | bool | None = None,
     timeout: float = 30.0,
 ) -> httpx.Client:
     """Create an httpx.Client with NullSpend cost tracking transport.
@@ -753,5 +886,6 @@ def create_tracked_client(
         queue_cost=queue_cost,
         on_cost_error=on_cost_error,
         on_denied=on_denied,
+        loop_detection=loop_detection,
     )
     return httpx.Client(transport=tracked, timeout=timeout)

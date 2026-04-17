@@ -1331,4 +1331,51 @@ describe("handleChatCompletions", () => {
     expect(res.headers.get("X-NullSpend-Session")).toBeNull();
     await res.text();
   });
+
+  it("does NOT store body when requestLoggingEnabled: false (tier-gate closed)", async () => {
+    // Regression guard for Phase B (2026-04-16): body capture is tier-gated
+    // via ctx.requestLoggingEnabled, which flows from the api_keys auth
+    // lookup's COALESCE((SELECT tier IN ('pro','enterprise') ...), false)
+    // expression. If the requesting org has no active pro/enterprise
+    // subscription, body-storage must silently no-op — this test asserts
+    // that. Mirror test for Anthropic lives in anthropic-route.test.ts.
+    mockStoreRequestBody.mockClear();
+    mockStoreStreamingResponseBody.mockClear();
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl-no-log",
+          model: "gpt-4o-mini",
+          usage: { prompt_tokens: 10, completion_tokens: 5 },
+          choices: [{ message: { role: "assistant", content: "hi" } }],
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-request-id": "req-no-log",
+          },
+        },
+      ),
+    );
+
+    const body = {
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: "hi" }],
+    };
+    const mockBucket = { put: vi.fn().mockResolvedValue(undefined), get: vi.fn().mockResolvedValue(null) };
+    const res = await handleChatCompletions(
+      makeRequest(body),
+      makeEnv({ BODY_STORAGE: mockBucket }),
+      makeCtx(body, { requestLoggingEnabled: false }),
+    );
+
+    expect(res.status).toBe(200);
+    await res.text();
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(mockStoreRequestBody).not.toHaveBeenCalled();
+    expect(mockStoreStreamingResponseBody).not.toHaveBeenCalled();
+    expect(mockBucket.put).not.toHaveBeenCalled();
+  });
 });

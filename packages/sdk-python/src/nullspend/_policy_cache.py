@@ -8,6 +8,7 @@ Sync version uses threading.Lock for dedup.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import threading
 import time
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from typing import Any, Callable
 
 
 DEFAULT_TTL_S = 60.0
+DEFAULT_FETCH_TIMEOUT_S = 5.0
 
 
 @dataclass
@@ -94,10 +96,12 @@ class PolicyCache:
         fetch_fn: Callable[[], dict[str, Any]],
         ttl_s: float = DEFAULT_TTL_S,
         on_error: Callable[[Exception], None] | None = None,
+        fetch_timeout_s: float = DEFAULT_FETCH_TIMEOUT_S,
     ):
         self._fetch_fn = fetch_fn
         self._ttl_s = ttl_s
         self._on_error = on_error
+        self._fetch_timeout_s = fetch_timeout_s
 
         self._cached: PolicyResponse | None = None
         self._cached_at: float = 0.0
@@ -117,7 +121,20 @@ class PolicyCache:
             self._fetching = True
 
         try:
-            data = self._fetch_fn()
+            # Bound fetch wall-time so an unresponsive policy endpoint can't
+            # block enforcement-path callers indefinitely. fetch_timeout_s<=0
+            # disables the bound. (PERF-2)
+            if self._fetch_timeout_s and self._fetch_timeout_s > 0:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(self._fetch_fn)
+                    try:
+                        data = future.result(timeout=self._fetch_timeout_s)
+                    except concurrent.futures.TimeoutError as err:
+                        raise TimeoutError(
+                            f"policy fetch timed out after {self._fetch_timeout_s}s"
+                        ) from err
+            else:
+                data = self._fetch_fn()
             policy = _parse_policy_response(data)
             with self._lock:
                 self._cached = policy

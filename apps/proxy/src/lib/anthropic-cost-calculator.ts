@@ -66,15 +66,43 @@ export function calculateAnthropicCost(
 
   let cacheWriteCost: number;
 
-  if (cacheCreationDetail?.ephemeral_5m_input_tokens !== undefined) {
-    const tokens5m =
-      Math.max(0, Number(cacheCreationDetail.ephemeral_5m_input_tokens) || 0);
-    const tokens1h =
-      Math.max(0, Number(cacheCreationDetail.ephemeral_1h_input_tokens) || 0);
+  // P0-7: Take the split-rate branch whenever the detail object exists and
+  // at least ONE TTL field has a positive value. The prior branch was keyed
+  // on `ephemeral_5m_input_tokens !== undefined`, so a 1h-only shape
+  // (`ephemeral_1h_input_tokens` present without 5m) fell through to the
+  // else branch and priced ALL `cacheCreationTokens` at the 5m rate — a
+  // ~60% undercharge since the 1h rate is typically ~1.6x the 5m rate.
+  //
+  // BUT: Anthropic's SSE parser produces a non-null detail object even
+  // when `cache_creation: {}` (both fields absent). If we'd taken the
+  // object branch blindly, both tokens would default to 0 and we'd charge
+  // ZERO for cache creation despite `cache_creation_input_tokens > 0` in
+  // the usage totals. That's a worse underbill than the 1h-only bug.
+  //
+  // Fix: detect the empty-detail case (both fields zero/absent) and fall
+  // back to the bulk `cacheCreationTokens` at the 5m rate — matching the
+  // original no-detail behavior. A genuine 1h-only shape has tokens1h > 0
+  // so it hits the split path correctly.
+  const tokens5m =
+    cacheCreationDetail != null
+      ? Math.max(0, Number(cacheCreationDetail.ephemeral_5m_input_tokens) || 0)
+      : 0;
+  const tokens1h =
+    cacheCreationDetail != null
+      ? Math.max(0, Number(cacheCreationDetail.ephemeral_1h_input_tokens) || 0)
+      : 0;
+  const detailTotal = tokens5m + tokens1h;
+
+  if (detailTotal > 0) {
+    // Split-rate branch: at least one TTL field has real tokens.
     cacheWriteCost =
       costComponent(tokens5m, cacheWrite5mRate) +
       costComponent(tokens1h, cacheWrite1hRate);
   } else {
+    // No per-TTL detail OR empty detail object — fall back to 5m rate
+    // (Anthropic's default TTL when a cache_control block does not
+    // specify `ttl`). This preserves the invariant that positive
+    // `cache_creation_input_tokens` always produces positive cost.
     cacheWriteCost = costComponent(cacheCreationTokens, cacheWrite5mRate);
   }
 

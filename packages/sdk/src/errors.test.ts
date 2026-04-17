@@ -224,3 +224,44 @@ describe("NullSpendError", () => {
     expect(err).toBeInstanceOf(NullSpendError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// docsUrl field (D-1)
+// ---------------------------------------------------------------------------
+
+describe("docsUrl field", () => {
+  it("base error returns the generic docs URL", () => {
+    expect(new NullSpendError("test").docsUrl).toBe("https://nullspend.dev/docs/errors");
+  });
+
+  it("each subclass returns a class-specific default", () => {
+    expect(new TimeoutError("act_1", 1000).docsUrl).toMatch(/timeout/);
+    expect(new RejectedError("act_1", "rejected").docsUrl).toMatch(/rejected/);
+    expect(new BudgetExceededError({ remaining: 0 }).docsUrl).toMatch(/budget-exceeded/);
+    expect(new SessionLimitExceededError(0, 0).docsUrl).toMatch(/session-limit/);
+    expect(new VelocityExceededError().docsUrl).toMatch(/velocity/);
+    expect(new TagBudgetExceededError().docsUrl).toMatch(/tag-budget/);
+  });
+
+  it("prefers proxy-supplied recovery.docs over default", () => {
+    const recovery = {
+      retryable: false,
+      ownerActionRequired: true,
+      retryAfterSeconds: null,
+      docs: "https://example.com/custom-docs",
+    };
+    const err = new BudgetExceededError({ remaining: 0, recovery });
+    expect(err.docsUrl).toBe("https://example.com/custom-docs");
+  });
+
+  it("falls back to default when recovery.docs is null", () => {
+    const recovery = {
+      retryable: false,
+      ownerActionRequired: true,
+      retryAfterSeconds: null,
+      docs: null,
+    };
+    const err = new BudgetExceededError({ remaining: 0, recovery });
+    expect(err.docsUrl).toMatch(/budget-exceeded/);
+  });
+});

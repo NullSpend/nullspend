@@ -125,6 +125,84 @@ describe("calculateAnthropicCost — bug avoidance (AC-1 through AC-7)", () => {
     expect(result.costMicrodollars).toBe(5115);
   });
 
+  it("AC-5c: 1h-only TTL detail charges at 1h rate, not 5m (regression: P0-7)", () => {
+    // REGRESSION GUARD: prior branch keyed on
+    // `ephemeral_5m_input_tokens !== undefined`, so a 1h-only shape
+    // (`ephemeral_1h_input_tokens` present without 5m) fell through to the
+    // no-detail fallback and priced ALL cache-creation tokens at the 5m
+    // rate — ~60% undercharge for pure-1h workloads.
+    //
+    // claude-sonnet-4-6 rates: 5m cache write $3.75/MTok, 1h cache write $6.00/MTok.
+    const result = calculateAnthropicCost(
+      "claude-sonnet-4-6",
+      null,
+      {
+        input_tokens: 10,
+        output_tokens: 200,
+        cache_creation_input_tokens: 556,
+        cache_read_input_tokens: 0,
+      },
+      { ephemeral_1h_input_tokens: 556 } as any, // 5m field intentionally absent
+      "req-ac5c",
+      100,
+    );
+
+    // 10*3.00 + 556*6.00 + 0*0.30 + 200*15.00
+    // = 30 + 3336 + 0 + 3000 = 6366
+    // Under the OLD code this would have been 5115 (5m rate applied to 556 tokens) — undercharge.
+    expect(result.costMicrodollars).toBe(6366);
+  });
+
+  it("AC-5e: empty cache_creation object falls back to 5m bulk rate (codex regression)", async () => {
+    // REGRESSION GUARD: Anthropic's SSE parser creates a non-null detail
+    // object even when `cache_creation: {}` arrives with both TTL fields
+    // absent. The P0-7 "cacheCreationDetail != null" branch would have
+    // priced all cache-creation tokens at 0 (both fields default to 0 in
+    // Number() coercion). Codex caught this as [P1]. Fix: detect
+    // empty-detail (tokens5m + tokens1h === 0) and fall back to the bulk
+    // 5m rate. Positive `cache_creation_input_tokens` must always produce
+    // positive cost.
+    const result = calculateAnthropicCost(
+      "claude-sonnet-4-6",
+      null,
+      {
+        input_tokens: 10,
+        output_tokens: 200,
+        cache_creation_input_tokens: 556,
+        cache_read_input_tokens: 0,
+      },
+      {} as any, // empty detail object — no TTL fields
+      "req-ac5e",
+      100,
+    );
+
+    // Same math as AC-5b (no-detail fallback): 5115
+    // 10*3.00 + 556*3.75 + 200*15.00 = 30 + 2085 + 3000 = 5115
+    expect(result.costMicrodollars).toBe(5115);
+  });
+
+  it("AC-5d: 5m-only TTL detail keeps charging at 5m (prevents over-correction)", () => {
+    // Sanity: if only 5m field is populated (1h absent), result matches
+    // the AC-5b fallback. P0-7 fix should not shift 5m-only traffic onto
+    // a different code path accidentally.
+    const result = calculateAnthropicCost(
+      "claude-sonnet-4-6",
+      null,
+      {
+        input_tokens: 10,
+        output_tokens: 200,
+        cache_creation_input_tokens: 556,
+        cache_read_input_tokens: 0,
+      },
+      { ephemeral_5m_input_tokens: 556 } as any,
+      "req-ac5d",
+      100,
+    );
+
+    // Same math as AC-5b: 5115
+    expect(result.costMicrodollars).toBe(5115);
+  });
+
   it("AC-6a: long context (>200K) applies 2x input, 1.5x output", () => {
     const result = calculateAnthropicCost(
       "claude-sonnet-4-6",

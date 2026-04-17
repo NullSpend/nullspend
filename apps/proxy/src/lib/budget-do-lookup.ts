@@ -28,6 +28,9 @@ export interface DOBudgetEntity {
   thresholdPercentages: number[];
   sessionLimit: number | null;
   finalizationReserve: number;
+  loopMaxCalls: number | null;
+  loopWindowSeconds: number | null;
+  loopAggregateMaxKeys: number | null;
 }
 
 interface BudgetDbRow {
@@ -44,6 +47,9 @@ interface BudgetDbRow {
   threshold_percentages: number[] | null;
   session_limit_microdollars: number | null;
   finalization_reserve_microdollars: number | null;
+  loop_max_calls: number | null;
+  loop_window_seconds: number | null;
+  loop_aggregate_max_keys: number | null;
 }
 
 function mapRow(row: BudgetDbRow, entityType: string, entityId: string): DOBudgetEntity {
@@ -61,6 +67,9 @@ function mapRow(row: BudgetDbRow, entityType: string, entityId: string): DOBudge
     thresholdPercentages: row.threshold_percentages ?? [50, 80, 90, 95],
     sessionLimit: row.session_limit_microdollars != null ? Number(row.session_limit_microdollars) : null,
     finalizationReserve: Number(row.finalization_reserve_microdollars ?? 0),
+    loopMaxCalls: row.loop_max_calls ?? null,
+    loopWindowSeconds: row.loop_window_seconds ?? null,
+    loopAggregateMaxKeys: row.loop_aggregate_max_keys ?? null,
   };
 }
 
@@ -97,7 +106,8 @@ export async function lookupBudgetsForDO(
         SELECT entity_type, entity_id, max_budget_microdollars, spend_microdollars,
                policy, reset_interval, current_period_start,
                velocity_limit_microdollars, velocity_window_seconds, velocity_cooldown_seconds,
-               threshold_percentages, session_limit_microdollars, finalization_reserve_microdollars
+               threshold_percentages, session_limit_microdollars, finalization_reserve_microdollars,
+               loop_max_calls, loop_window_seconds, loop_aggregate_max_keys
         FROM budgets
         WHERE org_id = ${orgId} AND entity_type = ${entity.type} AND entity_id = ${entity.id}
       `;
@@ -120,7 +130,8 @@ export async function lookupBudgetsForDO(
           SELECT entity_type, entity_id, max_budget_microdollars, spend_microdollars,
                  policy, reset_interval, current_period_start,
                  velocity_limit_microdollars, velocity_window_seconds, velocity_cooldown_seconds,
-                 threshold_percentages, session_limit_microdollars, finalization_reserve_microdollars
+                 threshold_percentages, session_limit_microdollars, finalization_reserve_microdollars,
+                 loop_max_calls, loop_window_seconds, loop_aggregate_max_keys
           FROM budgets
           WHERE org_id = ${orgId}
             AND entity_type = 'tag'
@@ -140,7 +151,8 @@ export async function lookupBudgetsForDO(
         SELECT entity_type, entity_id, max_budget_microdollars, spend_microdollars,
                policy, reset_interval, current_period_start,
                velocity_limit_microdollars, velocity_window_seconds, velocity_cooldown_seconds,
-               threshold_percentages, session_limit_microdollars, finalization_reserve_microdollars
+               threshold_percentages, session_limit_microdollars, finalization_reserve_microdollars,
+               loop_max_calls, loop_window_seconds, loop_aggregate_max_keys
         FROM budgets
         WHERE org_id = ${orgId}
           AND entity_type = 'customer'

@@ -57,6 +57,47 @@ export function smallAnthropicRequest(
   });
 }
 
+/**
+ * Per-test pacing delay for Anthropic smoke files.
+ *
+ * The full smoke suite fires ~100+ Anthropic API calls across 9
+ * `smoke-anthropic-*.test.ts` files in 5-10 min. That volume exceeds
+ * the smoke-test Anthropic account's tier-1 per-minute limit for
+ * claude-3-haiku-20240307, and Anthropic returns 403 (not 429) during
+ * throttled windows. The proxy transparently forwards the 403 to the
+ * test client (see `provider-handler.ts:212` non-ok branch), making it
+ * look like a proxy mandate denial from the outside.
+ *
+ * Use this helper in each anthropic smoke file's `beforeEach` to cap at
+ * ~50 RPM within a file. Adjust the delay if a future account upgrade
+ * bumps the RPM ceiling, or remove entirely if the smoke account moves
+ * to a higher tier.
+ *
+ * See `docs/internal/smoke-test-triage-20260416.md` and
+ * `feedback_smoke_suite_hits_anthropic_rate_limit.md` for the root-cause
+ * write-up.
+ */
+export async function anthropicRateLimitPace(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 1200));
+}
+
+/**
+ * Per-test pacing delay for OpenAI smoke files.
+ *
+ * Same class of issue as `anthropicRateLimitPace` but for OpenAI.
+ * Full-suite smoke runs fire enough OpenAI requests across cost-e2e,
+ * customer-primitive, known-issues, and other OpenAI-hitting files to
+ * trip OpenAI's per-minute rate limit (tier-1: 500 RPM for gpt-4o-mini).
+ * OpenAI returns 429 during throttled windows; the proxy forwards it.
+ *
+ * 500ms between tests caps at ~120 RPM per file — well under tier-1.
+ * Less aggressive than the Anthropic delay (1200ms) because OpenAI's
+ * RPM ceiling is higher.
+ */
+export async function openaiRateLimitPace(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 500));
+}
+
 export async function isServerUp(): Promise<boolean> {
   try {
     const res = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(2000) });
@@ -66,10 +107,21 @@ export async function isServerUp(): Promise<boolean> {
   }
 }
 
+/**
+ * Cost event queue end-to-end landing latency is 5-15s by design:
+ * proxy `waitUntil` → Cloudflare Queue (batched, ~7s nominal, observed up
+ * to 13.7s idle-window variability) → batch INSERT via Hyperdrive (~150ms).
+ * 30s gives 2× headroom over observed p99 (13.85s) so smoke tests don't
+ * flake on expected queue variability. If dwell time regresses beyond
+ * this budget, the `cost_event_queue_dwell_ms` metric in
+ * `cost-event-queue-handler.ts` will surface it first.
+ */
+export const COST_EVENT_LANDING_TIMEOUT_MS = 30_000;
+
 export async function waitForCostEvent(
   sql: postgres.Sql,
   requestId: string,
-  timeoutMs = 15_000,
+  timeoutMs = COST_EVENT_LANDING_TIMEOUT_MS,
   provider = "openai",
 ): Promise<Record<string, unknown> | null> {
   const start = Date.now();
@@ -86,6 +138,37 @@ export async function waitForCostEvent(
 }
 
 /**
+ * Poll `/v1/policy` until `budget.spend_microdollars` exceeds `beforeSpend`,
+ * or timeout. Used by smoke-mandates to verify reconciliation propagated
+ * after an allowed request. Same latency class as `waitForCostEvent` but
+ * reads the DO SQLite state (updated via RECONCILE_QUEUE) rather than the
+ * cost_events Postgres table (updated via COST_EVENT_QUEUE).
+ */
+export async function waitForPolicyBudgetSpend(
+  base: string,
+  apiKey: string,
+  beforeSpend: number,
+  timeoutMs = COST_EVENT_LANDING_TIMEOUT_MS,
+): Promise<number | null> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const res = await fetch(`${base}/v1/policy`, {
+      method: "GET",
+      headers: { "x-nullspend-key": apiKey },
+    });
+    if (res.ok) {
+      const body = (await res.json()) as { budget?: { spend_microdollars?: number } | null };
+      const current = body.budget?.spend_microdollars ?? null;
+      if (typeof current === "number" && current > beforeSpend) return current;
+    } else {
+      await res.text();
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return null;
+}
+
+/**
  * Poll Postgres until budget spend is > 0, or timeout.
  * Used to wait for async reconciliation (waitUntil + queue consumer)
  * to write spend back to Postgres after a proxied request completes.
@@ -94,7 +177,7 @@ export async function waitForBudgetSpend(
   sql: postgres.Sql,
   entityType: string,
   entityId: string,
-  timeoutMs = 15_000,
+  timeoutMs = COST_EVENT_LANDING_TIMEOUT_MS,
 ): Promise<number> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {

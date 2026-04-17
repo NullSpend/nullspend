@@ -20,6 +20,7 @@ from nullspend import (
     SessionLimitExceededError,
     VelocityExceededError,
     TagBudgetExceededError,
+    LoopDetectedError,
     CostEventInput,
     CostReportingConfig,
     CustomerSession,
@@ -242,6 +243,57 @@ class TestPolicyCache:
         pc.get_policy()
         assert pc.get_session_limit() is None
 
+    # ---- Fetch timeout (PERF-2) ----
+
+    def test_fetch_timeout_falls_open_to_none(self):
+        import time as _time
+        errors: list[Exception] = []
+
+        def slow_fetch() -> dict[str, Any]:
+            _time.sleep(2.0)
+            return {"budget": None}
+
+        pc = PolicyCache(
+            fetch_fn=slow_fetch,
+            ttl_s=60.0,
+            on_error=lambda e: errors.append(e),
+            fetch_timeout_s=0.1,
+        )
+        result = pc.get_policy()
+        assert result is None
+        assert len(errors) == 1
+        assert isinstance(errors[0], TimeoutError)
+
+    def test_fetch_timeout_preserves_stale_cache(self):
+        import time as _time
+        calls = {"n": 0}
+
+        def fetch() -> dict[str, Any]:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"budget": None, "restrictions_active": False}
+            _time.sleep(2.0)
+            return {"budget": None, "restrictions_active": True}
+
+        pc = PolicyCache(
+            fetch_fn=fetch,
+            ttl_s=0.05,
+            fetch_timeout_s=0.1,
+        )
+        first = pc.get_policy()
+        assert first is not None
+        _time.sleep(0.1)  # age past TTL
+        stale = pc.get_policy()  # second fetch hangs → falls open to first
+        assert stale is first
+
+    def test_fetch_timeout_disabled_when_zero(self):
+        pc = PolicyCache(
+            fetch_fn=lambda: {"budget": None},
+            ttl_s=60.0,
+            fetch_timeout_s=0,
+        )
+        assert pc.get_policy() is not None
+
 
 # ---- Proxy Detection ----
 
@@ -372,10 +424,13 @@ class TestCostEstimation:
         assert est > 0
 
     def test_unknown_model(self):
-        assert _estimate_cost_microdollars("openai", "unknown", None) == 0
+        # P1 fix: unknown models return $1 fallback (not 0) to prevent
+        # fail-open budget bypass on new/unpriced models.
+        assert _estimate_cost_microdollars("openai", "unknown", None) == 1_000_000
 
     def test_no_model(self):
-        assert _estimate_cost_microdollars("openai", None, None) == 0
+        # P1 fix: no model returns $1 fallback (not 0)
+        assert _estimate_cost_microdollars("openai", None, None) == 1_000_000
 
     def test_default_max_tokens(self):
         est = _estimate_cost_microdollars("openai", "gpt-4o", b'{}')
@@ -1175,3 +1230,227 @@ class TestFinalizationReserveDenialParsing:
         assert len(reasons) == 1
         assert reasons[0]["finalizationReserve"] == 2_000
         assert reasons[0]["finalizationRemaining"] == 8_000
+
+
+# ---- Recovery Field ----
+
+
+class TestRecoveryFieldParsing:
+    """Tests for recovery field parsing in _parse_denial_payload."""
+
+    def test_parses_recovery_from_denial_body(self):
+        response = httpx.Response(
+            429,
+            headers={"x-nullspend-denied": "1"},
+            json={"error": {
+                "code": "budget_exceeded",
+                "message": "Budget exceeded",
+                "details": {"budget_limit_microdollars": 5_000_000},
+                "recovery": {
+                    "retryable": False,
+                    "owner_action_required": True,
+                    "retry_after_seconds": None,
+                    "docs": None,
+                },
+            }},
+        )
+        parsed = _parse_denial_payload(response)
+        assert parsed is not None
+        assert parsed["recovery"] is not None
+        assert parsed["recovery"]["retryable"] is False
+        assert parsed["recovery"]["owner_action_required"] is True
+        assert parsed["recovery"]["retry_after_seconds"] is None
+        assert parsed["recovery"]["docs"] is None
+
+    def test_recovery_none_when_absent(self):
+        """Old proxy without recovery field — backward compat."""
+        response = httpx.Response(
+            429,
+            headers={"x-nullspend-denied": "1"},
+            json={"error": {
+                "code": "budget_exceeded",
+                "message": "Budget exceeded",
+                "details": {},
+            }},
+        )
+        parsed = _parse_denial_payload(response)
+        assert parsed is not None
+        assert parsed["recovery"] is None
+
+    def test_recovery_none_when_malformed(self):
+        """recovery is a string instead of dict — treated as absent."""
+        response = httpx.Response(
+            429,
+            headers={"x-nullspend-denied": "1"},
+            json={"error": {
+                "code": "budget_exceeded",
+                "message": "Budget exceeded",
+                "details": {},
+                "recovery": "not a dict",
+            }},
+        )
+        parsed = _parse_denial_payload(response)
+        assert parsed is not None
+        assert parsed["recovery"] is None
+
+    def test_recovery_with_retry_after_seconds(self):
+        response = httpx.Response(
+            429,
+            headers={"x-nullspend-denied": "1", "retry-after": "45"},
+            json={"error": {
+                "code": "velocity_exceeded",
+                "message": "Rate limit exceeded",
+                "details": {},
+                "recovery": {
+                    "retryable": True,
+                    "owner_action_required": False,
+                    "retry_after_seconds": 45,
+                    "docs": None,
+                },
+            }},
+        )
+        parsed = _parse_denial_payload(response)
+        assert parsed is not None
+        assert parsed["recovery"]["retryable"] is True
+        assert parsed["recovery"]["retry_after_seconds"] == 45
+
+    def test_recovery_docs_preserves_string(self):
+        response = httpx.Response(
+            429,
+            headers={"x-nullspend-denied": "1"},
+            json={"error": {
+                "code": "budget_exceeded",
+                "message": "Budget exceeded",
+                "details": {},
+                "recovery": {
+                    "retryable": False,
+                    "owner_action_required": True,
+                    "retry_after_seconds": None,
+                    "docs": "https://docs.nullspend.dev/errors/budget-exceeded",
+                },
+            }},
+        )
+        parsed = _parse_denial_payload(response)
+        assert parsed["recovery"]["docs"] == "https://docs.nullspend.dev/errors/budget-exceeded"
+
+    def test_recovery_docs_empty_string_becomes_none(self):
+        """Empty docs string treated as None — prevents agents fetching empty URL."""
+        response = httpx.Response(
+            429,
+            headers={"x-nullspend-denied": "1"},
+            json={"error": {
+                "code": "budget_exceeded",
+                "message": "Budget exceeded",
+                "details": {},
+                "recovery": {
+                    "retryable": False,
+                    "owner_action_required": True,
+                    "retry_after_seconds": None,
+                    "docs": "",
+                },
+            }},
+        )
+        parsed = _parse_denial_payload(response)
+        assert parsed["recovery"]["docs"] is None
+
+    def test_recovery_negative_retry_after_becomes_none(self):
+        response = httpx.Response(
+            429,
+            headers={"x-nullspend-denied": "1"},
+            json={"error": {
+                "code": "velocity_exceeded",
+                "message": "Rate limit exceeded",
+                "details": {},
+                "recovery": {
+                    "retryable": True,
+                    "owner_action_required": False,
+                    "retry_after_seconds": -5,
+                    "docs": None,
+                },
+            }},
+        )
+        parsed = _parse_denial_payload(response)
+        assert parsed["recovery"]["retry_after_seconds"] is None
+
+
+class TestRecoveryFieldOnErrors:
+    """Tests that recovery is passed through to error classes."""
+
+    def test_budget_exceeded_has_recovery(self):
+        recovery = {"retryable": False, "owner_action_required": True,
+                     "retry_after_seconds": None, "docs": None}
+        with pytest.raises(BudgetExceededError) as exc_info:
+            _dispatch_denial({
+                "code": "budget_exceeded",
+                "details": {"remaining_microdollars": 0},
+                "upgrade_url": None,
+                "retry_after_seconds": None,
+                "recovery": recovery,
+            }, None, None)
+        assert exc_info.value.recovery == recovery
+
+    def test_velocity_exceeded_has_recovery(self):
+        recovery = {"retryable": True, "owner_action_required": False,
+                     "retry_after_seconds": 45, "docs": None}
+        with pytest.raises(VelocityExceededError) as exc_info:
+            _dispatch_denial({
+                "code": "velocity_exceeded",
+                "details": {"limitMicrodollars": 10_000_000},
+                "upgrade_url": None,
+                "retry_after_seconds": 45,
+                "recovery": recovery,
+            }, None, None)
+        assert exc_info.value.recovery == recovery
+
+    def test_session_limit_has_recovery(self):
+        recovery = {"retryable": False, "owner_action_required": False,
+                     "retry_after_seconds": None, "docs": None}
+        with pytest.raises(SessionLimitExceededError) as exc_info:
+            _dispatch_denial({
+                "code": "session_limit_exceeded",
+                "details": {"session_spend_microdollars": 1000,
+                            "session_limit_microdollars": 1000},
+                "upgrade_url": None,
+                "retry_after_seconds": None,
+                "recovery": recovery,
+            }, None, None)
+        assert exc_info.value.recovery == recovery
+
+    def test_tag_budget_has_recovery(self):
+        recovery = {"retryable": False, "owner_action_required": True,
+                     "retry_after_seconds": None, "docs": None}
+        with pytest.raises(TagBudgetExceededError) as exc_info:
+            _dispatch_denial({
+                "code": "tag_budget_exceeded",
+                "details": {"tag_key": "env", "tag_value": "prod"},
+                "upgrade_url": None,
+                "retry_after_seconds": None,
+                "recovery": recovery,
+            }, None, None)
+        assert exc_info.value.recovery == recovery
+
+    def test_loop_detected_has_recovery(self):
+        recovery = {"retryable": True, "owner_action_required": False,
+                     "retry_after_seconds": 5, "docs": None}
+        with pytest.raises(LoopDetectedError) as exc_info:
+            _dispatch_denial({
+                "code": "loop_detected",
+                "details": {"type": "per_key", "model": "gpt-4o",
+                            "callCount": 50, "windowSeconds": 60, "maxCalls": 50},
+                "upgrade_url": None,
+                "retry_after_seconds": None,
+                "recovery": recovery,
+            }, None, None)
+        assert exc_info.value.recovery == recovery
+
+    def test_recovery_none_when_proxy_omits(self):
+        """Old proxy response without recovery — error.recovery is None."""
+        with pytest.raises(BudgetExceededError) as exc_info:
+            _dispatch_denial({
+                "code": "budget_exceeded",
+                "details": {"remaining_microdollars": 0},
+                "upgrade_url": None,
+                "retry_after_seconds": None,
+                "recovery": None,
+            }, None, None)
+        assert exc_info.value.recovery is None

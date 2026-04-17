@@ -30,6 +30,10 @@ function makeBudgetRow(overrides: Record<string, unknown> = {}) {
     velocity_cooldown_seconds: null,
     threshold_percentages: null,
     session_limit_microdollars: null,
+    finalization_reserve_microdollars: null,
+    loop_max_calls: null,
+    loop_window_seconds: null,
+    loop_aggregate_max_keys: null,
     ...overrides,
   };
 }
@@ -62,6 +66,9 @@ describe("lookupBudgetsForDO", () => {
       thresholdPercentages: [50, 80, 90, 95],
       sessionLimit: null,
       finalizationReserve: 0,
+      loopMaxCalls: null,
+      loopWindowSeconds: null,
+      loopAggregateMaxKeys: null,
     });
   });
 

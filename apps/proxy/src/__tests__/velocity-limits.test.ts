@@ -433,11 +433,17 @@ describe("OpenAI route — velocity denial", () => {
 
     expect(body.error).toEqual({
       code: "velocity_exceeded",
-      message: "Request blocked: spending rate exceeds velocity limit. Retry after cooldown.",
+      message: "Rate limit exceeded: $12.50 spent in 300s window (limit: $10.00). Retry after 45s.",
       details: {
         limitMicrodollars: 10_000_000,
         windowSeconds: 300,
         currentMicrodollars: 12_500_000,
+      },
+      recovery: {
+        retryable: true,
+        owner_action_required: false,
+        retry_after_seconds: 45,
+        docs: null,
       },
     });
   });

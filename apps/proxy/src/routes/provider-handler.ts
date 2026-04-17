@@ -110,20 +110,38 @@ export async function handleProviderRequest(
     return resp;
   }
 
+  // --- Loop detection context ---
+  // Compute content hash from the raw body text for loop detection.
+  // SHA-256 of first 8KB, truncated to 8 hex chars.
+  let loopContext: { provider: string; model: string; contentHash: string } | null = null;
+  if (ctx.bodyText) {
+    const bodySlice = ctx.bodyText.slice(0, 8192);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(bodySlice));
+    const hashArray = new Uint8Array(hashBuffer);
+    const contentHash = Array.from(hashArray.slice(0, 4), (b) => b.toString(16).padStart(2, "0")).join("");
+    loopContext = { provider, model: safeModel, contentHash };
+  }
+
   // --- Budget enforcement (CX-5: check BEFORE upstream fetch) ---
 
   let reservationId: string | null = null;
   let budgetEntities: BudgetEntity[] = [];
   let budgetStatus: "skipped" | "approved" | "denied" = "skipped";
+  let loopWarningHeader: string | null = null;
 
   try {
     const budgetStartMs = performance.now();
-    const outcome = await checkBudget(env, ctx, estimate, ctx.finalize);
+    const outcome = await checkBudget(env, ctx, estimate, ctx.finalize, loopContext);
     if (ctx.stepTiming) ctx.stepTiming.budgetCheckMs = Math.round(performance.now() - budgetStartMs);
 
     budgetStatus = outcome.status;
     reservationId = outcome.reservationId;
     budgetEntities = outcome.budgetEntities;
+
+    // Loop detection warning header (approaching threshold)
+    if (outcome.loopCount != null && outcome.loopMaxCalls != null) {
+      loopWarningHeader = `${outcome.loopCount}/${outcome.loopMaxCalls}`;
+    }
 
     if (ctx.finalize) {
       emitMetric("finalization_request", { provider, entityType: outcome.deniedEntityType ?? "unknown", approved: outcome.status !== "denied" });
@@ -165,11 +183,16 @@ export async function handleProviderRequest(
     // and budget reservation is reconciled (Finding 2 from Codex review)
     const requestBody = adapter.getRequestBody(ctx, isStreaming);
 
+    // P1-6: Propagate client abort to upstream. Without `request.signal`,
+    // a client that disconnects mid-stream leaves the proxy paying the
+    // upstream provider for the full generation even though nothing reads
+    // the response. Combining signals means either timeout OR client
+    // abort cancels the upstream fetch.
     const upstreamResponse = await fetch(upstreamUrl, {
       method: "POST",
       headers: upstreamHeaders,
       body: requestBody,
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), request.signal]),
     });
     const upstreamDurationMs = Math.round(performance.now() - startTime);
 
@@ -222,6 +245,7 @@ export async function handleProviderRequest(
     clientHeaders.set("X-NullSpend-Trace-Id", ctx.traceId);
     clientHeaders.set("x-request-id", requestId);
     if (ctx.sessionId) clientHeaders.set("X-NullSpend-Session", ctx.sessionId);
+    if (loopWarningHeader) clientHeaders.set("X-NullSpend-Loop-Count", loopWarningHeader);
 
     for (const [k, v] of Object.entries(buildBudgetHeaders(budgetEntities, estimate))) {
       clientHeaders.set(k, v);
@@ -291,16 +315,87 @@ function handleStreaming(
     return noBodyResp;
   }
 
-  // Insert body accumulator between upstream and SSE parser when logging is enabled
+  // Insert body accumulator between upstream and SSE parser when logging is enabled.
+  // P1-5 fix (2026-04-16): wrap upstreamBody in an explicit reader so we catch
+  // upstream errors mid-stream. Per WHATWG spec, writable-abort SHOULD fire
+  // transformer.cancel() — but workerd behavior on that path is not empirically
+  // verified, and codex review confirmed the hang is real. The wrapper's
+  // start() drains upstream via .getReader(), so any abort / network error
+  // surfaces as a rejected promise we can resolve against resultPromise.
+  let resolveUpstreamError: (err: Error) => void;
+  const upstreamErrorPromise = new Promise<Error>((resolve) => {
+    resolveUpstreamError = resolve;
+  });
+  const trackedUpstream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const reader = upstreamBody.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            controller.close();
+            break;
+          }
+          controller.enqueue(value);
+        }
+      } catch (err) {
+        // Upstream errored mid-stream. Signal the error before propagating
+        // downstream so the resultPromise race below can fire cleanly.
+        resolveUpstreamError(err instanceof Error ? err : new Error(String(err)));
+        try {
+          controller.error(err);
+        } catch {
+          // already closed
+        }
+      }
+    },
+    cancel(reason) {
+      void upstreamBody.cancel(reason).catch(() => {
+        // best-effort
+      });
+    },
+  });
+
   const accumulator = bodyBucket ? createStreamBodyAccumulator() : null;
   const parserInput = accumulator
-    ? upstreamBody.pipeThrough(accumulator.transform)
-    : upstreamBody;
+    ? trackedUpstream.pipeThrough(accumulator.transform)
+    : trackedUpstream;
 
   const { readable, resultPromise } = adapter.createSSEParser(parserInput);
 
+  // P1-5 escape hatch: race resultPromise against upstreamErrorPromise so
+  // waitUntil() always receives a settled value. Without this race, a
+  // mid-stream upstream error could cause the SSE parser's flush/cancel
+  // hooks to never fire (workerd writable-abort semantics are not
+  // empirically verified), leaving the reservation hung until the DO alarm
+  // reclaim cycle. That's the bug codex confirmed as real in the Wave 2
+  // audit. The synthetic result routes through the existing
+  // `!result.hasUsage` branch below, which reconciles cost via the
+  // estimate and tags the cost event with `_ns_cancelled: "true"`.
+  const effectiveResult: Promise<StreamResult> = Promise.race([
+    resultPromise,
+    upstreamErrorPromise.then((err) => {
+      console.error(
+        `[${provider}-route] Upstream stream errored mid-flight:`,
+        { requestId, error: err.message },
+      );
+      emitMetric("stream_upstream_error", {
+        model: requestModel,
+        provider,
+      });
+      return {
+        usage: null,
+        model: null,
+        finishReason: null,
+        toolCalls: null,
+        cancelled: true,
+        firstChunkMs: null,
+      } satisfies StreamResult;
+    }),
+  ]);
+
   waitUntil(
-    resultPromise.then(async (result: StreamResult) => {
+    effectiveResult.then(async (result: StreamResult) => {
       try {
         const durationMs = Math.round(performance.now() - startTime);
 
@@ -427,13 +522,19 @@ function handleStreaming(
         }
       } catch (err) {
         console.error(`[${provider}-route] Failed to process streaming cost event:`, err);
+        // P0 fix: reconcile with the estimate, not 0. The upstream LLM call
+        // already succeeded and the client received the stream. Reconciling
+        // with 0 would silently erase the spend from budget enforcement.
+        // Using `estimate` ensures the reservation is converted to real spend
+        // even when cost logging infrastructure is down.
         if (reservationId) {
           try {
             await reconcileBudgetQueued(
-              getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, 0, budgetEntities, connectionString,
+              getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, estimate, budgetEntities, connectionString,
             );
           } catch { /* already logged inside reconcileBudgetQueued */ }
         }
+        emitMetric("stream_cost_logging_failure", { model: requestModel, estimate, provider });
       }
     }),
   );
@@ -520,12 +621,17 @@ async function handleNonStreaming(
       );
     }
   } catch {
-    console.error(`[${provider}-route] Failed to parse non-streaming response for cost tracking`);
+    // P0 fix: reconcile with estimate, not 0. The upstream returned 200
+    // (non-streaming), so the provider charged us. Using 0 would silently
+    // erase the spend from budget enforcement during cost parsing failures.
+    const fallbackCost = enrichment.estimatedCostMicrodollars ?? 0;
+    console.error(`[${provider}-route] Failed to parse non-streaming response for cost tracking, reconciling with estimate=${fallbackCost}`);
     if (reservationId) {
       waitUntil(
-        reconcileBudgetQueued(getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, 0, budgetEntities, connectionString),
+        reconcileBudgetQueued(getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, fallbackCost, budgetEntities, connectionString),
       );
     }
+    emitMetric("nonstream_cost_parsing_failure", { model: requestModel, estimate: fallbackCost, provider });
   }
 
   const { totalMs, overheadMs } = appendTimingHeaders(clientHeaders, ctx.requestStartMs, enrichment.upstreamDurationMs, ctx.stepTiming);

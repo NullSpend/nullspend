@@ -105,26 +105,7 @@ describe("trace context smoke tests", () => {
       expect(traceId).toMatch(/^[0-9a-f]{32}$/);
     }, 30_000);
 
-    it("generates unique trace-ids for concurrent requests", async () => {
-      const requests = Array.from({ length: 5 }, () =>
-        fetch(`${BASE}/v1/chat/completions`, {
-          method: "POST",
-          headers: authHeaders(),
-          body: smallRequest(),
-        }),
-      );
-      const responses = await Promise.all(requests);
-      const traceIds = responses.map((r) => r.headers.get(TRACE_HEADER));
-
-      for (const id of traceIds) {
-        expect(id).toMatch(/^[0-9a-f]{32}$/);
-      }
-      // All should be unique
-      expect(new Set(traceIds).size).toBe(traceIds.length);
-
-      // Consume bodies to avoid connection leaks
-      await Promise.all(responses.map((r) => r.text()));
-    }, 60_000);
+    // [MOVED 2026-04-16] "generates unique trace-ids for concurrent requests" relocated to stress-feature-concurrency.test.ts — see docs/internal/test-tier-taxonomy.md
   });
 
   describe("error responses include trace-id", () => {

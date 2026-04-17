@@ -57,12 +57,18 @@ export async function handleDlqQueue(
       await reconcileBudget(
         env,
         msg.ownerId,
+        msg.orgId,
         msg.reservationId,
         msg.actualCostMicrodollars,
         budgetEntities,
         connectionString,
       );
     } catch (err) {
+      emitMetric("reconciliation_dlq_handler_error", {
+        reservationId: message.body?.reservationId ?? "unknown",
+        ownerId: message.body?.ownerId ?? "unknown",
+        error: err instanceof Error ? err.message : "Unknown error",
+      });
       console.error("[dlq] Unexpected error processing message:", err);
     } finally {
       message.ack();

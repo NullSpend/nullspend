@@ -127,6 +127,9 @@ export const budgets = pgTable("budgets", {
   velocityLimitMicrodollars: bigint("velocity_limit_microdollars", { mode: "number" }),
   velocityWindowSeconds: integer("velocity_window_seconds").default(60),
   velocityCooldownSeconds: integer("velocity_cooldown_seconds").default(60),
+  loopMaxCalls: integer("loop_max_calls"),
+  loopWindowSeconds: integer("loop_window_seconds"),
+  loopAggregateMaxKeys: integer("loop_aggregate_max_keys"),
   sessionLimitMicrodollars: bigint("session_limit_microdollars", { mode: "number" }),
   finalizationReserveMicrodollars: bigint("finalization_reserve_microdollars", { mode: "number" }).notNull().default(0),
   userId: text("user_id").notNull(),
@@ -212,7 +215,7 @@ export const subscriptions = pgTable("subscriptions", {
 export type SubscriptionRow = typeof subscriptions.$inferSelect;
 export type NewSubscriptionRow = typeof subscriptions.$inferInsert;
 
-export const COST_EVENT_SOURCES = ["proxy", "api", "mcp"] as const;
+export const COST_EVENT_SOURCES = ["proxy", "api", "mcp", "sdk"] as const;
 export type CostEventSource = (typeof COST_EVENT_SOURCES)[number];
 
 export const TOOL_COST_SOURCES = ["discovered", "manual"] as const;

@@ -45,16 +45,30 @@ describe("Resilience tests", () => {
       expect(body).toHaveProperty("error");
     }, 15_000);
 
-    it("invalid model returns 400 from proxy (model validation)", async () => {
+    it("invalid model returns upstream error (forwarded as-is)", async () => {
+      // The proxy does NOT pre-validate model names (no `invalid_model`
+      // error code exists in the proxy source). Requests with unknown
+      // models forward to OpenAI, which returns its own error shape.
+      // OpenAI currently returns 404 with `error.code: "model_not_found"`
+      // for unrecognized models; this test asserts the proxy forwards
+      // the upstream error rather than injecting its own validation.
+      // Updated 2026-04-16 from old assumption (status 400, code
+      // invalid_model) per smoke-test-triage-20260416.md.
       const res = await fetch(`${BASE}/v1/chat/completions`, {
         method: "POST",
         headers: authHeaders(),
         body: smallRequest({ model: "nonexistent-model-resilience" }),
       });
 
-      expect(res.status).toBe(400);
+      // Upstream returns 4xx for invalid model. Current behavior is 404
+      // but we avoid pinning the exact status since OpenAI has changed
+      // it once already (400 → 404). The important invariants:
+      //   - proxy did NOT 5xx (it correctly forwarded the upstream error)
+      //   - body contains an `error` envelope
+      expect(res.status).toBeGreaterThanOrEqual(400);
+      expect(res.status).toBeLessThan(500);
       const body = await res.json();
-      expect(body.error.code).toBe("invalid_model");
+      expect(body).toHaveProperty("error");
     });
 
     it("proxy does NOT return 502 for invalid upstream key", async () => {
@@ -249,6 +263,7 @@ describe("Resilience tests", () => {
       await good.json();
     }, 30_000);
 
+    // tier-check-allow: concurrent-name — 4 parallel requests, isolation-correctness test at low concurrency. Re-audit in followup (DX-2 grandfather list).
     it("concurrent valid and invalid requests are isolated", async () => {
       const requests = [
         fetch(`${BASE}/v1/chat/completions`, {

@@ -15,7 +15,7 @@
  *   - INTERNAL_SECRET (for cache invalidation)
  *   - DATABASE_URL for budget setup in Postgres
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from "vitest";
 import postgres from "postgres";
 import {
   BASE,
@@ -25,6 +25,7 @@ import {
   NULLSPEND_SMOKE_KEY_ID,
   INTERNAL_SECRET,
   anthropicAuthHeaders,
+  anthropicRateLimitPace,
   smallAnthropicRequest,
   isServerUp,
   invalidateBudget,
@@ -34,6 +35,9 @@ import {
 describe("Anthropic end-to-end budget enforcement", () => {
   let sql: postgres.Sql;
   let orgId: string;
+
+  // Pace requests to stay under tier-1 Anthropic RPM during full-suite runs.
+  beforeEach(anthropicRateLimitPace);
 
   beforeAll(async () => {
     const up = await isServerUp();

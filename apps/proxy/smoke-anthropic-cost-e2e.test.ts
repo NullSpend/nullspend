@@ -12,19 +12,23 @@
  * AUDIT NOTE: Anthropic uses usage.input_tokens / usage.output_tokens,
  * NOT usage.prompt_tokens / usage.completion_tokens like OpenAI.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import postgres from "postgres";
 import {
   BASE,
   ANTHROPIC_API_KEY,
   DATABASE_URL,
   anthropicAuthHeaders,
+  anthropicRateLimitPace,
   isServerUp,
   waitForCostEvent,
 } from "./smoke-test-helpers.js";
 
 describe("Anthropic end-to-end cost verification", () => {
   let sql: postgres.Sql;
+
+  // Pace requests to stay under tier-1 Anthropic RPM during full-suite runs.
+  beforeEach(anthropicRateLimitPace);
 
   beforeAll(async () => {
     const up = await isServerUp();

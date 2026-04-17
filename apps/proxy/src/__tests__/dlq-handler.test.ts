@@ -50,6 +50,7 @@ describe("handleDlqQueue", () => {
       actualCostMicrodollars: 50_000,
       budgetEntities: [],
       ownerId: "user-1",
+      orgId: "org-1",
       enqueuedAt: Date.now() - 60_000,
     });
 
@@ -70,6 +71,7 @@ describe("handleDlqQueue", () => {
         { entityKey: "{budget}:api_key:k1", entityType: "api_key", entityId: "k1" },
       ],
       ownerId: "user-abc",
+      orgId: "org-abc",
       enqueuedAt,
     });
 
@@ -94,6 +96,7 @@ describe("handleDlqQueue", () => {
       actualCostMicrodollars: 10_000,
       budgetEntities: [],
       ownerId: "user-log",
+      orgId: "org-log",
       enqueuedAt: Date.now(),
     });
 
@@ -105,7 +108,10 @@ describe("handleDlqQueue", () => {
     );
   });
 
-  it("calls reconcileBudget without throwOnError (6 args)", async () => {
+  it("calls reconcileBudget with 7 args including orgId (regression: P0-1)", async () => {
+    // REGRESSION TEST: prior bug called reconcileBudget with 6 args, dropping
+    // msg.orgId and shifting positional args. Signature is:
+    // (env, ownerId, orgId, reservationId, actualCost, budgetEntities, connectionString)
     const msg = makeMessage({
       type: "reconcile",
       reservationId: "res-retry",
@@ -114,6 +120,7 @@ describe("handleDlqQueue", () => {
         { entityKey: "{budget}:user:u1", entityType: "user", entityId: "u1" },
       ],
       ownerId: "user-retry",
+      orgId: "org-retry",
       enqueuedAt: Date.now(),
     });
 
@@ -123,6 +130,7 @@ describe("handleDlqQueue", () => {
     expect(mockReconcileBudget).toHaveBeenCalledWith(
       env,
       "user-retry",
+      "org-retry",
       "res-retry",
       30_000,
       expect.arrayContaining([
@@ -130,8 +138,30 @@ describe("handleDlqQueue", () => {
       ]),
       env.HYPERDRIVE.connectionString,
     );
-    // Verify only 6 args (no options object)
-    expect(mockReconcileBudget.mock.calls[0]).toHaveLength(6);
+    // Verify exactly 7 args (regression guard for P0-1)
+    expect(mockReconcileBudget.mock.calls[0]).toHaveLength(7);
+    // Verify orgId is in position 3 (not dropped, not shifted)
+    expect(mockReconcileBudget.mock.calls[0][2]).toBe("org-retry");
+  });
+
+  it("passes null orgId through when message has no org", async () => {
+    const msg = makeMessage({
+      type: "reconcile",
+      reservationId: "res-null-org",
+      actualCostMicrodollars: 10_000,
+      budgetEntities: [],
+      ownerId: "user-null-org",
+      orgId: null,
+      enqueuedAt: Date.now(),
+    });
+
+    await handleDlqQueue(makeBatch([msg]), makeEnv());
+
+    // Null orgId flows through to reconcileBudget, which internally gates
+    // on (reservationId && ownerId && orgId) — so reconcile will no-op at
+    // the orchestrator level, but argument positions must still be correct.
+    expect(mockReconcileBudget.mock.calls[0][2]).toBeNull();
+    expect(mockReconcileBudget.mock.calls[0]).toHaveLength(7);
   });
 
   it("acks even when reconcileBudget throws", async () => {
@@ -143,6 +173,7 @@ describe("handleDlqQueue", () => {
       actualCostMicrodollars: 50_000,
       budgetEntities: [],
       ownerId: "user-throw",
+      orgId: "org-throw",
       enqueuedAt: Date.now(),
     });
 
@@ -152,6 +183,34 @@ describe("handleDlqQueue", () => {
     expect(msg.retry).not.toHaveBeenCalled();
   });
 
+  it("emits reconciliation_dlq_handler_error metric when reconcileBudget throws", async () => {
+    // Observability: prior to this fix, DLQ silently no-op'd all reconciliations
+    // because of the arity bug. The metric makes future argument/signature drift
+    // visible instead of hiding behind the catch-and-ack pattern.
+    mockReconcileBudget.mockRejectedValueOnce(new Error("RPC failed: bad args"));
+
+    const msg = makeMessage({
+      type: "reconcile",
+      reservationId: "res-err-metric",
+      actualCostMicrodollars: 10_000,
+      budgetEntities: [],
+      ownerId: "user-err",
+      orgId: "org-err",
+      enqueuedAt: Date.now(),
+    });
+
+    await handleDlqQueue(makeBatch([msg]), makeEnv());
+
+    expect(mockEmitMetric).toHaveBeenCalledWith(
+      "reconciliation_dlq_handler_error",
+      expect.objectContaining({
+        reservationId: "res-err-metric",
+        ownerId: "user-err",
+        error: "RPC failed: bad args",
+      }),
+    );
+  });
+
   it("processes all messages in a multi-message batch", async () => {
     const msg1 = makeMessage({
       type: "reconcile",
@@ -159,6 +218,7 @@ describe("handleDlqQueue", () => {
       actualCostMicrodollars: 10_000,
       budgetEntities: [],
       ownerId: "user-1",
+      orgId: "org-1",
       enqueuedAt: Date.now(),
     });
     const msg2 = makeMessage({
@@ -167,6 +227,7 @@ describe("handleDlqQueue", () => {
       actualCostMicrodollars: 20_000,
       budgetEntities: [],
       ownerId: "user-2",
+      orgId: "org-2",
       enqueuedAt: Date.now(),
     });
 
@@ -184,6 +245,7 @@ describe("handleDlqQueue", () => {
       actualCostMicrodollars: 5_000,
       budgetEntities: [],
       ownerId: null,
+      orgId: "org-x",
       enqueuedAt: Date.now(),
     });
 
@@ -210,6 +272,7 @@ describe("handleDlqQueue", () => {
       actualCostMicrodollars: 10_000,
       budgetEntities: [],
       ownerId: "user-1",
+      orgId: "org-1",
       enqueuedAt: Date.now(),
     });
     const msg2 = makeMessage({
@@ -218,6 +281,7 @@ describe("handleDlqQueue", () => {
       actualCostMicrodollars: 20_000,
       budgetEntities: [],
       ownerId: "user-2",
+      orgId: "org-2",
       enqueuedAt: Date.now(),
     });
 

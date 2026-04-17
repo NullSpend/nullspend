@@ -263,78 +263,7 @@ describe("Cloudflare runtime edge cases", () => {
     }, 30_000);
   });
 
-  // ── Connection management (6 simultaneous connections per request) ──
-
-  describe("Connection management", () => {
-    it("rapid sequential requests reuse connections correctly", async () => {
-      for (let i = 0; i < 5; i++) {
-        const res = await fetch(`${BASE}/v1/chat/completions`, {
-          method: "POST",
-          headers: authHeaders(),
-          body: smallRequest({ stream: false }),
-        });
-        expect(res.status).toBe(200);
-        const body = await res.json();
-        expect(body).toHaveProperty("usage");
-      }
-    }, 120_000);
-
-    it("handles 3 concurrent streaming + 3 concurrent non-streaming requests", async () => {
-      const streamReqs = Array.from({ length: 3 }, (_, _i) =>
-        fetch(`${BASE}/v1/chat/completions`, {
-          method: "POST",
-          headers: authHeaders(),
-          body: smallRequest({ stream: true }),
-        }),
-      );
-
-      const nonStreamReqs = Array.from({ length: 3 }, (_, _i) =>
-        fetch(`${BASE}/v1/chat/completions`, {
-          method: "POST",
-          headers: authHeaders(),
-          body: smallRequest({ stream: false }),
-        }),
-      );
-
-      const results = await Promise.all([...streamReqs, ...nonStreamReqs]);
-
-      for (let i = 0; i < 3; i++) {
-        expect(results[i].status).toBe(200);
-        const text = await results[i].text();
-        expect(text).toContain("[DONE]");
-      }
-
-      for (let i = 3; i < 6; i++) {
-        expect(results[i].status).toBe(200);
-        const body = await results[i].json();
-        expect(body).toHaveProperty("usage");
-      }
-    }, 90_000);
-
-    it("10 rapid-fire auth failures don't exhaust connections", async () => {
-      const reqs = Array.from({ length: 10 }, () =>
-        fetch(`${BASE}/v1/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-nullspend-key": "bad-key",
-            Authorization: `Bearer ${OPENAI_API_KEY}`,
-          },
-          body: smallRequest(),
-        }),
-      );
-
-      const results = await Promise.all(reqs);
-      for (const res of results) {
-        expect(res.status).toBe(401);
-        await res.text();
-      }
-
-      // Verify connections are freed up
-      const healthRes = await fetch(`${BASE}/health`);
-      expect(healthRes.status).toBe(200);
-    }, 15_000);
-  });
+  // [MOVED 2026-04-16] "Connection management" concurrent/rapid-fire tests relocated to stress-feature-concurrency.test.ts — see docs/internal/test-tier-taxonomy.md
 
   // ── Multiple sequential stream aborts ──
 
@@ -690,29 +619,6 @@ describe("Cloudflare runtime edge cases", () => {
       expect(elapsed).toBeLessThan(25_000);
     }, 30_000);
 
-    it("multiple requests in rapid succession all get cost-logged without error", async () => {
-      const requests = Array.from({ length: 3 }, (_, i) =>
-        fetch(`${BASE}/v1/chat/completions`, {
-          method: "POST",
-          headers: authHeaders(),
-          body: smallRequest({
-            stream: i % 2 === 0,
-            messages: [{ role: "user", content: `Count: ${i}` }],
-          }),
-        }),
-      );
-
-      const responses = await Promise.all(requests);
-      for (const res of responses) {
-        expect(res.status).toBe(200);
-        await res.text();
-      }
-
-      // Brief pause for waitUntil to complete
-      await new Promise((r) => setTimeout(r, 1000));
-
-      const healthRes = await fetch(`${BASE}/health`);
-      expect(healthRes.status).toBe(200);
-    }, 60_000);
+    // [MOVED 2026-04-16] "multiple requests in rapid succession all get cost-logged" relocated to stress-feature-concurrency.test.ts — see docs/internal/test-tier-taxonomy.md
   });
 });

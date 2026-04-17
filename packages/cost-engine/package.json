@@ -10,8 +10,18 @@
   },
   "homepage": "https://nullspend.dev",
   "author": "NullSpend <chris@nullspend.dev>",
-  "keywords": ["nullspend", "cost-calculation", "pricing", "llm", "openai", "anthropic", "finops"],
-  "engines": { "node": ">=20.11.0" },
+  "keywords": [
+    "nullspend",
+    "cost-calculation",
+    "pricing",
+    "llm",
+    "openai",
+    "anthropic",
+    "finops"
+  ],
+  "engines": {
+    "node": ">=20.11.0"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -28,7 +38,9 @@
       }
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
@@ -36,7 +48,7 @@
   },
   "devDependencies": {
     "tsup": "^8.4.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.1.0"
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4"
   }
 }

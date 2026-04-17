@@ -360,59 +360,7 @@ describe("Advanced proxy scenarios", () => {
     }, 60_000);
   });
 
-  // ── Proxy overhead measurement ──
-
-  describe("Proxy overhead", () => {
-    it("non-streaming request completes in under 10 seconds", async () => {
-      const start = performance.now();
-      const res = await fetch(`${BASE}/v1/chat/completions`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({
-          model: "gpt-4o-mini",
-          messages: [{ role: "user", content: "Say hi" }],
-          max_tokens: 3,
-        }),
-      });
-      const elapsed = performance.now() - start;
-
-      expect(res.status).toBe(200);
-      expect(elapsed).toBeLessThan(10_000);
-      await res.json();
-    }, 15_000);
-
-    it("auth rejection is fast (under 500ms)", async () => {
-      const start = performance.now();
-      const res = await fetch(`${BASE}/v1/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          "x-nullspend-key": "wrong-key",
-        },
-        body: JSON.stringify({ model: "gpt-4o-mini", messages: [{ role: "user", content: "hi" }] }),
-      });
-      const elapsed = performance.now() - start;
-
-      expect(res.status).toBe(401);
-      expect(elapsed).toBeLessThan(500);
-      await res.text();
-    });
-
-    it("body validation rejection is fast (under 500ms)", async () => {
-      const start = performance.now();
-      const res = await fetch(`${BASE}/v1/chat/completions`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: "not json",
-      });
-      const elapsed = performance.now() - start;
-
-      expect(res.status).toBe(400);
-      expect(elapsed).toBeLessThan(500);
-      await res.text();
-    });
-  });
+  // [MOVED 2026-04-16] "Proxy overhead" latency tests relocated to stress-feature-concurrency.test.ts — see docs/internal/test-tier-taxonomy.md
 
   // ── Response field completeness ──
 

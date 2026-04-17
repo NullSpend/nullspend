@@ -8,12 +8,18 @@
  *   - OPENAI_API_KEY, NULLSPEND_API_KEY
  *   - DATABASE_URL for direct Supabase queries
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
 import postgres from "postgres";
-import { BASE, OPENAI_API_KEY, DATABASE_URL, authHeaders, smallRequest, isServerUp, waitForCostEvent } from "./smoke-test-helpers.js";
+import { BASE, OPENAI_API_KEY, DATABASE_URL, authHeaders, openaiRateLimitPace, smallRequest, isServerUp, waitForCostEvent } from "./smoke-test-helpers.js";
 
 describe("Known issues: connection exhaustion & waitUntil reliability", () => {
   let sql: postgres.Sql;
+
+  // Pace requests to stay under OpenAI RPM during full-suite runs. Note: the
+  // concurrent-burst tests in this file (10/20 parallel requests in a single
+  // test) still fire bursts internally — pacing between tests helps the
+  // ambient load but does not prevent intra-test bursts from tripping limits.
+  beforeEach(openaiRateLimitPace);
 
   beforeAll(async () => {
     const up = await isServerUp();

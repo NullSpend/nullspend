@@ -75,6 +75,12 @@ export function calculateOpenAICostEvent(
     }
   }
 
+  // Tag unpriced events so dashboard alerts can fire when the catalog falls
+  // behind a new model release (BIL-3, mirrors proxy `_ns_unpriced` tag).
+  const tags = pricing
+    ? metadata.tags
+    : { ...(metadata.tags ?? {}), _ns_unpriced: "true" };
+
   return {
     provider: "openai",
     model,
@@ -87,9 +93,10 @@ export function calculateOpenAICostEvent(
     durationMs,
     sessionId: metadata.sessionId,
     traceId: metadata.traceId,
-    tags: metadata.tags,
+    tags,
     customer: metadata.customer,
     eventType: "llm",
+    source: "sdk",
   };
 }
 
@@ -201,6 +208,10 @@ export function calculateAnthropicCostEvent(
     costBreakdown = { input: adjInput, output: adjOutput, cached: adjCached };
   }
 
+  const tags = pricing
+    ? metadata.tags
+    : { ...(metadata.tags ?? {}), _ns_unpriced: "true" };
+
   return {
     provider: "anthropic",
     model,
@@ -213,8 +224,9 @@ export function calculateAnthropicCostEvent(
     durationMs,
     sessionId: metadata.sessionId,
     traceId: metadata.traceId,
-    tags: metadata.tags,
+    tags,
     customer: metadata.customer,
     eventType: "llm",
+    source: "sdk",
   };
 }

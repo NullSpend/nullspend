@@ -96,6 +96,11 @@ _HAS_LIVE_ENV = all([NULLSPEND_API_KEY, NULLSPEND_SMOKE_KEY_ID,
 live = pytest.mark.skipif(not _HAS_LIVE_ENV,
                           reason="Live E2E env vars not configured")
 
+# Apply the e2e marker at the file level so the default unit-only run
+# (pyproject.toml `addopts = "-m 'not e2e'"`) excludes this file. To run
+# this suite explicitly: `pytest -m e2e`. (SDK-T-5 / TESTING.md Slice 7)
+pytestmark = pytest.mark.e2e
+
 # ── Postgres helper (lazy import) ────────────────────────────────
 _pg_conn: Any = None
 _SMOKE_ORG_ID: str = ""

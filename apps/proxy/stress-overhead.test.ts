@@ -13,7 +13,7 @@
  *   - INTERNAL_SECRET (for budget setup/teardown)
  *   - DATABASE_URL
  *
- * Run with: npx vitest run --config vitest.smoke.config.ts smoke-overhead.test.ts
+ * Run with: npx vitest run --config vitest.stress.config.ts stress-overhead.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import postgres from "postgres";

@@ -319,7 +319,7 @@ describe("Streaming + Budget Integration", () => {
     );
   });
 
-  it("streaming cost calculation failure still reconciles with 0 (last-resort)", async () => {
+  it("streaming cost calculation failure reconciles with estimate (P0 fix: never zero after successful upstream)", async () => {
     mockDoBudgetCheck.mockResolvedValue({ status: "approved", hasBudgets: true, reservationId: "rsv-cost-err", checkedEntities: [checkedEntity] });
     mockCalculateOpenAICost.mockImplementation(() => {
       throw new Error("cost calc explosion");
@@ -337,10 +337,12 @@ describe("Streaming + Budget Integration", () => {
     await res.text();
     await drainWaitUntil();
 
-    // Should have reconciled with 0 on last-resort
+    // P0 fix: reconcile with the pre-request estimate (500_000), not 0.
+    // The upstream LLM call succeeded and the client received the stream.
+    // Reconciling with 0 would silently erase spend from budget enforcement.
     expect(mockDoBudgetReconcile).toHaveBeenCalled();
     const lastCall = mockDoBudgetReconcile.mock.calls[mockDoBudgetReconcile.mock.calls.length - 1];
-    expect(lastCall[4]).toBe(0);
+    expect(lastCall[4]).toBe(500_000);
   });
 
   it("streaming + budget denied returns 429", async () => {

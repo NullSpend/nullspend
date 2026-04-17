@@ -232,3 +232,52 @@ describe("estimateGeminiMaxCost", () => {
     expect(result).toBeGreaterThan(Math.round(withoutMargin));
   });
 });
+
+describe("estimateGeminiMaxCost — long-context pricing", () => {
+  it("gemini-2.5-pro >200K estimated input applies 2x input, 1.5x output", () => {
+    // Force >200K estimated input via an explicit bodyByteLength override.
+    // bodyBytes = 1_000_000 → inputTokens = 250_000 (>200K trigger)
+    const body = {
+      contents: [{ parts: [{ text: "placeholder" }] }],
+      generationConfig: { maxOutputTokens: 1000 },
+    };
+    const result = estimateGeminiMaxCost("gemini-2.5-pro", body, 1_000_000);
+
+    // Long-context rates: input 2_500_000 µ$/MTok, output 15_000_000 µ$/MTok
+    // inputTokens = ceil(1_000_000 / 4) = 250_000
+    // rawInput: 250_000 * 2_500_000 / 1_000_000 = 625_000
+    // rawOutput: 1000 * 15_000_000 / 1_000_000 = 15_000
+    // total: 640_000, * 1.1 margin = 704_000
+    expect(result).toBe(704_000);
+  });
+
+  it("gemini-2.5-pro at 200K estimated input uses base rates (boundary)", () => {
+    // bodyBytes = 800_000 → inputTokens = 200_000 (NOT >200K)
+    const body = {
+      contents: [{ parts: [{ text: "placeholder" }] }],
+      generationConfig: { maxOutputTokens: 1000 },
+    };
+    const result = estimateGeminiMaxCost("gemini-2.5-pro", body, 800_000);
+
+    // Base rates: input 1_250_000 µ$/MTok, output 10_000_000 µ$/MTok
+    // rawInput: 200_000 * 1_250_000 / 1_000_000 = 250_000
+    // rawOutput: 1000 * 10_000_000 / 1_000_000 = 10_000
+    // total: 260_000, * 1.1 = 286_000
+    expect(result).toBe(286_000);
+  });
+
+  it("gemini-2.5-flash at >200K estimated input stays at base rates (no long-context tier)", () => {
+    const body = {
+      contents: [{ parts: [{ text: "placeholder" }] }],
+      generationConfig: { maxOutputTokens: 1000 },
+    };
+    const result = estimateGeminiMaxCost("gemini-2.5-flash", body, 1_000_000);
+
+    // Base rates apply: input 300_000 µ$/MTok, output 2_500_000 µ$/MTok
+    // inputTokens = 250_000
+    // rawInput: 250_000 * 300_000 / 1_000_000 = 75_000
+    // rawOutput: 1000 * 2_500_000 / 1_000_000 = 2_500
+    // total: 77_500, * 1.1 = 85_250
+    expect(result).toBe(85_250);
+  });
+});

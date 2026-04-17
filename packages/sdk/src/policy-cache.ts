@@ -62,15 +62,22 @@ export interface PolicyCache {
 }
 
 const DEFAULT_TTL_MS = 60_000;
+const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
 
 /**
  * Create a single-entry policy cache that fetches from the dashboard
  * and caches for the configured TTL.
+ *
+ * `fetchTimeoutMs` bounds how long any single policy fetch can pend before the
+ * cache falls open. The SDK's `requestTimeoutMs` covers individual API calls
+ * but not the cached promise waiters, so an unresponsive policy endpoint would
+ * otherwise block enforcement-path callers indefinitely. (PERF-2)
  */
 export function createPolicyCache(
   fetchPolicy: () => Promise<PolicyResponse>,
   ttlMs: number = DEFAULT_TTL_MS,
   onError?: (error: Error) => void,
+  fetchTimeoutMs: number = DEFAULT_FETCH_TIMEOUT_MS,
 ): PolicyCache {
   let cached: PolicyResponse | null = null;
   let cachedAt = 0;
@@ -83,14 +90,33 @@ export function createPolicyCache(
     // Dedup in-flight fetches
     if (inflightPromise) return inflightPromise;
 
-    inflightPromise = fetchPolicy()
+    const fetchWithTimeout: Promise<PolicyResponse> = fetchTimeoutMs > 0
+      ? new Promise<PolicyResponse>((resolve, reject) => {
+          const timer = setTimeout(
+            () => reject(new Error(`policy fetch timed out after ${fetchTimeoutMs}ms`)),
+            fetchTimeoutMs,
+          );
+          fetchPolicy().then(
+            (value) => {
+              clearTimeout(timer);
+              resolve(value);
+            },
+            (err) => {
+              clearTimeout(timer);
+              reject(err);
+            },
+          );
+        })
+      : fetchPolicy();
+
+    inflightPromise = fetchWithTimeout
       .then((policy) => {
         cached = policy;
         cachedAt = Date.now();
         return policy;
       })
       .catch((err) => {
-        // Fetch failure falls open — return stale cache or null.
+        // Fetch failure (including timeout) falls open — return stale cache or null.
         // Surface the error so operators know the policy endpoint is unreachable.
         onError?.(err instanceof Error ? err : new Error(String(err)));
         return cached;

@@ -4,14 +4,19 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockLogCostEventsBatch, mockLogCostEvent } = vi.hoisted(() => ({
+const { mockLogCostEventsBatch, mockLogCostEvent, mockEmitMetric } = vi.hoisted(() => ({
   mockLogCostEventsBatch: vi.fn(),
   mockLogCostEvent: vi.fn(),
+  mockEmitMetric: vi.fn(),
 }));
 
 vi.mock("../lib/cost-logger.js", () => ({
   logCostEventsBatch: (...args: unknown[]) => mockLogCostEventsBatch(...args),
   logCostEvent: (...args: unknown[]) => mockLogCostEvent(...args),
+}));
+
+vi.mock("../lib/metrics.js", () => ({
+  emitMetric: (...args: unknown[]) => mockEmitMetric(...args),
 }));
 
 import { handleCostEventQueue } from "../cost-event-queue-handler.js";
@@ -140,6 +145,46 @@ describe("handleCostEventQueue", () => {
 
     expect(mockLogCostEventsBatch).not.toHaveBeenCalled();
     expect(mockLogCostEvent).not.toHaveBeenCalled();
+  });
+
+  it("emits cost_event_queue_dwell_ms metric with max dwell across the batch", async () => {
+    mockLogCostEventsBatch.mockResolvedValue(undefined);
+
+    const now = Date.now();
+    // msg1 enqueued 8s ago, msg2 enqueued 20s ago (above 15s slow threshold)
+    const msg1 = makeMessage({ ...makeCostEventMessage({ requestId: "r1" }), enqueuedAt: now - 8_000 });
+    const msg2 = makeMessage({ ...makeCostEventMessage({ requestId: "r2" }), enqueuedAt: now - 20_000 });
+    const batch = makeBatch([msg1, msg2]);
+
+    await handleCostEventQueue(batch, makeEnv());
+
+    const dwellCall = mockEmitMetric.mock.calls.find(
+      ([name]) => name === "cost_event_queue_dwell_ms",
+    );
+    expect(dwellCall).toBeDefined();
+    const payload = dwellCall![1] as { max: number; slowCount: number; batchSize: number };
+    expect(payload.batchSize).toBe(2);
+    expect(payload.slowCount).toBe(1);
+    // Max dwell is ~20_000ms; allow small jitter from Date.now() drift during test
+    expect(payload.max).toBeGreaterThanOrEqual(20_000);
+    expect(payload.max).toBeLessThan(21_000);
+  });
+
+  it("skips dwell tracking for messages with missing or invalid enqueuedAt", async () => {
+    mockLogCostEventsBatch.mockResolvedValue(undefined);
+
+    const msgMissing = makeMessage({ ...makeCostEventMessage({ requestId: "r1" }), enqueuedAt: 0 });
+    const batch = makeBatch([msgMissing]);
+
+    await handleCostEventQueue(batch, makeEnv());
+
+    const dwellCall = mockEmitMetric.mock.calls.find(
+      ([name]) => name === "cost_event_queue_dwell_ms",
+    );
+    expect(dwellCall).toBeDefined();
+    const payload = dwellCall![1] as { max: number; slowCount: number };
+    expect(payload.max).toBe(0);
+    expect(payload.slowCount).toBe(0);
   });
 
   it("reads connectionString from env.HYPERDRIVE", async () => {

@@ -213,6 +213,50 @@ function makeNonCancelledSSEStream(): ReadableStream<Uint8Array> {
   });
 }
 
+/**
+ * Make an SSE stream that errors mid-flight (P1-5 repro). Emits one chunk
+ * via a `pull()` callback so the error fires AFTER the reader has consumed
+ * the initial chunk — this matches the real upstream-disconnect scenario
+ * where bytes arrived then the connection was severed.
+ */
+function makeErroringSSEStream(): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let pullCount = 0;
+  return new ReadableStream({
+    pull(controller) {
+      pullCount++;
+      if (pullCount === 1) {
+        controller.enqueue(
+          encoder.encode(
+            'data: {"id":"chatcmpl-1","model":"gpt-4o-mini","choices":[{"delta":{"content":"hi"}}]}\n\n',
+          ),
+        );
+      } else {
+        controller.error(new Error("upstream connection reset mid-stream"));
+      }
+    },
+  });
+}
+
+function makeAnthropicErroringSSEStream(): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  let pullCount = 0;
+  return new ReadableStream({
+    pull(controller) {
+      pullCount++;
+      if (pullCount === 1) {
+        controller.enqueue(
+          encoder.encode(
+            'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n',
+          ),
+        );
+      } else {
+        controller.error(new Error("upstream connection reset mid-stream"));
+      }
+    },
+  });
+}
+
 async function drainWaitUntil() {
   await Promise.all(
     mockWaitUntil.mock.calls.map(([p]: [Promise<unknown>]) => p.catch(() => {})),
@@ -637,5 +681,124 @@ describe("Stream Cancellation Cost Event", () => {
     for (const msg of routeWarns) {
       expect(msg).not.toContain("cost event not recorded");
     }
+  });
+
+  // ── P1-5 (stream-error resultPromise hang) ─────────────────────
+
+  it("P1-5: OpenAI upstream stream error mid-flight → cost event written via estimate (no hang)", async () => {
+    // REGRESSION GUARD: before the P1-5 fix (2026-04-16), if the upstream
+    // Response body's ReadableStream errored mid-stream (server disconnected,
+    // network reset, etc), the SSE parser's flush/cancel hooks would not
+    // fire reliably in workerd, leaving resultPromise hung. waitUntil
+    // would time out at ~30s with the reservation never reconciled — real
+    // spend got erased when the DO alarm eventually reclaimed it.
+    //
+    // The fix wraps upstreamBody in a ReadableStream whose start() reads
+    // via getReader() and catches errors, resolving a separate promise
+    // that races against resultPromise. This test constructs an upstream
+    // that errors on the 2nd pull() — simulating a mid-stream connection
+    // reset — and verifies: (1) the cost event is still logged
+    // (Promise.race resolved, no hang), (2) the event carries both
+    // _ns_cancelled and _ns_estimated tags, (3) cost is the estimate.
+    mockDoBudgetCheck.mockResolvedValue({
+      status: "approved", hasBudgets: true, reservationId: "rsv-p15-1", checkedEntities: [checkedEntity],
+    });
+
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(makeErroringSSEStream(), {
+        status: 200,
+        headers: { "content-type": "text/event-stream", "x-request-id": "req-p15-1" },
+      }),
+    );
+
+    const res = await handleChatCompletions(
+      makeRequest("http://localhost/v1/chat/completions", openaiStreamBody),
+      makeEnv(),
+      makeCtx(openaiStreamBody),
+    );
+    expect(res.status).toBe(200);
+
+    // Drain the response body — it will error on the 2nd pull as the
+    // upstream throws. The client-side stream errors; the proxy's error-
+    // tracking wrapper catches that and resolves upstreamErrorPromise.
+    try {
+      await res.text();
+    } catch {
+      // Expected: body read fails due to upstream error.
+    }
+    await drainWaitUntil();
+
+    expect(mockLogCostEventQueued).toHaveBeenCalledTimes(1);
+    const costEvent = mockLogCostEventQueued.mock.calls[0][2];
+    expect(costEvent.provider).toBe("openai");
+    expect(costEvent.costMicrodollars).toBe(500_000);
+    expect(costEvent.inputTokens).toBe(0);
+    expect(costEvent.outputTokens).toBe(0);
+    expect(costEvent.tags._ns_estimated).toBe("true");
+    expect(costEvent.tags._ns_cancelled).toBe("true");
+  });
+
+  it("P1-5: Anthropic upstream stream error mid-flight → cost event written via estimate (no hang)", async () => {
+    mockDoBudgetCheck.mockResolvedValue({
+      status: "approved", hasBudgets: true, reservationId: "rsv-p15-2", checkedEntities: [checkedEntity],
+    });
+
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(makeAnthropicErroringSSEStream(), {
+        status: 200,
+        headers: { "content-type": "text/event-stream", "request-id": "req-p15-2" },
+      }),
+    );
+
+    const res = await handleAnthropicMessages(
+      makeRequest("http://localhost/v1/messages", anthropicStreamBody),
+      makeEnv(),
+      makeCtx(anthropicStreamBody),
+    );
+    expect(res.status).toBe(200);
+
+    try {
+      await res.text();
+    } catch {
+      // Expected.
+    }
+    await drainWaitUntil();
+
+    expect(mockLogCostEventQueued).toHaveBeenCalledTimes(1);
+    const costEvent = mockLogCostEventQueued.mock.calls[0][2];
+    expect(costEvent.provider).toBe("anthropic");
+    expect(costEvent.tags._ns_estimated).toBe("true");
+    expect(costEvent.tags._ns_cancelled).toBe("true");
+    expect(costEvent.costMicrodollars).toBe(500_000);
+  });
+
+  it("P1-5: clean stream completion path unchanged by the error wrapper (no false cancellations)", async () => {
+    // Defense against the fix introducing false cancellations on clean
+    // streams. makeNonCancelledSSEStream closes normally without error;
+    // the cost event should have _ns_no_usage (not _ns_cancelled).
+    mockDoBudgetCheck.mockResolvedValue({
+      status: "approved", hasBudgets: true, reservationId: "rsv-p15-3", checkedEntities: [checkedEntity],
+    });
+
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(makeNonCancelledSSEStream(), {
+        status: 200,
+        headers: { "content-type": "text/event-stream", "x-request-id": "req-p15-3" },
+      }),
+    );
+
+    const res = await handleChatCompletions(
+      makeRequest("http://localhost/v1/chat/completions", openaiStreamBody),
+      makeEnv(),
+      makeCtx(openaiStreamBody),
+    );
+    expect(res.status).toBe(200);
+    await res.text();
+    await drainWaitUntil();
+
+    expect(mockLogCostEventQueued).toHaveBeenCalledTimes(1);
+    const costEvent = mockLogCostEventQueued.mock.calls[0][2];
+    expect(costEvent.tags._ns_no_usage).toBe("true");
+    expect(costEvent.tags._ns_cancelled).toBeUndefined();
   });
 });

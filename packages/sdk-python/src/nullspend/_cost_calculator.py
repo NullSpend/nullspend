@@ -97,6 +97,15 @@ def _distribute_residual(
     return r_input, r_cached, r_output
 
 
+def _tag_if_unpriced(
+    base_tags: dict[str, str] | None, is_unpriced: bool,
+) -> dict[str, str] | None:
+    """Add _ns_unpriced=true tag when pricing lookup failed (BIL-3)."""
+    if not is_unpriced:
+        return base_tags
+    return {**(base_tags or {}), "_ns_unpriced": "true"}
+
+
 # ---- OpenAI ----
 
 
@@ -164,6 +173,10 @@ def calculate_openai_cost_event(
             reasoning=reasoning_cost,
         )
 
+    # Tag unpriced events so dashboard alerts fire when the catalog falls
+    # behind a new model release (BIL-3, mirrors proxy `_ns_unpriced` tag).
+    tags = _tag_if_unpriced(meta.get("tags"), pricing is None)
+
     return CostEventInput(
         provider="openai",
         model=model,
@@ -176,9 +189,10 @@ def calculate_openai_cost_event(
         duration_ms=duration_ms,
         session_id=meta.get("sessionId") or meta.get("session_id"),
         trace_id=meta.get("traceId") or meta.get("trace_id"),
-        tags=meta.get("tags"),
+        tags=tags,
         customer=meta.get("customer"),
         event_type="llm",
+        source="sdk",
     )
 
 
@@ -274,6 +288,8 @@ def calculate_anthropic_cost_event(
             cached=adj_cached,
         )
 
+    tags = _tag_if_unpriced(meta.get("tags"), pricing is None)
+
     return CostEventInput(
         provider="anthropic",
         model=model,
@@ -286,7 +302,8 @@ def calculate_anthropic_cost_event(
         duration_ms=duration_ms,
         session_id=meta.get("sessionId") or meta.get("session_id"),
         trace_id=meta.get("traceId") or meta.get("trace_id"),
-        tags=meta.get("tags"),
+        tags=tags,
         customer=meta.get("customer"),
         event_type="llm",
+        source="sdk",
     )

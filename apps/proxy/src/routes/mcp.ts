@@ -11,7 +11,7 @@ import { dispatchToEndpoints } from "../lib/webhook-dispatch.js";
 import { expireRotatedSecrets } from "../lib/webhook-expiry.js";
 import { UUID_RE } from "../lib/validation.js";
 import { emitMetric } from "../lib/metrics.js";
-import { dispatchDenialWebhook, dispatchVelocityRecoveryWebhooks, buildBudgetHeaders } from "./shared.js";
+import { dispatchDenialWebhook, dispatchVelocityRecoveryWebhooks, buildBudgetHeaders, buildRecovery } from "./shared.js";
 import { resolveUpgradeUrl } from "../lib/upgrade-url.js";
 
 // ---------------------------------------------------------------------------
@@ -87,6 +87,9 @@ export async function handleMcpBudgetCheck(
       });
     }
 
+    // MCP denials use static messages (machine-to-machine consumers parse code/details,
+    // not message strings). Enriched dollar-amount messages are in shared.ts (provider routes).
+    // Recovery objects are included on both paths for programmatic consumption.
     if (outcome.status === "denied" && outcome.velocityDenied) {
       emitDenialMetric(false, "none");
       dispatchDenialWebhook(ctx, env, "[mcp-route]", () =>
@@ -107,6 +110,7 @@ export async function handleMcpBudgetCheck(
             code: "velocity_exceeded",
             message: "Request blocked: spending rate exceeds velocity limit. Retry after cooldown.",
             details: outcome.velocityDetails ?? null,
+            recovery: buildRecovery("velocity_exceeded", outcome.retryAfterSeconds ?? 60),
           },
         }),
         {
@@ -148,6 +152,7 @@ export async function handleMcpBudgetCheck(
               session_spend_microdollars: outcome.sessionSpend ?? 0,
               session_limit_microdollars: outcome.sessionLimit ?? 0,
             },
+            recovery: buildRecovery("session_limit_exceeded"),
           },
         }),
         {
@@ -190,6 +195,7 @@ export async function handleMcpBudgetCheck(
               budget_limit_microdollars: outcome.maxBudget ?? 0,
               budget_spend_microdollars: (outcome.spend ?? 0) + (outcome.reserved ?? 0),
             },
+            recovery: buildRecovery("tag_budget_exceeded"),
           },
         }),
         {
@@ -259,6 +265,7 @@ export async function handleMcpBudgetCheck(
                 finalization_remaining_microdollars: Math.max(0, (outcome.maxBudget ?? 0) - (outcome.spend ?? 0) - (outcome.reserved ?? 0) - (outcome.finalizationReserve ?? 0)),
               } : {}),
             },
+            recovery: buildRecovery("customer_budget_exceeded"),
           },
         }),
         {
@@ -322,6 +329,7 @@ export async function handleMcpBudgetCheck(
                 finalization_remaining_microdollars: Math.max(0, budgetLimit - budgetSpend - (outcome.finalizationReserve ?? 0)),
               } : {}),
             },
+            recovery: buildRecovery("budget_exceeded"),
           },
         }),
         {
@@ -472,7 +480,12 @@ export async function handleMcpEvents(
       const needsBudgetLookup = eventsWithReservations.length > 0 || (ctx.webhookDispatcher && ctx.auth.hasWebhooks);
       if (needsBudgetLookup) {
         try {
-          const doEntities = await lookupBudgetsForDO(ctx.connectionString, { keyId: apiKeyId, userId, tags: ctx.tags });
+          // NF-1: orgId is REQUIRED by lookupBudgetsForDO — it filters WHERE
+          // org_id = ${orgId} and the budgets row has non-null org_id. Previously
+          // this call omitted orgId, causing the lookup to always return empty,
+          // which (combined with the length-gate below) made every MCP reservation
+          // leak until alarm expiry.
+          const doEntities = await lookupBudgetsForDO(ctx.connectionString, { keyId: apiKeyId, orgId: ctx.auth.orgId, userId, tags: ctx.tags });
           budgetEntities = doEntities.map((e) => ({
             entityKey: `{budget}:${e.entityType}:${e.entityId}`,
             entityType: e.entityType,
@@ -489,9 +502,23 @@ export async function handleMcpEvents(
         }
       }
 
+      // NF-1: Reconcile is gated on reservations alone, NOT on the budget-lookup
+      // result. doBudgetReconcile finds the reservation by reservationId and does
+      // not consume the entities array (see budget-do-client.ts:68 `_entities`).
+      // Previously the gate `budgetEntities.length > 0 && ...` silently skipped
+      // reconciliation whenever the lookup returned empty — an accounting leak.
+      // Observability: if we have reservations but zero budget entities, emit a
+      // metric so stale budgets or orgId drift show up in dashboards.
       let reconcileFailures = 0;
       const allCrossings: ThresholdCrossing[] = [];
-      if (budgetEntities.length > 0 && eventsWithReservations.length > 0) {
+      if (eventsWithReservations.length > 0) {
+        if (budgetEntities.length === 0) {
+          emitMetric("mcp_reconcile_no_budgets_found", {
+            ownerId: ctx.ownerId,
+            orgId: ctx.auth.orgId ?? "unknown",
+            reservationCount: eventsWithReservations.length,
+          });
+        }
         for (const event of eventsWithReservations) {
           try {
             const result = await reconcileBudgetQueued(getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, event.reservationId!, event.costMicrodollars, budgetEntities, ctx.connectionString);

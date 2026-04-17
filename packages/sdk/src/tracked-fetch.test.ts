@@ -6,6 +6,7 @@ import {
   SessionLimitExceededError,
   VelocityExceededError,
   TagBudgetExceededError,
+  LoopDetectedError,
 } from "./errors.js";
 import type { CostEventInput, TrackedFetchOptions, DenialReason } from "./types.js";
 import type { PolicyCache, PolicyResponse } from "./policy-cache.js";
@@ -1772,42 +1773,54 @@ describe("buildTrackedFetch", () => {
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it("unknown model (estimate=0) still enforces session limit based on accumulated spend", async () => {
+    it("unknown model uses $1 fallback estimate for session limit check", async () => {
       // Mock getModelPricing to return null for unknown models
       const { getModelPricing } = await import("@nullspend/cost-engine");
       const mocked = vi.mocked(getModelPricing);
       const originalImpl = mocked.getMockImplementation();
-      mocked.mockReturnValue(null); // unknown model → estimate=0
+      mocked.mockReturnValue(null); // unknown model → $1 fallback (1,000,000 microdollars)
 
-      const policyCache = createMockPolicyCache();
+      try {
+        const policyCache = createMockPolicyCache();
 
-      const trackedFetch = buildTrackedFetch(
-        "openai",
-        { enforcement: true, sessionId: "sess-1", sessionLimitMicrodollars: 500 },
-        queueCost,
-        policyCache,
-      );
+        // $1 fallback blocks when session limit < $1
+        const trackedFetchLow = buildTrackedFetch(
+          "openai",
+          { enforcement: true, sessionId: "sess-low", sessionLimitMicrodollars: 500 },
+          queueCost,
+          policyCache,
+        );
 
-      // First request passes (0 + 0 > 500 = false)
-      mockFetch.mockResolvedValue(openaiJsonResponse());
-      const response = await trackedFetch(OPENAI_URL, {
-        method: "POST",
-        body: makeOpenAIBody("unknown-model"),
-      });
-      expect(response.status).toBe(200);
+        mockFetch.mockResolvedValue(openaiJsonResponse());
+        // 0 + 1_000_000 > 500 → blocked
+        await expect(
+          trackedFetchLow(OPENAI_URL, { method: "POST", body: makeOpenAIBody("unknown-model") }),
+        ).rejects.toThrow(SessionLimitExceededError);
 
-      // Restore pricing so cost calculator returns real cost for the response
-      // The response model is what matters for cost calculation, not the request model
-      // But since getModelPricing is still mocked to null, costMicrodollars = 0
-      // So session spend stays at 0. This means unknown models never trigger session limits
-      // via accumulation — only if spend from OTHER requests exceeds the limit.
-      expect(queueCost).toHaveBeenCalledTimes(1);
-      // costMicrodollars is 0 because pricing is null
-      expect(queueCost.mock.calls[0][0].costMicrodollars).toBe(0);
+        // $1 fallback passes when session limit > $1
+        const trackedFetchHigh = buildTrackedFetch(
+          "openai",
+          { enforcement: true, sessionId: "sess-high", sessionLimitMicrodollars: 2_000_000 },
+          queueCost,
+          policyCache,
+        );
 
-      // Restore original mock for other tests
-      if (originalImpl) mocked.mockImplementation(originalImpl);
-      else mocked.mockReturnValue({ inputPerMTok: 2.5, outputPerMTok: 10, cachedInputPerMTok: 1.25 } as any);
+        mockFetch.mockResolvedValue(openaiJsonResponse());
+        // 0 + 1_000_000 > 2_000_000 → false → passes
+        const response = await trackedFetchHigh(OPENAI_URL, {
+          method: "POST",
+          body: makeOpenAIBody("unknown-model"),
+        });
+        expect(response.status).toBe(200);
+
+        // costMicrodollars is 0 because pricing is null (post-response cost calc)
+        expect(queueCost).toHaveBeenCalledTimes(1);
+        expect(queueCost.mock.calls[0][0].costMicrodollars).toBe(0);
+      } finally {
+        // Restore original mock for subsequent tests
+        if (originalImpl) mocked.mockImplementation(originalImpl);
+        else mocked.mockReturnValue({ inputPerMTok: 2.5, outputPerMTok: 10, cachedInputPerMTok: 1.25 } as any);
+      }
     });
 
     it("sessionLimitMicrodollars: Infinity acts as no-limit", async () => {
@@ -3999,6 +4012,237 @@ describe("buildTrackedFetch", () => {
 
       expect(checkBudget).toHaveBeenCalledTimes(1);
       expect(checkBudget.mock.calls[0][1]).toEqual({ finalize: false });
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Recovery field parsing
+  // -----------------------------------------------------------------------
+  describe("recovery field", () => {
+    const PROXY_URL = "https://proxy.example.com";
+    const PROXY_REQUEST_URL = "https://proxy.example.com/v1/chat/completions";
+
+    it("parses recovery from proxy 429 and exposes on BudgetExceededError", async () => {
+      const policyCache = createMockPolicyCache();
+      const trackedFetch = buildTrackedFetch("openai", { enforcement: true }, queueCost, policyCache, PROXY_URL);
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "budget_exceeded",
+          message: "Budget exceeded",
+          details: { budget_limit_microdollars: 5_000_000, budget_spend_microdollars: 5_000_000 },
+          recovery: { retryable: false, owner_action_required: true, retry_after_seconds: null, docs: null },
+        },
+      }, 429, DENIED_HEADERS));
+
+      try {
+        await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(BudgetExceededError);
+        const e = err as InstanceType<typeof BudgetExceededError>;
+        expect(e.recovery).toEqual({
+          retryable: false,
+          ownerActionRequired: true,
+          retryAfterSeconds: null,
+          docs: null,
+        });
+      }
+    });
+
+    it("recovery is undefined when proxy omits it (backward compat)", async () => {
+      const policyCache = createMockPolicyCache();
+      const trackedFetch = buildTrackedFetch("openai", { enforcement: true }, queueCost, policyCache, PROXY_URL);
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "budget_exceeded",
+          message: "Budget exceeded",
+          details: { budget_limit_microdollars: 5_000_000, budget_spend_microdollars: 5_000_000 },
+          // no recovery field
+        },
+      }, 429, DENIED_HEADERS));
+
+      try {
+        await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(BudgetExceededError);
+        const e = err as InstanceType<typeof BudgetExceededError>;
+        expect(e.recovery).toBeUndefined();
+      }
+    });
+
+    it("malformed recovery (not an object) treated as undefined", async () => {
+      const policyCache = createMockPolicyCache();
+      const trackedFetch = buildTrackedFetch("openai", { enforcement: true }, queueCost, policyCache, PROXY_URL);
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "budget_exceeded",
+          message: "Budget exceeded",
+          details: { budget_limit_microdollars: 5_000_000, budget_spend_microdollars: 5_000_000 },
+          recovery: "not an object",
+        },
+      }, 429, DENIED_HEADERS));
+
+      try {
+        await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(BudgetExceededError);
+        const e = err as InstanceType<typeof BudgetExceededError>;
+        expect(e.recovery).toBeUndefined();
+      }
+    });
+
+    it("velocity_exceeded recovery has retryable=true with retry_after_seconds", async () => {
+      const policyCache = createMockPolicyCache();
+      const trackedFetch = buildTrackedFetch("openai", { enforcement: true }, queueCost, policyCache, PROXY_URL);
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "velocity_exceeded",
+          message: "Rate limit exceeded",
+          details: { limitMicrodollars: 10_000_000, windowSeconds: 60, currentMicrodollars: 12_000_000 },
+          recovery: { retryable: true, owner_action_required: false, retry_after_seconds: 45, docs: null },
+        },
+      }, 429, { ...DENIED_HEADERS, "Retry-After": "45" }));
+
+      try {
+        await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(VelocityExceededError);
+        const e = err as InstanceType<typeof VelocityExceededError>;
+        expect(e.recovery).toEqual({
+          retryable: true,
+          ownerActionRequired: false,
+          retryAfterSeconds: 45,
+          docs: null,
+        });
+      }
+    });
+
+    it("loop_detected recovery has retryable=true", async () => {
+      const policyCache = createMockPolicyCache();
+      const trackedFetch = buildTrackedFetch("openai", { enforcement: true }, queueCost, policyCache, PROXY_URL);
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "loop_detected",
+          message: "Loop detected",
+          details: { type: "per_key", model: "gpt-4o", callCount: 50, windowSeconds: 60, maxCalls: 50 },
+          recovery: { retryable: true, owner_action_required: false, retry_after_seconds: 5, docs: null },
+        },
+      }, 429, { ...DENIED_HEADERS, "Retry-After": "5" }));
+
+      try {
+        await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(LoopDetectedError);
+        const e = err as InstanceType<typeof LoopDetectedError>;
+        expect(e.recovery).toEqual({
+          retryable: true,
+          ownerActionRequired: false,
+          retryAfterSeconds: 5,
+          docs: null,
+        });
+      }
+    });
+
+    it("session_limit_exceeded recovery has retryable=false", async () => {
+      const policyCache = createMockPolicyCache();
+      const trackedFetch = buildTrackedFetch("openai", { enforcement: true }, queueCost, policyCache, PROXY_URL);
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "session_limit_exceeded",
+          message: "Session limit exceeded",
+          details: { session_spend_microdollars: 1_000_000, session_limit_microdollars: 1_000_000 },
+          recovery: { retryable: false, owner_action_required: false, retry_after_seconds: null, docs: null },
+        },
+      }, 429, DENIED_HEADERS));
+
+      try {
+        await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(SessionLimitExceededError);
+        const e = err as InstanceType<typeof SessionLimitExceededError>;
+        expect(e.recovery).toEqual({
+          retryable: false,
+          ownerActionRequired: false,
+          retryAfterSeconds: null,
+          docs: null,
+        });
+      }
+    });
+
+    it("tag_budget_exceeded recovery has owner_action_required=true", async () => {
+      const policyCache = createMockPolicyCache();
+      const trackedFetch = buildTrackedFetch("openai", { enforcement: true }, queueCost, policyCache, PROXY_URL);
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "tag_budget_exceeded",
+          message: "Tag budget exceeded",
+          details: { tag_key: "env", tag_value: "prod", budget_limit_microdollars: 1_000_000, budget_spend_microdollars: 1_000_000 },
+          recovery: { retryable: false, owner_action_required: true, retry_after_seconds: null, docs: null },
+        },
+      }, 429, DENIED_HEADERS));
+
+      try {
+        await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(TagBudgetExceededError);
+        const e = err as InstanceType<typeof TagBudgetExceededError>;
+        expect(e.recovery).toEqual({
+          retryable: false,
+          ownerActionRequired: true,
+          retryAfterSeconds: null,
+          docs: null,
+        });
+      }
+    });
+
+    it("recovery.docs preserves non-null string", async () => {
+      const policyCache = createMockPolicyCache();
+      const trackedFetch = buildTrackedFetch("openai", { enforcement: true }, queueCost, policyCache, PROXY_URL);
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "budget_exceeded",
+          message: "Budget exceeded",
+          details: { budget_limit_microdollars: 1_000_000, budget_spend_microdollars: 1_000_000 },
+          recovery: { retryable: false, owner_action_required: true, retry_after_seconds: null, docs: "https://docs.nullspend.dev/errors/budget-exceeded" },
+        },
+      }, 429, DENIED_HEADERS));
+
+      try {
+        await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(BudgetExceededError);
+        const e = err as InstanceType<typeof BudgetExceededError>;
+        expect(e.recovery?.docs).toBe("https://docs.nullspend.dev/errors/budget-exceeded");
+      }
+    });
+
+    it("recovery.docs empty string treated as null", async () => {
+      const policyCache = createMockPolicyCache();
+      const trackedFetch = buildTrackedFetch("openai", { enforcement: true }, queueCost, policyCache, PROXY_URL);
+      mockFetch.mockResolvedValue(mockFetchJsonResponse({
+        error: {
+          code: "budget_exceeded",
+          message: "Budget exceeded",
+          details: { budget_limit_microdollars: 1_000_000, budget_spend_microdollars: 1_000_000 },
+          recovery: { retryable: false, owner_action_required: true, retry_after_seconds: null, docs: "" },
+        },
+      }, 429, DENIED_HEADERS));
+
+      try {
+        await trackedFetch(PROXY_REQUEST_URL, { method: "POST", body: makeOpenAIBody() });
+        expect.unreachable("should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(BudgetExceededError);
+        const e = err as InstanceType<typeof BudgetExceededError>;
+        expect(e.recovery?.docs).toBeNull();
+      }
     });
   });
 });

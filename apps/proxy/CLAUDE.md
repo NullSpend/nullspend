@@ -5,9 +5,13 @@ Cloudflare Workers proxy that sits between agents and LLM providers (OpenAI, Ant
 ## Commands
 
 ```bash
-pnpm test             # Run proxy tests (from this directory)
-pnpm dev              # Start wrangler dev server
-pnpm deploy           # Deploy to Cloudflare
+pnpm test                      # Proxy unit + contract tests (PR gate)
+pnpm dev                       # Start wrangler dev server
+pnpm deploy                    # Deploy to Cloudflare
+SMOKE_LIVE=1 pnpm test:smoke   # Live smoke (manual/nightly; real API calls)
+pnpm test:smoke                # Prints help + exits 0 without SMOKE_LIVE=1
+pnpm smoke:record              # Refresh MSW cassettes (quarterly or on provider shape drift)
+pnpm test:stress               # Stress tests — production-mutating, manual only
 ```
 
 ## Critical Rules
@@ -20,11 +24,69 @@ pnpm deploy           # Deploy to Cloudflare
 
 ## Testing
 
-- Tests live in `src/__tests__/` directory
-- Mock `cloudflare:workers` with `vi.mock("cloudflare:workers", ...)`
-- Polyfill `crypto.subtle.timingSafeEqual` in `beforeAll`
-- `makeEnv()` helper returns typed `Env` with test values
-- `makeCtx()` helper returns mock `ExecutionContext`
+Three tiers live in this package. Full tier definitions + decision tree live in `docs/internal/test-tier-taxonomy.md` — read that before adding a new test.
+
+- **Unit + contract** (`src/__tests__/`) — PR gate, 1715 tests, ~10s, zero external calls. Includes Wave 3 `contract-*.test.ts` files that invoke route handlers in-process with MSW-intercepted upstream.
+- **Live smoke** (`smoke-*.test.ts` at package root, 29 files as of 2026-04-16) — manual/nightly. Requires `SMOKE_LIVE=1`. Hits deployed proxy + real providers. Single-call-per-test contract assertions. See `vitest.smoke.config.ts` gate + retry.
+- **Stress** (`stress-*.test.ts`, 10 files as of 2026-04-16) — production-mutating, manual only. Concurrency, latency benchmarks, race condition hunting, resource exhaustion. See "Stress tests" section below.
+
+**Audit history:** the 2026-04-16 smoke-tier audit moved 4 whole files + 21 individual tests out of the smoke tier into stress. See the taxonomy doc's "Cleanup history" section for the full move log.
+
+### Unit + contract test conventions
+
+- Tests live in `src/__tests__/` directory.
+- Mock `cloudflare:workers` with `vi.mock("cloudflare:workers", () => cloudflareWorkersMock())` from `test-helpers.ts`.
+- Polyfill `crypto.subtle.timingSafeEqual` in `beforeAll` (Workers API not in Node).
+- Existing tests use inline `makeEnv()` + `makeCtx()` helpers per file.
+- **Wave 3 contract tests** use the shared `src/__tests__/msw/contract-helpers.ts` module (`makeContractEnv`, `makeContractCtx`, `makeContractRequest`, `invokeWorker`, `makeExecutionContext`). Prefer these for new contract tests.
+
+### Contract tests + MSW (Wave 3)
+
+Scaffolding lives in `src/__tests__/msw/`:
+- `server.ts` — `setupServer(...handlers)` — attached via `setupFiles` in `vitest.config.ts`.
+- `setup.ts` — `beforeAll(listen)` / `afterEach(resetHandlers)` / `afterAll(close)`. `onUnhandledRequest: "bypass"` so the existing 80+ tests using `globalThis.fetch = vi.fn()` overrides stay unaffected.
+- `openai-handlers.ts` + `anthropic-handlers.ts` — handler builders (default success, error status, network error, streaming).
+- `contract-helpers.ts` — invocation helpers + pattern rules (comment at top of file).
+- Fixtures live in `src/__tests__/fixtures/cassettes/` (git-tracked JSON).
+
+**Pattern rules for new contract tests:**
+1. Prefer route-handler invocation (import `handleX` from `routes/x.js`) unless the behavior happens pre-routing (body parsing, top-level auth). Body-size is the only current example using top-level `invokeWorker`.
+2. Do NOT overwrite `globalThis.fetch` in MSW-backed tests — it silently bypasses the interceptor. MSW's `onUnhandledRequest: "bypass"` means legacy tests doing fetch overrides are unaffected, but new MSW-dependent tests must leave fetch alone.
+3. When testing denial paths, mock `budget-do-client.js` to return the relevant `DoCheckResult` shape. The DO itself is covered in `user-budget-do.do.test.ts` (workerd pool).
+
+### Cassette recording
+
+```bash
+# From apps/proxy/. Hits real OpenAI + Anthropic (~$0.0001 total).
+pnpm smoke:record
+```
+
+Guarded by `RECORD=1` (set automatically by the `smoke:record` script). Loads `.env.smoke` inline for `OPENAI_API_KEY` + `ANTHROPIC_API_KEY`. Writes normalized JSON to `src/__tests__/fixtures/cassettes/` — dynamic fields (id, created, system_fingerprint) are overwritten with stable values so git diffs surface only real provider shape drift.
+
+Refresh cadence: quarterly, or when a provider ships a new model family.
+
+### Live smoke (manual/nightly)
+
+Wave 3 Phase 3 demoted live smoke from ambient tier to explicit opt-in. Defense in depth:
+
+- **Script gate** (`scripts/smoke-gate.ts`): `pnpm test:smoke` prints a help message and exits 0 if `SMOKE_LIVE !== "1"`.
+- **Config gate** (`vitest.smoke.config.ts`): `include: []` when `SMOKE_LIVE !== "1"`, so direct `npx vitest --config vitest.smoke.config.ts` invocations also short-circuit with exit 0 (via `passWithNoTests: true`).
+
+When the gate is open, retry config mitigates rate-limit flake:
+```ts
+retry: {
+  count: 3,
+  delay: 1000,
+  condition: /429|ECONNRESET|ETIMEDOUT|socket hang up|rate[_-]?limit/i,
+}
+```
+Config-level `condition` must be `RegExp` (Vitest worker-thread serialization constraint). Permanent failures fail fast on the first attempt — the regex narrows retry to transient patterns.
+
+**Smoke test org requirements:** the smoke test API key's org (`7f0521bb-...`) MUST have an active Pro subscription in `subscriptions` table for body-capture tests to pass (body capture is tier-gated via `request_logging_enabled` computed from `s.tier IN ('pro','enterprise')`). Fixture subscription id `a4f52e61-682d-4628-9d96-711117ddd037` — seeded 2026-04-16 during Phase B. See `docs/internal/body-capture-investigation-20260416.md`.
+
+Manual-only smoke files that bail without extra prerequisites:
+- `smoke-sdk-functional.test.ts` — requires `NULLSPEND_DASHBOARD_URL` pointing at a reachable dashboard (local `pnpm dev` at 127.0.0.1:3000 or a deployed URL). Without it, the whole file `describe.skip`s gracefully during full-suite runs.
+- `smoke-margin-sync.test.ts` — requires Stripe test credentials + CRON_SECRET. Skips via `skip = true` flag if env vars missing.
 
 ## Stress tests
 
@@ -120,7 +182,7 @@ runs) and `afterAll`.
 - `src/lib/provider-types.ts` — ProviderAdapter interface, StreamResult, ParsedResponse types (includes optional extractModel/isStreaming hooks)
 - `src/routes/mcp.ts` — MCP budget check + cost event ingestion (separate lifecycle, not adapter-based)
 - `src/routes/internal.ts` — internal budget invalidation/sync endpoint
-- `src/routes/shared.ts` — shared budget denial handling, webhook dispatch helpers (used by all routes)
+- `src/routes/shared.ts` — shared budget denial handling (6 denial types with `recovery` object + enriched messages), `buildRecovery()` helper, `fmtDollars()`, webhook dispatch helpers (used by all routes)
 
 **Auth & Context**
 - `src/lib/auth.ts` — API key auth (delegates to `api-key-auth.ts`)
@@ -132,11 +194,24 @@ runs) and `afterAll`.
 - `src/lib/validation.ts` — shared validation helpers (UUID regex, etc.)
 
 **Budget Enforcement (Durable Object)**
-- `src/durable-objects/user-budget.ts` — UserBudgetDO: SQLite tables (budgets, reservations, velocity_state, session_spend), checkAndReserve (with session limit enforcement), reconcile (with session spend correction), alarm cleanup (with session TTL)
-- `src/lib/budget-orchestrator.ts` — checkBudget + reconcileBudget orchestration
+- `src/durable-objects/user-budget.ts` — UserBudgetDO: SQLite tables (budgets, reservations, velocity_state, session_spend, loop_call_log), checkAndReserve (with velocity, loop detection, session limit, budget enforcement in that order), reconcile (with session spend correction), alarm cleanup (with session TTL + loop log pruning)
+- `src/lib/budget-orchestrator.ts` — checkBudget + reconcileBudget orchestration (passes loopContext through)
 - `src/lib/budget-do-client.ts` — DO RPC client (check, reconcile, upsert, remove, reset, velocity state)
-- `src/lib/budget-do-lookup.ts` — Postgres → DOBudgetEntity lookup for DO population
+- `src/lib/budget-do-lookup.ts` — Postgres → DOBudgetEntity lookup for DO population (includes loop config fields)
 - `src/lib/budget-spend.ts` — Postgres atomic spend increment + period reset write-back
+
+**Loop Detection (integrated into Budget Enforcement DO)**
+- Default-on: 50 identical calls per 60s window per `provider:model:contentHash` key
+- Aggregate: 5+ distinct keys with 3+ same-content repeats triggers multi-model loop detection
+- Content hash: SHA-256 of first 8KB of request body, truncated to 8 hex chars
+- Deferred INSERT: loop_call_log entry only committed after budget check passes (prevents budget-denied requests from inflating loop counter)
+- Denial backoff: 5s in-memory cache with lazy eviction + 1K cap, stores original detection details
+- Alarm pruning: respects max configured loopWindowSeconds, safety cap at 5000 rows
+- Config: `loopMaxCalls` (0=disabled, null=default 50), `loopWindowSeconds` (null=default 60), `loopAggregateMaxKeys` (null=default 5)
+- Response: 429 with `code: "loop_detected"`, `Retry-After: 5`, `X-NullSpend-Denied: 1`, `recovery: { retryable: true, retry_after_seconds: 5 }`
+- Warning header: `X-NullSpend-Loop-Count: 40/50` on success responses at >=80% threshold
+- Webhook: `loop.detected` event via existing signed dispatch
+- Denial priority order: velocity > loop > session > tag > customer > budget
 
 **Cost Calculation**
 - `src/lib/cost-calculator.ts` — OpenAI token-to-cost conversion

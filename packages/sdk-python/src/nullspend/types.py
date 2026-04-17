@@ -71,6 +71,24 @@ def validate_customer_id(value: Any) -> str:
 
 
 @dataclass
+class LoopDetectionConfig:
+    """Configuration for client-side loop detection.
+
+    Detects repeated identical calls to the same model within a time window.
+    Use True for defaults, or pass a LoopDetectionConfig for custom thresholds.
+
+    Attributes:
+        max_calls: Block after N identical calls in the window (default 50).
+        window_seconds: Sliding window duration (default 60).
+        aggregate_max_keys: Block when N distinct model patterns each show 3+
+            repeats in the window (default 5). Catches multi-model loops.
+    """
+    max_calls: int = 50
+    window_seconds: float = 60.0
+    aggregate_max_keys: int = 5
+
+
+@dataclass
 class NullSpendConfig:
     base_url: str = "https://nullspend.dev"
     api_key: str = ""
@@ -176,6 +194,9 @@ class CostEventInput:
     tool_server: str | None = None
     tags: dict[str, str] | None = None
     customer: str | None = None
+    # Origin of the cost event. SDK calculators set "sdk"; proxy writes
+    # "proxy"; dashboard API ingest defaults to "api". (BIL-2)
+    source: str | None = None
 
 
 @dataclass
