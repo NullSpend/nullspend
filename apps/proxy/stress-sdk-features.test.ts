@@ -349,6 +349,40 @@ describe(`SDK stress test — production validation [${INTENSITY}]`, () => {
     if (!key?.org_id) throw new Error("Smoke key not found or missing org_id");
     SMOKE_ORG_ID = key.org_id;
 
+    // ── T-11: Pre-flight spend guard ──────────────────────────────
+    // This file makes real OpenAI/Anthropic API calls that incur real charges.
+    // A runaway run (CI loop, accidental --watch mode, mistargeted intensity)
+    // could chew through hundreds of dollars before anyone notices. Refuse to
+    // run if the smoke org's last-24h spend is already above a configurable
+    // soft ceiling. STRESS_FORCE_RUN=1 overrides if you need to ship anyway.
+    const SOFT_CEILING_USD = Number.parseFloat(
+      process.env.STRESS_DAILY_SPEND_CEILING_USD ?? "5",
+    );
+    if (process.env.STRESS_FORCE_RUN !== "1") {
+      const [{ spend_microdollars }] = await sql<{ spend_microdollars: string }[]>`
+        SELECT COALESCE(SUM(cost_microdollars), 0)::text AS spend_microdollars
+        FROM cost_events
+        WHERE org_id = ${SMOKE_ORG_ID}
+          AND created_at > NOW() - INTERVAL '24 hours'
+      `;
+      const spendUsd = Number(spend_microdollars) / 1_000_000;
+      if (spendUsd > SOFT_CEILING_USD) {
+        throw new Error(
+          `[stress-sdk] PRE-FLIGHT SPEND GUARD: smoke org has spent ` +
+          `$${spendUsd.toFixed(2)} in the last 24h, exceeds soft ceiling ` +
+          `$${SOFT_CEILING_USD.toFixed(2)}. This stress run would compound that. ` +
+          `Override with STRESS_FORCE_RUN=1 if intentional, or raise the ` +
+          `ceiling with STRESS_DAILY_SPEND_CEILING_USD=<n>.`,
+        );
+      }
+      console.log(
+        `[stress-sdk] Pre-flight spend guard OK — smoke org has spent ` +
+        `$${spendUsd.toFixed(2)}/24h (ceiling $${SOFT_CEILING_USD.toFixed(2)}).`,
+      );
+    } else {
+      console.log("[stress-sdk] STRESS_FORCE_RUN=1 — pre-flight spend guard bypassed.");
+    }
+
     // ── Create the isolated stress user + api_key (§15b-3) ──
     STRESS_USER_ID = `${PREFIX}-user`;
     STRESS_KEY_RAW = `ns_live_sk_${crypto.randomBytes(16).toString("hex")}`;

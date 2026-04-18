@@ -185,6 +185,11 @@ def _serialize_cost_event(event: CostEventInput) -> dict[str, Any]:
         body["tags"] = event.tags
     if event.customer is not None:
         body["customer"] = event.customer
+    # BIL-2 fix: serialize source so the dashboard ingest can distinguish
+    # SDK writes from proxy/api writes. Codex caught that the calculator was
+    # setting this field but the serializer dropped it before POST.
+    if event.source is not None:
+        body["source"] = event.source
     return body
 
 

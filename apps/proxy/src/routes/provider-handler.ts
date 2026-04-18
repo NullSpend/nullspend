@@ -93,15 +93,32 @@ export async function handleProviderRequest(
 
   // Provider-specific adapter hooks — wrapped in try/catch so a buggy adapter
   // returns a structured 502, not an opaque Cloudflare error.
+  //
+  // P-10: each hook is timed individually so a slow hook is observable. The
+  // emitMetric call uses { provider, hook, ms } so dashboards can alert when
+  // any single hook crosses a latency threshold (e.g. P95 > 50ms). Without
+  // per-hook timing, a rogue change in one adapter could add 100ms silently.
   let estimate: number;
   try {
     if (adapter.prepareBody) {
+      const t0 = performance.now();
       adapter.prepareBody(ctx.body, isStreaming);
+      emitMetric("adapter_hook_ms", {
+        provider, hook: "prepareBody", ms: Math.round(performance.now() - t0),
+      });
     }
     if (adapter.emitPreFetchMetrics) {
+      const t0 = performance.now();
       adapter.emitPreFetchMetrics(request, requestModel);
+      emitMetric("adapter_hook_ms", {
+        provider, hook: "emitPreFetchMetrics", ms: Math.round(performance.now() - t0),
+      });
     }
+    const t0 = performance.now();
     estimate = adapter.estimateMaxCost(requestModel, ctx.body, ctx.bodyByteLength);
+    emitMetric("adapter_hook_ms", {
+      provider, hook: "estimateMaxCost", ms: Math.round(performance.now() - t0),
+    });
   } catch (adapterErr) {
     console.error(`[${provider}-route] Adapter hook failed:`, adapterErr);
     emitMetric("adapter_error", { provider, hook: "pre_request" });

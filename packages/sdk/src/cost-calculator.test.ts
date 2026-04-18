@@ -426,4 +426,18 @@ describe("calculateAnthropicCostEvent — Anthropic", () => {
     expect(result.costMicrodollars).toBe(0);
     expect(result.costBreakdown).toBeUndefined();
   });
+
+  it("tags unknown-model Anthropic events with _ns_unpriced (BIL-3)", () => {
+    mockedGetModelPricing.mockReturnValue(null as ReturnType<typeof getModelPricing>);
+
+    const result = calculateAnthropicCostEvent(
+      "claude-99-future",
+      { input_tokens: 10, output_tokens: 5 },
+      null,
+      100,
+      { tags: { team: "research" } },
+    );
+
+    expect(result.tags).toEqual({ team: "research", _ns_unpriced: "true" });
+  });
 });

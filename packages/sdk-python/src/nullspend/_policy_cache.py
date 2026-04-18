@@ -124,15 +124,34 @@ class PolicyCache:
             # Bound fetch wall-time so an unresponsive policy endpoint can't
             # block enforcement-path callers indefinitely. fetch_timeout_s<=0
             # disables the bound. (PERF-2)
+            #
+            # Codex pass caught that `with ThreadPoolExecutor(...)` blocks on
+            # `__exit__` until the worker completes (default `shutdown(wait=True)`),
+            # so the original implementation didn't actually bound wall-time on
+            # the timeout path — it just delayed it. The fix: manage the
+            # executor lifecycle explicitly and call `shutdown(wait=False)` on
+            # timeout so the caller returns immediately. The abandoned worker
+            # will exit on its own once the underlying HTTP client's own
+            # timeout fires; this trades a small thread-leak risk in the
+            # degenerate "HTTP client never times out" case for true wall-time
+            # bounding in the common case.
             if self._fetch_timeout_s and self._fetch_timeout_s > 0:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                timed_out = False
+                try:
                     future = pool.submit(self._fetch_fn)
                     try:
                         data = future.result(timeout=self._fetch_timeout_s)
                     except concurrent.futures.TimeoutError as err:
+                        timed_out = True
                         raise TimeoutError(
                             f"policy fetch timed out after {self._fetch_timeout_s}s"
                         ) from err
+                finally:
+                    # On timeout: don't wait — abandon the worker so the caller
+                    # returns within the timeout bound. On success / non-timeout
+                    # error: wait for clean shutdown.
+                    pool.shutdown(wait=not timed_out, cancel_futures=True)
             else:
                 data = self._fetch_fn()
             policy = _parse_policy_response(data)

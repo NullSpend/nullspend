@@ -612,6 +612,45 @@ class TestReportCostAllFields:
         assert body["toolServer"] == "rag-server"
         assert body["tags"] == {"env": "prod"}
 
+    # BIL-2 fix: Codex caught that the calculator was setting `source: "sdk"`
+    # on the dataclass but the serializer dropped it before POST. Lock the
+    # round-trip so we don't regress.
+    @respx.mock
+    def test_source_field_is_serialized(self, ns):
+        respx.post(f"{BASE}/api/cost-events").mock(
+            return_value=httpx.Response(201, json={"id": "evt_1", "createdAt": "2026-03-27T00:00:00Z"})
+        )
+
+        ns.report_cost(CostEventInput(
+            provider="openai",
+            model="gpt-4o",
+            input_tokens=10,
+            output_tokens=5,
+            cost_microdollars=100,
+            source="sdk",
+        ))
+
+        body = json.loads(respx.calls[0].request.content)
+        assert body["source"] == "sdk"
+
+    @respx.mock
+    def test_source_field_omitted_when_none(self, ns):
+        respx.post(f"{BASE}/api/cost-events").mock(
+            return_value=httpx.Response(201, json={"id": "evt_1", "createdAt": "2026-03-27T00:00:00Z"})
+        )
+
+        ns.report_cost(CostEventInput(
+            provider="openai",
+            model="gpt-4o",
+            input_tokens=10,
+            output_tokens=5,
+            cost_microdollars=100,
+            # source defaults to None — must NOT appear in body
+        ))
+
+        body = json.loads(respx.calls[0].request.content)
+        assert "source" not in body
+
 
 class TestNetworkErrors:
     @respx.mock

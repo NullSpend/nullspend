@@ -325,6 +325,24 @@ class TestAnthropicCostBasic:
         assert result.cost_microdollars == 0
         assert result.cost_breakdown is None
 
+    # BIL-3: Anthropic unknown-model events get the same _ns_unpriced tag
+    # as OpenAI events so dashboard alerts can fire on catalog drift.
+    def test_unknown_anthropic_model_tagged_unpriced(self):
+        result = calculate_anthropic_cost_event(
+            "claude-99-future",
+            {"input_tokens": 10, "output_tokens": 5},
+            metadata={"tags": {"team": "research"}},
+        )
+        assert result.tags == {"team": "research", "_ns_unpriced": "true"}
+
+    def test_known_anthropic_model_no_unpriced_tag(self):
+        result = calculate_anthropic_cost_event(
+            "claude-sonnet-4-5",
+            {"input_tokens": 10, "output_tokens": 5},
+            metadata={"tags": {"team": "research"}},
+        )
+        assert result.tags == {"team": "research"}
+
     def test_zero_tokens(self):
         result = calculate_anthropic_cost_event("claude-sonnet-4-5", {
             "input_tokens": 0,

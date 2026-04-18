@@ -259,10 +259,20 @@ class TestPolicyCache:
             on_error=lambda e: errors.append(e),
             fetch_timeout_s=0.1,
         )
+        # Codex pass caught that the original `with ThreadPoolExecutor` impl
+        # blocked on __exit__ until the worker finished, so the timeout
+        # didn't actually bound wall-time. Assert elapsed time is close to
+        # the timeout, not to the slow fetch's 2s.
+        started = _time.monotonic()
         result = pc.get_policy()
+        elapsed = _time.monotonic() - started
         assert result is None
         assert len(errors) == 1
         assert isinstance(errors[0], TimeoutError)
+        assert elapsed < 1.0, (
+            f"get_policy() must return within ~timeout (0.1s), got {elapsed:.2f}s — "
+            "executor cleanup is blocking on the slow worker"
+        )
 
     def test_fetch_timeout_preserves_stale_cache(self):
         import time as _time
@@ -582,6 +592,67 @@ class TestTrackedTransportE2E:
         assert captured["x-nullspend-traceid"] == "trace-123"
         assert captured["x-nullspend-actionid"] == "act-456"
         client.close()
+
+    # BIL-1: warn-once-per-origin on proxy_url direct-fallthrough.
+    def test_bil1_warns_when_proxy_url_set_but_request_takes_direct_path(self, caplog):
+        import logging
+        def handler(request):
+            return httpx.Response(200, json={
+                "id": "chatcmpl-1", "model": "gpt-4o",
+                "choices": [{"message": {"content": "Hi"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            })
+
+        transport = self._make_transport(handler, proxy_url="https://proxy.example.com")
+        client = httpx.Client(transport=transport)
+        with caplog.at_level(logging.WARNING, logger="nullspend._tracked_client"):
+            client.post("https://api.openai.com/v1/chat/completions",
+                         json={"model": "gpt-4o", "messages": []})
+        client.close()
+
+        warns = [r for r in caplog.records if "proxy_url is configured" in r.getMessage()]
+        assert len(warns) == 1, f"expected exactly 1 fallthrough warn, got {len(warns)}"
+        assert "api.openai.com" in warns[0].getMessage()
+        assert "double-counted" in warns[0].getMessage()
+
+    def test_bil1_warns_only_once_per_origin(self, caplog):
+        import logging
+        def handler(request):
+            return httpx.Response(200, json={
+                "id": "chatcmpl-1", "model": "gpt-4o",
+                "choices": [{"message": {"content": "Hi"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            })
+
+        transport = self._make_transport(handler, proxy_url="https://proxy.example.com")
+        client = httpx.Client(transport=transport)
+        with caplog.at_level(logging.WARNING, logger="nullspend._tracked_client"):
+            for _ in range(3):
+                client.post("https://api.openai.com/v1/chat/completions",
+                             json={"model": "gpt-4o", "messages": []})
+        client.close()
+
+        warns = [r for r in caplog.records if "proxy_url is configured" in r.getMessage()]
+        assert len(warns) == 1, f"expected exactly 1 warn across 3 calls, got {len(warns)}"
+
+    def test_bil1_does_not_warn_when_proxy_url_is_none(self, caplog):
+        import logging
+        def handler(request):
+            return httpx.Response(200, json={
+                "id": "chatcmpl-1", "model": "gpt-4o",
+                "choices": [{"message": {"content": "Hi"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            })
+
+        transport = self._make_transport(handler, proxy_url=None)
+        client = httpx.Client(transport=transport)
+        with caplog.at_level(logging.WARNING, logger="nullspend._tracked_client"):
+            client.post("https://api.openai.com/v1/chat/completions",
+                         json={"model": "gpt-4o", "messages": []})
+        client.close()
+
+        warns = [r for r in caplog.records if "proxy_url is configured" in r.getMessage()]
+        assert len(warns) == 0
 
     def test_non_tracked_route_passes_through(self):
         """Non-tracked routes (GET, /models) are passed through without modification."""

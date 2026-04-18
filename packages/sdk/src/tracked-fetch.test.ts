@@ -525,6 +525,93 @@ describe("buildTrackedFetch", () => {
   });
 
   // -------------------------------------------------------------------------
+  // BIL-1: warn-once-per-origin on proxyUrl direct-fallthrough
+  // -------------------------------------------------------------------------
+
+  describe("BIL-1 — proxy direct-fallthrough warning", () => {
+    it("warns once when proxyUrl is set but request takes the direct path", async () => {
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const trackedFetch = buildTrackedFetch(
+        "openai", undefined, queueCost, null, "https://proxy.example.com",
+      );
+
+      // Request goes to api.openai.com, not the configured proxy → fallthrough.
+      await trackedFetch(OPENAI_URL, { method: "POST", body: makeOpenAIBody() });
+
+      const proxyWarns = warnSpy.mock.calls.filter((c) =>
+        typeof c[0] === "string" && c[0].includes("proxyUrl is configured"),
+      );
+      expect(proxyWarns).toHaveLength(1);
+      expect(proxyWarns[0][0]).toMatch(/api\.openai\.com/);
+      expect(proxyWarns[0][0]).toMatch(/double-counted/);
+
+      warnSpy.mockRestore();
+    });
+
+    it("only warns once per origin across multiple direct-path requests", async () => {
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const trackedFetch = buildTrackedFetch(
+        "openai", undefined, queueCost, null, "https://proxy.example.com",
+      );
+
+      // Three requests to the same direct origin should produce exactly ONE warn.
+      await trackedFetch(OPENAI_URL, { method: "POST", body: makeOpenAIBody() });
+      await trackedFetch(OPENAI_URL, { method: "POST", body: makeOpenAIBody() });
+      await trackedFetch(OPENAI_URL, { method: "POST", body: makeOpenAIBody() });
+
+      const proxyWarns = warnSpy.mock.calls.filter((c) =>
+        typeof c[0] === "string" && c[0].includes("proxyUrl is configured"),
+      );
+      expect(proxyWarns).toHaveLength(1);
+
+      warnSpy.mockRestore();
+    });
+
+    it("does NOT warn when proxyUrl is undefined (no fallthrough to detect)", async () => {
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const trackedFetch = buildTrackedFetch(
+        "openai", undefined, queueCost, null, undefined,
+      );
+
+      await trackedFetch(OPENAI_URL, { method: "POST", body: makeOpenAIBody() });
+
+      const proxyWarns = warnSpy.mock.calls.filter((c) =>
+        typeof c[0] === "string" && c[0].includes("proxyUrl is configured"),
+      );
+      expect(proxyWarns).toHaveLength(0);
+
+      warnSpy.mockRestore();
+    });
+
+    it("does NOT warn when origin matches proxyUrl (no fallthrough)", async () => {
+      mockFetch.mockResolvedValue(openaiJsonResponse());
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const trackedFetch = buildTrackedFetch(
+        "openai", undefined, queueCost, null, "https://proxy.example.com",
+      );
+
+      await trackedFetch("https://proxy.example.com/v1/chat/completions", {
+        method: "POST",
+        body: makeOpenAIBody(),
+      });
+
+      const proxyWarns = warnSpy.mock.calls.filter((c) =>
+        typeof c[0] === "string" && c[0].includes("proxyUrl is configured"),
+      );
+      expect(proxyWarns).toHaveLength(0);
+
+      warnSpy.mockRestore();
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Customer header injection (X-NullSpend-Customer)
   // -------------------------------------------------------------------------
 

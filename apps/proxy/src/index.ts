@@ -294,6 +294,44 @@ export default {
         return resp;
       }
 
+      // S-1: Header-only validation (customer mandate, allowlist, session-id
+      // length) runs BEFORE body parse so requests that can't possibly succeed
+      // fail fast without consuming bandwidth/CPU on body read. Customer/tags
+      // resolution depends only on request headers + auth.defaultTags — no
+      // body dependency.
+      const tags = mergeTags(auth.defaultTags, request.headers.get("x-nullspend-tags"));
+
+      const customerHeaderResult = parseCustomerHeader(request.headers.get("x-nullspend-customer"));
+      const customerId = resolveCustomerId(customerHeaderResult, tags);
+
+      // CX-4: Enforce requireCustomerId — 400 when header is missing/malformed
+      if (auth.requireCustomerId && !customerId) {
+        emitMetric("customer_required_missing", { keyId: auth.keyId });
+        const resp = errorResponse("customer_required",
+          "This API key requires X-NullSpend-Customer header",
+          400);
+        resp.headers.set("X-NullSpend-Trace-Id", traceId);
+        return resp;
+      }
+
+      // CX-2: Validate customer ID against API key's allowed customers
+      if (customerId && auth.allowedCustomers && !auth.allowedCustomers.includes(customerId)) {
+        emitMetric("customer_not_allowed", { customerId, keyId: auth.keyId });
+        const resp = errorResponse("customer_not_allowed",
+          "Customer ID not authorized for this API key",
+          403);
+        resp.headers.set("X-NullSpend-Trace-Id", traceId);
+        return resp;
+      }
+
+      const rawSessionId = request.headers.get("x-nullspend-session");
+      if (rawSessionId && rawSessionId.length > MAX_SESSION_ID_LENGTH) {
+        emitMetric("request_error", { status: 400, reason: "session_id_too_long" });
+        const resp = errorResponse("bad_request", `x-nullspend-session exceeds ${MAX_SESSION_ID_LENGTH} characters`, 400);
+        resp.headers.set("X-NullSpend-Trace-Id", traceId);
+        return resp;
+      }
+
       // Body parse (sequential — budget check needs the parsed body)
       const bodyStartMs = performance.now();
       const result = await parseRequestBody(request);
@@ -317,33 +355,6 @@ export default {
         request.headers.get("nullspend-version"),
         auth.apiVersion,
       );
-
-      const tags = mergeTags(auth.defaultTags, request.headers.get("x-nullspend-tags"));
-
-      const customerHeaderResult = parseCustomerHeader(request.headers.get("x-nullspend-customer"));
-      const customerId = resolveCustomerId(customerHeaderResult, tags);
-
-      // CX-4: Enforce requireCustomerId — 400 when header is missing/malformed
-      if (auth.requireCustomerId && !customerId) {
-        emitMetric("customer_required_missing", { keyId: auth.keyId });
-        return errorResponse("customer_required",
-          "This API key requires X-NullSpend-Customer header",
-          400);
-      }
-
-      // CX-2: Validate customer ID against API key's allowed customers
-      if (customerId && auth.allowedCustomers && !auth.allowedCustomers.includes(customerId)) {
-        emitMetric("customer_not_allowed", { customerId, keyId: auth.keyId });
-        return errorResponse("customer_not_allowed",
-          "Customer ID not authorized for this API key",
-          403);
-      }
-
-      const rawSessionId = request.headers.get("x-nullspend-session");
-      if (rawSessionId && rawSessionId.length > MAX_SESSION_ID_LENGTH) {
-        emitMetric("request_error", { status: 400, reason: "session_id_too_long" });
-        return errorResponse("bad_request", `x-nullspend-session exceeds ${MAX_SESSION_ID_LENGTH} characters`, 400);
-      }
 
       const finalize = request.headers.get("x-nullspend-finalize") === "1";
 

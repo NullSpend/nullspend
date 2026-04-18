@@ -10,7 +10,8 @@
 <p align="center">
   <a href="https://github.com/NullSpend/nullspend/actions"><img src="https://github.com/NullSpend/nullspend/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <a href="https://github.com/NullSpend/nullspend/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License" /></a>
-  <a href="https://www.npmjs.com/package/@nullspend/sdk"><img src="https://img.shields.io/npm/v/@nullspend/sdk" alt="npm" /></a>
+  <a href="https://www.npmjs.com/package/@nullspend/sdk"><img src="https://img.shields.io/npm/v/@nullspend/sdk?label=npm%20%40nullspend%2Fsdk" alt="npm" /></a>
+  <a href="https://pypi.org/project/nullspend/"><img src="https://img.shields.io/pypi/v/nullspend?label=pypi%20nullspend" alt="PyPI" /></a>
   <a href="https://nullspend.dev/docs"><img src="https://img.shields.io/badge/docs-nullspend.dev-brightgreen" alt="Docs" /></a>
 </p>
 
