@@ -41,8 +41,7 @@ vi.mock("../lib/cost-event-queue.js", () => ({
 
 vi.mock("../lib/budget-orchestrator.js", () => ({
   checkBudget: vi.fn().mockResolvedValue({ status: "skipped", reservationId: null, budgetEntities: [] }),
-  reconcileBudgetQueued: vi.fn().mockResolvedValue(undefined),
-  getReconcileQueue: vi.fn().mockReturnValue(undefined),
+  reconcileBudget: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../lib/metrics.js", () => ({

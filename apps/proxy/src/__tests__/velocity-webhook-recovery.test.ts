@@ -100,9 +100,6 @@ vi.mock("../lib/webhook-cache.js", () => ({
   invalidateWebhookCache: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../lib/webhook-thresholds.js", () => ({
-  detectThresholdCrossings: vi.fn().mockReturnValue([]),
-}));
 
 vi.mock("../lib/webhook-dispatch.js", () => ({
   dispatchToEndpoints: (...args: unknown[]) => mockDispatchToEndpoints(...args),
@@ -117,9 +114,6 @@ vi.mock("../lib/budget-do-lookup.js", () => ({
   lookupBudgetsForDO: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("../lib/reconciliation-queue.js", () => ({
-  enqueueReconciliation: vi.fn().mockResolvedValue(undefined),
-}));
 
 // ── Imports ────────────────────────────────────────────────────────
 

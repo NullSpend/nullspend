@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { getTableColumns } from "drizzle-orm";
-import { budgets, costEvents, actions, apiKeys, slackConfigs, webhookEndpoints, reconciledRequests } from "./schema";
+import { budgets, costEvents, actions, apiKeys, webhookEndpoints, reconciledRequests } from "./schema";
 import type { BudgetRow, NewBudgetRow, CostEventRow, NewCostEventRow } from "./schema";
 
 describe("budgets table schema", () => {
@@ -247,12 +247,6 @@ describe("existing tables still have correct structure", () => {
     expect(cols.allowedCustomers).toBeDefined();
   });
 
-  it("slackConfigs table has required columns", () => {
-    const cols = getTableColumns(slackConfigs);
-    expect(cols.id.notNull).toBe(true);
-    expect(cols.userId.notNull).toBe(true);
-    expect(cols.webhookUrl.notNull).toBe(true);
-  });
 });
 
 describe("schema consistency with shared package types", () => {

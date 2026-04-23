@@ -45,8 +45,7 @@ vi.mock("../lib/cost-event-queue.js", () => ({
 }));
 vi.mock("../lib/budget-orchestrator.js", () => ({
   checkBudget: vi.fn().mockResolvedValue({ status: "skipped", reservationId: null, budgetEntities: [] }),
-  reconcileBudgetQueued: vi.fn().mockResolvedValue(undefined),
-  getReconcileQueue: vi.fn().mockReturnValue(undefined),
+  reconcileBudget: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { mockGetWebhookEndpoints, mockGetWebhookEndpointsWithSecrets } = vi.hoisted(() => {
@@ -60,9 +59,6 @@ vi.mock("../lib/webhook-cache.js", () => ({
   invalidateWebhookCache: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../lib/webhook-thresholds.js", () => ({
-  detectThresholdCrossings: vi.fn().mockReturnValue([]),
-}));
 
 const { mockStoreRequestBody, mockStoreStreamingResponseBody } = vi.hoisted(() => ({
   mockStoreRequestBody: vi.fn().mockResolvedValue(undefined),

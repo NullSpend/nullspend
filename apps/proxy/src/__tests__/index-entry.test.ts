@@ -42,22 +42,12 @@ vi.mock("../lib/webhook-dispatch.js", () => ({
 }));
 vi.mock("../lib/budget-orchestrator.js", () => ({
   checkBudget: vi.fn().mockResolvedValue({ status: "skipped", reservationId: null, budgetEntities: [] }),
-  reconcileBudgetQueued: vi.fn().mockResolvedValue(undefined),
-  getReconcileQueue: vi.fn().mockReturnValue(undefined),
+  reconcileBudget: vi.fn().mockResolvedValue(undefined),
 }));
 
-const mockHandleReconciliationQueue = vi.fn().mockResolvedValue(undefined);
-const mockHandleDlqQueue = vi.fn().mockResolvedValue(undefined);
 const mockHandleCostEventQueue = vi.fn().mockResolvedValue(undefined);
 const mockHandleCostEventDlq = vi.fn().mockResolvedValue(undefined);
 
-vi.mock("../queue-handler.js", () => ({
-  handleReconciliationQueue: (...args: unknown[]) => mockHandleReconciliationQueue(...args),
-}));
-vi.mock("../dlq-handler.js", () => ({
-  handleDlqQueue: (...args: unknown[]) => mockHandleDlqQueue(...args),
-  DLQ_QUEUE_NAME: "nullspend-reconcile-dlq",
-}));
 vi.mock("../cost-event-queue-handler.js", () => ({
   handleCostEventQueue: (...args: unknown[]) => mockHandleCostEventQueue(...args),
   COST_EVENT_QUEUE_NAME: "nullspend-cost-events",
@@ -1140,8 +1130,6 @@ describe("Queue routing", () => {
   }
 
   beforeEach(() => {
-    mockHandleReconciliationQueue.mockClear();
-    mockHandleDlqQueue.mockClear();
     mockHandleCostEventQueue.mockClear();
     mockHandleCostEventDlq.mockClear();
   });
@@ -1152,8 +1140,6 @@ describe("Queue routing", () => {
 
     expect(mockHandleCostEventQueue).toHaveBeenCalledTimes(1);
     expect(mockHandleCostEventQueue).toHaveBeenCalledWith(batch, expect.anything());
-    expect(mockHandleReconciliationQueue).not.toHaveBeenCalled();
-    expect(mockHandleDlqQueue).not.toHaveBeenCalled();
     expect(mockHandleCostEventDlq).not.toHaveBeenCalled();
   });
 
@@ -1164,28 +1150,11 @@ describe("Queue routing", () => {
     expect(mockHandleCostEventDlq).toHaveBeenCalledTimes(1);
     expect(mockHandleCostEventDlq).toHaveBeenCalledWith(batch, expect.anything());
     expect(mockHandleCostEventQueue).not.toHaveBeenCalled();
-    expect(mockHandleReconciliationQueue).not.toHaveBeenCalled();
-    expect(mockHandleDlqQueue).not.toHaveBeenCalled();
   });
 
-  it("routes reconciliation DLQ to handleDlqQueue", async () => {
-    const batch = makeBatch("nullspend-reconcile-dlq");
-    await entrypoint.queue(batch, makeEnv());
-
-    expect(mockHandleDlqQueue).toHaveBeenCalledTimes(1);
-    expect(mockHandleReconciliationQueue).not.toHaveBeenCalled();
-    expect(mockHandleCostEventQueue).not.toHaveBeenCalled();
-    expect(mockHandleCostEventDlq).not.toHaveBeenCalled();
-  });
-
-  it("routes reconciliation queue to handleReconciliationQueue", async () => {
-    const batch = makeBatch("nullspend-reconcile");
-    await entrypoint.queue(batch, makeEnv());
-
-    expect(mockHandleReconciliationQueue).toHaveBeenCalledTimes(1);
-    expect(mockHandleDlqQueue).not.toHaveBeenCalled();
-    expect(mockHandleCostEventQueue).not.toHaveBeenCalled();
-    expect(mockHandleCostEventDlq).not.toHaveBeenCalled();
+  it("throws on unknown queue", async () => {
+    const batch = makeBatch("nullspend-unknown");
+    await expect(entrypoint.queue(batch, makeEnv())).rejects.toThrow(/Unknown queue/);
   });
 
   // -------------------------------------------------------------------------

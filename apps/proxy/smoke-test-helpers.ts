@@ -141,8 +141,8 @@ export async function waitForCostEvent(
  * Poll `/v1/policy` until `budget.spend_microdollars` exceeds `beforeSpend`,
  * or timeout. Used by smoke-mandates to verify reconciliation propagated
  * after an allowed request. Same latency class as `waitForCostEvent` but
- * reads the DO SQLite state (updated via RECONCILE_QUEUE) rather than the
- * cost_events Postgres table (updated via COST_EVENT_QUEUE).
+ * reads the DO SQLite state (updated via direct reconcileBudget RPC) rather
+ * than the cost_events Postgres table (updated via COST_EVENT_QUEUE).
  */
 export async function waitForPolicyBudgetSpend(
   base: string,

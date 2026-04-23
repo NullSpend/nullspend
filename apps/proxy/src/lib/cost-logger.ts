@@ -28,6 +28,8 @@ export async function logCostEvent(
       toolName: event.toolName,
       sessionId: event.sessionId,
       traceId: event.traceId,
+      periodStart: event.periodStart,
+      periodEnd: event.periodEnd,
     });
     return;
   }
@@ -41,7 +43,8 @@ export async function logCostEvent(
         cost_microdollars, duration_ms, action_id, event_type,
         tool_name, tool_server, tool_calls_requested, tool_definition_tokens,
         upstream_duration_ms, session_id, trace_id, source, cost_breakdown, tags,
-        budget_status, stop_reason, estimated_cost_microdollars, customer_id
+        budget_status, stop_reason, estimated_cost_microdollars, customer_id,
+        period_start, period_end
       ) VALUES (
         ${event.requestId}, ${event.apiKeyId ?? null}, ${event.userId ?? null}, ${event.orgId ?? null},
         ${event.provider}, ${event.model},
@@ -57,7 +60,8 @@ export async function logCostEvent(
         ${event.costBreakdown ? sql.json(event.costBreakdown) : null},
         ${event.tags ? sql.json(event.tags) : sql.json({})},
         ${event.budgetStatus ?? null}, ${event.stopReason ?? null},
-        ${event.estimatedCostMicrodollars ?? null}, ${event.customerId ?? null}
+        ${event.estimatedCostMicrodollars ?? null}, ${event.customerId ?? null},
+        ${event.periodStart ?? null}, ${event.periodEnd ?? null}
       )
       ON CONFLICT (request_id, provider) DO NOTHING
     `;
@@ -96,6 +100,8 @@ export async function logCostEventsBatch(
         toolName: event.toolName,
         sessionId: event.sessionId,
         traceId: event.traceId,
+        periodStart: event.periodStart,
+        periodEnd: event.periodEnd,
       });
     }
     return;
@@ -135,6 +141,12 @@ export async function logCostEventsBatch(
           stop_reason: e.stopReason ?? null,
           estimated_cost_microdollars: e.estimatedCostMicrodollars ?? null,
           customer_id: e.customerId ?? null,
+          // PR-2d: billing period bounds stamped at ingest. Prod callers always
+          // populate via resolvePeriodBounds(identity, createdAt); the `?? null`
+          // is schema-faithfulness (the DB column is nullable for pre-PR-2d
+          // historical rows) not a compat shim.
+          period_start: e.periodStart ?? null,
+          period_end: e.periodEnd ?? null,
         }))
       )}
       ON CONFLICT (request_id, provider) DO NOTHING

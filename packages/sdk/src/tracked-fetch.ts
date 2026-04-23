@@ -5,6 +5,7 @@ import {
   BudgetExceededError,
   LoopDetectedError,
   MandateViolationError,
+  PlanLimitExceededError,
   SessionLimitExceededError,
   VelocityExceededError,
   TagBudgetExceededError,
@@ -384,12 +385,19 @@ type DenialPayload = {
   details: Record<string, unknown> | undefined;
   retryAfterSeconds: number | undefined;
   /**
-   * Plan-upgrade URL surfaced by the proxy on `budget_exceeded` and
-   * `customer_budget_exceeded` denials. Comes from `error.upgrade_url`
-   * (top-level under `error`, not nested in `details`). Undefined when
-   * the proxy didn't include one.
+   * Plan-upgrade URL surfaced by the proxy on `budget_exceeded`,
+   * `customer_budget_exceeded`, and `plan_limit_exceeded` denials. Comes
+   * from `error.upgrade_url` (top-level under `error`, not nested in
+   * `details`). Undefined when the proxy didn't include one.
    */
   upgradeUrl: string | undefined;
+  /**
+   * PR-2c: self-host URL surfaced by the proxy on `plan_limit_exceeded`
+   * denials. Comes from `error.self_host_url` (top-level under `error`,
+   * peer of `upgrade_url`). Undefined for all other denial codes AND for
+   * old proxy versions that pre-date PR-2c.
+   */
+  selfHostUrl: string | undefined;
   /** Structured recovery hints from proxy. Undefined for old proxy versions. */
   recovery: Recovery | undefined;
 };
@@ -440,6 +448,13 @@ async function parseDenialPayload(
   const upgradeUrl = typeof rawUpgradeUrl === "string" && rawUpgradeUrl.length > 0
     ? rawUpgradeUrl
     : undefined;
+  // PR-2c: self_host_url is a peer of upgrade_url on plan-limit denials.
+  // Future-proof: parser supports it on all denial types even though only
+  // plan_limit_exceeded currently emits it.
+  const rawSelfHostUrl = errObj.self_host_url;
+  const selfHostUrl = typeof rawSelfHostUrl === "string" && rawSelfHostUrl.length > 0
+    ? rawSelfHostUrl
+    : undefined;
   const retryAfterRaw = parseInt(response.headers.get("Retry-After") ?? "", 10);
   // Parse recovery object if present (added in proxy recovery-field feature).
   const rawRecovery = errObj.recovery;
@@ -459,6 +474,7 @@ async function parseDenialPayload(
     code,
     details,
     upgradeUrl,
+    selfHostUrl,
     recovery,
     // RFC 7231 Retry-After is a non-negative integer; reject negatives defensively.
     retryAfterSeconds: Number.isFinite(retryAfterRaw) && retryAfterRaw >= 0 ? retryAfterRaw : undefined,
@@ -592,6 +608,30 @@ function dispatchDenialCode(
       windowSeconds: windowSeconds ?? 60,
       maxCalls: maxCalls ?? 50,
       detectionType: loopType ?? "per_key",
+      recovery: parsed.recovery,
+    });
+  }
+
+  // PR-2c: plan-limit denial. Details shape: { current_count, block_at, tier }.
+  // upgrade_url + self_host_url are TOP-LEVEL error.* fields (parsed into parsed.*).
+  if (code === "plan_limit_exceeded") {
+    const count = toFiniteNumber(details?.current_count) ?? 0;
+    const blockAt = toFiniteNumber(details?.block_at) ?? 0;
+    const tier = (details?.tier as string) ?? "unknown";
+    safeDenied(onDenied, {
+      type: "plan_limit",
+      count,
+      blockAt,
+      tier,
+      upgradeUrl: parsed.upgradeUrl,
+      selfHostUrl: parsed.selfHostUrl,
+    }, onCostError);
+    throw new PlanLimitExceededError({
+      count,
+      blockAt,
+      tier,
+      upgradeUrl: parsed.upgradeUrl,
+      selfHostUrl: parsed.selfHostUrl,
       recovery: parsed.recovery,
     });
   }

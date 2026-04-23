@@ -22,7 +22,8 @@ import { extractModelFromBody } from "../lib/request-utils.js";
 import { isKnownModel } from "@nullspend/cost-engine";
 import { logCostEventQueued, getCostEventQueue } from "../lib/cost-event-queue.js";
 import { optionalBinding } from "../lib/env.js";
-import { checkBudget, reconcileBudgetQueued, getReconcileQueue, type ReconcileOutcome } from "../lib/budget-orchestrator.js";
+import { checkBudget, reconcileBudget, type ReconcileOutcome } from "../lib/budget-orchestrator.js";
+import { resolvePeriodBounds } from "../lib/period-math.js";
 import { sanitizeUpstreamError } from "../lib/sanitize-upstream-error.js";
 import { stripNsPrefix } from "../lib/validation.js";
 import { emitMetric } from "../lib/metrics.js";
@@ -184,7 +185,7 @@ export async function handleProviderRequest(
     // Budget was reserved but upstream is invalid — reconcile with 0
     if (reservationId) {
       waitUntil(
-        reconcileBudgetQueued(getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, 0, budgetEntities, ctx.connectionString),
+        reconcileBudget(env, ctx.ownerId, ctx.auth.orgId, reservationId, 0, budgetEntities, ctx.connectionString),
       );
     }
     return upstreamUrlOrResponse;
@@ -216,6 +217,10 @@ export async function handleProviderRequest(
     // Provider-specific response tags (rate limits, request metadata)
     const responseTags = adapter.extractResponseTags(upstreamResponse, ctx.body, isUnpricedModel);
 
+    // PR-2d: resolve billing period bounds for this request. Stamped on every
+    // cost event (streaming/non-streaming, usage/no-usage paths) via the
+    // enrichment spread so reconciliation lands on the ORIGINAL period row.
+    const periods = resolvePeriodBounds(ctx.auth, Date.now());
     const enrichment: EnrichmentFields = {
       upstreamDurationMs,
       sessionId: ctx.sessionId,
@@ -226,6 +231,8 @@ export async function handleProviderRequest(
       budgetStatus,
       estimatedCostMicrodollars: estimate,
       orgId: ctx.auth.orgId,
+      periodStart: new Date(periods.periodStart),
+      periodEnd: new Date(periods.periodEnd),
     };
 
     const requestId = adapter.extractRequestId(upstreamResponse);
@@ -234,7 +241,7 @@ export async function handleProviderRequest(
     if (!upstreamResponse.ok) {
       if (reservationId) {
         waitUntil(
-          reconcileBudgetQueued(getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, 0, budgetEntities, ctx.connectionString),
+          reconcileBudget(env, ctx.ownerId, ctx.auth.orgId, reservationId, 0, budgetEntities, ctx.connectionString),
         );
       }
       const clientHeaders = adapter.buildClientHeaders(upstreamResponse, ctx.resolvedApiVersion);
@@ -292,7 +299,7 @@ export async function handleProviderRequest(
 
     if (reservationId) {
       waitUntil(
-        reconcileBudgetQueued(getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, 0, budgetEntities, ctx.connectionString),
+        reconcileBudget(env, ctx.ownerId, ctx.auth.orgId, reservationId, 0, budgetEntities, ctx.connectionString),
       );
     }
     throw err;
@@ -324,7 +331,7 @@ function handleStreaming(
   if (!upstreamBody) {
     if (reservationId) {
       waitUntil(
-        reconcileBudgetQueued(getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, 0, budgetEntities, connectionString),
+        reconcileBudget(env, ctx.ownerId, ctx.auth.orgId, reservationId, 0, budgetEntities, connectionString),
       );
     }
     const noBodyResp = errorResponse("upstream_error", "No response body from upstream", 502);
@@ -462,8 +469,8 @@ function handleStreaming(
             { requestId, model: requestModel, durationMs, cancelled: isCancelled },
           );
           if (reservationId) {
-            await reconcileBudgetQueued(
-              getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, reconcileCost, budgetEntities, connectionString,
+            await reconcileBudget(
+              env, ctx.ownerId, ctx.auth.orgId, reservationId, reconcileCost, budgetEntities, connectionString,
             );
           }
           try {
@@ -515,8 +522,8 @@ function handleStreaming(
 
         let reconcileResult: ReconcileOutcome | undefined;
         if (reservationId) {
-          reconcileResult = await reconcileBudgetQueued(
-            getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, loggedCost, budgetEntities, connectionString,
+          reconcileResult = await reconcileBudget(
+            env, ctx.ownerId, ctx.auth.orgId, reservationId, loggedCost, budgetEntities, connectionString,
           );
         }
 
@@ -546,10 +553,10 @@ function handleStreaming(
         // even when cost logging infrastructure is down.
         if (reservationId) {
           try {
-            await reconcileBudgetQueued(
-              getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, estimate, budgetEntities, connectionString,
+            await reconcileBudget(
+              env, ctx.ownerId, ctx.auth.orgId, reservationId, estimate, budgetEntities, connectionString,
             );
-          } catch { /* already logged inside reconcileBudgetQueued */ }
+          } catch { /* already logged inside reconcileBudget */ }
         }
         emitMetric("stream_cost_logging_failure", { model: requestModel, estimate, provider });
       }
@@ -625,8 +632,8 @@ async function handleNonStreaming(
       waitUntil((async () => {
         let crossings: import("../durable-objects/user-budget.js").ThresholdCrossing[] | undefined;
         if (reservationId) {
-          const reconcileResult = await reconcileBudgetQueued(
-            getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, loggedCostNS, budgetEntities, connectionString,
+          const reconcileResult = await reconcileBudget(
+            env, ctx.ownerId, ctx.auth.orgId, reservationId, loggedCostNS, budgetEntities, connectionString,
           );
           crossings = reconcileResult?.thresholdCrossings;
         }
@@ -634,7 +641,7 @@ async function handleNonStreaming(
       })());
     } else if (reservationId) {
       waitUntil(
-        reconcileBudgetQueued(getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, 0, budgetEntities, connectionString),
+        reconcileBudget(env, ctx.ownerId, ctx.auth.orgId, reservationId, 0, budgetEntities, connectionString),
       );
     }
   } catch {
@@ -645,7 +652,7 @@ async function handleNonStreaming(
     console.error(`[${provider}-route] Failed to parse non-streaming response for cost tracking, reconciling with estimate=${fallbackCost}`);
     if (reservationId) {
       waitUntil(
-        reconcileBudgetQueued(getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, reservationId, fallbackCost, budgetEntities, connectionString),
+        reconcileBudget(env, ctx.ownerId, ctx.auth.orgId, reservationId, fallbackCost, budgetEntities, connectionString),
       );
     }
     emitMetric("nonstream_cost_parsing_failure", { model: requestModel, estimate: fallbackCost, provider });

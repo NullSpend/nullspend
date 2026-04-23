@@ -1,8 +1,10 @@
 import { handleMcpBudgetCheck, handleMcpEvents } from "./routes/mcp.js";
 import { matchProviderRoute } from "./providers/registry.js";
 import { handleProviderRequest } from "./routes/provider-handler.js";
-import { handleBudgetInvalidation, handleVelocityState, handleRequestBodies } from "./routes/internal.js";
+import { handleBudgetInvalidation, handleVelocityState, handleRequestBodies, handlePlanCounterIncrement } from "./routes/internal.js";
 import { handleMetrics } from "./routes/metrics.js";
+import { handleFeatureFlags } from "./routes/health.js";
+import { handleReconcilePlanCounterCron } from "./routes/reconcile-plan-counter-cron.js";
 import { handlePolicy } from "./routes/policy.js";
 import { authenticateRequest } from "./lib/auth.js";
 import { resolveApiVersion } from "./lib/api-version.js";
@@ -13,14 +15,13 @@ import { parseCustomerHeader, resolveCustomerId } from "./lib/customer.js";
 import { resolveTraceId } from "./lib/trace-context.js";
 import { emitMetric } from "./lib/metrics.js";
 import { optionalBinding } from "./lib/env.js";
-import type { RequestContext, RouteHandler } from "./lib/context.js";
-import { handleReconciliationQueue } from "./queue-handler.js";
-import { handleDlqQueue, DLQ_QUEUE_NAME } from "./dlq-handler.js";
+import type { IngressMetadata, RequestContext, RouteHandler } from "./lib/context.js";
+import { resolveNullspendRequestId } from "./lib/context.js";
+import { stampNullspendHeaders } from "./lib/headers.js";
 import { handleCostEventQueue, COST_EVENT_QUEUE_NAME } from "./cost-event-queue-handler.js";
 import { handleCostEventDlq, COST_EVENT_DLQ_NAME } from "./cost-event-dlq-handler.js";
 import { handleWebhookQueue, WEBHOOK_QUEUE_NAME } from "./webhook-queue-handler.js";
 import { handleWebhookDlq, WEBHOOK_DLQ_NAME } from "./webhook-dlq-handler.js";
-import type { ReconciliationMessage } from "./lib/reconciliation-queue.js";
 import type { CostEventMessage } from "./lib/cost-event-queue.js";
 import type { WebhookQueueMessage } from "./lib/webhook-queue.js";
 
@@ -159,8 +160,33 @@ async function parseRequestBody(
 const MAX_SESSION_ID_LENGTH = 256;
 
 export default {
+  /**
+   * CF Worker cron dispatcher (PR-2d / Decision #35).
+   *
+   * Wire new crons via the `switch` below — do NOT invoke work directly in
+   * this function. `ctx.waitUntil(...)` lets the tick ack immediately so the
+   * CF scheduler marks the trigger as succeeded even if the underlying job
+   * runs long (up to the 30s CPU cap). Dispatching by `controller.cron`
+   * string keeps multiple cron entries (when we add them) self-documenting.
+   */
+  async scheduled(
+    controller: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<void> {
+    emitMetric("scheduled_cron_tick", { cron: controller.cron });
+    switch (controller.cron) {
+      case "*/15 * * * *":
+        ctx.waitUntil(handleReconcilePlanCounterCron(env));
+        break;
+      default:
+        emitMetric("scheduled_unknown_cron", { cron: controller.cron });
+        console.warn("[proxy] scheduled: unknown cron expression", controller.cron);
+    }
+  },
+
   async queue(
-    batch: MessageBatch<ReconciliationMessage | CostEventMessage | WebhookQueueMessage>,
+    batch: MessageBatch<CostEventMessage | WebhookQueueMessage>,
     env: Env,
   ): Promise<void> {
     if (batch.queue === WEBHOOK_DLQ_NAME) {
@@ -171,10 +197,8 @@ export default {
       await handleCostEventDlq(batch as MessageBatch<CostEventMessage>, env);
     } else if (batch.queue === COST_EVENT_QUEUE_NAME) {
       await handleCostEventQueue(batch as MessageBatch<CostEventMessage>, env);
-    } else if (batch.queue === DLQ_QUEUE_NAME) {
-      await handleDlqQueue(batch as MessageBatch<ReconciliationMessage>, env);
     } else {
-      await handleReconciliationQueue(batch as MessageBatch<ReconciliationMessage>, env);
+      throw new Error(`Unknown queue: ${batch.queue}`);
     }
   },
 
@@ -188,34 +212,55 @@ export default {
     const skipDbPersist = optionalBinding(env, "SKIP_DB_PERSIST") === "true";
     const skipDbWrites = !forceDbPersist && skipDbPersist;
 
-    // Resolve trace ID early so it's available in the catch block for 500 responses
+    // PR-2c codex-round-3 H3: resolve trace ID + nullspendRequestId + build
+    // IngressMetadata at the TOP of fetch so pre-auth early-returns (401,
+    // rate-limit 429, body-parse 400) can stamp response headers uniformly.
     const traceId = resolveTraceId(request);
+    const nullspendRequestId = resolveNullspendRequestId(request, (reason) =>
+      emitMetric("nullspend_request_id_invalid", { reason }),
+    );
+    // sessionId stays null until after the length-validation check runs below;
+    // pre-auth 401/429/400 responses don't carry it. ctx.sessionId will pick
+    // up the validated value when RequestContext is constructed later.
+    const meta: IngressMetadata = { traceId, nullspendRequestId, sessionId: null };
+    const stamp = (resp: Response): Response => stampNullspendHeaders(resp, meta);
 
     try {
       const url = new URL(request.url);
 
       // Health routes stay outside the pipeline (no auth needed)
       if (url.pathname === "/health") {
-        return Response.json({ status: "ok", service: "nullspend-proxy" });
+        return stamp(Response.json({ status: "ok", service: "nullspend-proxy" }));
       }
 
       if (url.pathname === "/health/ready") {
-        return Response.json({ status: "ok", service: "nullspend-proxy" });
+        return stamp(Response.json({ status: "ok", service: "nullspend-proxy" }));
       }
 
+      // codex-final review: stamp internal / metrics routes too so the
+      // "X-NullSpend-Request-Id on every response" contract holds uniformly.
+      // These endpoints don't feed client-retry dedup (internal auth is a
+      // shared secret, metrics is observability), but stamping keeps log
+      // correlation consistent across all proxy responses.
       if (url.pathname === "/health/metrics") {
-        return handleMetrics(request, env);
+        return stamp(await handleMetrics(request, env));
+      }
+      if (url.pathname === "/health/feature-flags" && request.method === "GET") {
+        return stamp(handleFeatureFlags(env));
       }
 
       // Internal endpoints — separate auth pipeline (shared secret, not API key)
       if (url.pathname === "/internal/budget/invalidate" && request.method === "POST") {
-        return handleBudgetInvalidation(request, env);
+        return stamp(await handleBudgetInvalidation(request, env));
       }
       if (url.pathname === "/internal/budget/velocity-state" && request.method === "GET") {
-        return handleVelocityState(request, env);
+        return stamp(await handleVelocityState(request, env));
       }
       if (url.pathname.startsWith("/internal/request-bodies/") && request.method === "GET") {
-        return handleRequestBodies(request, env);
+        return stamp(await handleRequestBodies(request, env));
+      }
+      if (url.pathname === "/internal/plan-counter/increment" && request.method === "POST") {
+        return stamp(await handlePlanCounterIncrement(request, env));
       }
 
       // Policy endpoint — GET with API key auth, no body parsing
@@ -223,32 +268,28 @@ export default {
         const connectionString = env.HYPERDRIVE.connectionString;
         const rateLimitResult = await applyRateLimit(request, env);
         if (rateLimitResult) {
-          rateLimitResult.headers.set("X-NullSpend-Trace-Id", traceId);
-          return rateLimitResult;
+          return stamp(rateLimitResult);
         }
 
         let auth;
         try {
-          auth = await authenticateRequest(request, connectionString);
+          auth = await authenticateRequest(request, env, connectionString);
         } catch (err) {
           console.error("[proxy] Auth DB error:", err instanceof Error ? err.message : "Unknown error");
           emitMetric("request_error", { status: 503, reason: "auth_db_error" });
           const resp = errorResponse("service_unavailable", "Authentication service temporarily unavailable", 503);
-          resp.headers.set("X-NullSpend-Trace-Id", traceId);
-          return resp;
+          return stamp(resp);
         }
         if (!auth) {
           emitMetric("request_error", { status: 401, reason: "unauthorized" });
           const resp = errorResponse("unauthorized", "Invalid or missing authentication header", 401);
-          resp.headers.set("X-NullSpend-Trace-Id", traceId);
-          return resp;
+          return stamp(resp);
         }
         if (!auth.orgId) {
           const resp = errorResponse("forbidden", "API key must be associated with an organization", 403);
-          resp.headers.set("X-NullSpend-Trace-Id", traceId);
-          return resp;
+          return stamp(resp);
         }
-        return handlePolicy(request, env, auth, traceId);
+        return stamp(await handlePolicy(request, env, auth, traceId));
       }
 
       // Route lookup: provider registry first, then MCP routes
@@ -258,12 +299,10 @@ export default {
         emitMetric("request_error", { status: 404, reason: "not_found" });
         if (url.pathname.startsWith("/v1/")) {
           const resp = errorResponse("not_found", "This endpoint is not yet supported", 404);
-          resp.headers.set("X-NullSpend-Trace-Id", traceId);
-          return resp;
+          return stamp(resp);
         }
         const resp = errorResponse("not_found", "Not found", 404);
-        resp.headers.set("X-NullSpend-Trace-Id", traceId);
-        return resp;
+        return stamp(resp);
       }
 
       // Rate limit first, then auth separately so DB errors produce 503, not 401
@@ -271,27 +310,24 @@ export default {
       const preFlightStartMs = performance.now();
       const rateLimitResult = await applyRateLimit(request, env);
       if (rateLimitResult) {
-        rateLimitResult.headers.set("X-NullSpend-Trace-Id", traceId);
-        return rateLimitResult;
+        return stamp(rateLimitResult);
       }
 
       let auth;
       try {
-        auth = await authenticateRequest(request, connectionString);
+        auth = await authenticateRequest(request, env, connectionString);
       } catch (err) {
         console.error("[proxy] Auth DB error:", err instanceof Error ? err.message : "Unknown error");
         emitMetric("request_error", { status: 503, reason: "auth_db_error" });
         const resp = errorResponse("service_unavailable", "Authentication service temporarily unavailable", 503);
-        resp.headers.set("X-NullSpend-Trace-Id", traceId);
-        return resp;
+        return stamp(resp);
       }
       const preFlightMs = Math.round(performance.now() - preFlightStartMs);
 
       if (!auth) {
         emitMetric("request_error", { status: 401, reason: "unauthorized" });
         const resp = errorResponse("unauthorized", "Invalid or missing authentication header", 401);
-        resp.headers.set("X-NullSpend-Trace-Id", traceId);
-        return resp;
+        return stamp(resp);
       }
 
       // S-1: Header-only validation (customer mandate, allowlist, session-id
@@ -310,8 +346,7 @@ export default {
         const resp = errorResponse("customer_required",
           "This API key requires X-NullSpend-Customer header",
           400);
-        resp.headers.set("X-NullSpend-Trace-Id", traceId);
-        return resp;
+        return stamp(resp);
       }
 
       // CX-2: Validate customer ID against API key's allowed customers
@@ -320,17 +355,18 @@ export default {
         const resp = errorResponse("customer_not_allowed",
           "Customer ID not authorized for this API key",
           403);
-        resp.headers.set("X-NullSpend-Trace-Id", traceId);
-        return resp;
+        return stamp(resp);
       }
 
       const rawSessionId = request.headers.get("x-nullspend-session");
       if (rawSessionId && rawSessionId.length > MAX_SESSION_ID_LENGTH) {
         emitMetric("request_error", { status: 400, reason: "session_id_too_long" });
         const resp = errorResponse("bad_request", `x-nullspend-session exceeds ${MAX_SESSION_ID_LENGTH} characters`, 400);
-        resp.headers.set("X-NullSpend-Trace-Id", traceId);
-        return resp;
+        return stamp(resp);
       }
+      // PR-2c codex-round-3 H3: sync validated sessionId onto meta so any
+      // stamp() call after this point carries the correct X-NullSpend-Session.
+      meta.sessionId = rawSessionId?.trim() || null;
 
       // Body parse (sequential — budget check needs the parsed body)
       const bodyStartMs = performance.now();
@@ -338,8 +374,7 @@ export default {
       const bodyParseMs = Math.round(performance.now() - bodyStartMs);
       if (result.error) {
         emitMetric("request_error", { status: result.error.status, reason: "bad_request" });
-        result.error.headers.set("X-NullSpend-Trace-Id", traceId);
-        return result.error;
+        return stamp(result.error);
       }
 
       // Build context
@@ -366,8 +401,11 @@ export default {
         ownerId: auth.orgId ?? auth.userId,
         connectionString,
         skipDbWrites,
-        sessionId: rawSessionId?.trim() || null,
-        traceId,
+        // PR-2c codex-round-3 H3: RequestContext extends IngressMetadata — these
+        // three fields come from `meta`, set at ingress before any early-return.
+        sessionId: meta.sessionId,
+        traceId: meta.traceId,
+        nullspendRequestId: meta.nullspendRequestId,
         tags,
         customerId,
         customerWarning: customerHeaderResult.warning,
@@ -391,13 +429,15 @@ export default {
       if (ctx.customerWarning) {
         response.headers.set("X-NullSpend-Warning", ctx.customerWarning);
       }
-      return response;
+      // PR-2c codex-round-3 H3: stamp final response too — covers the happy
+      // path 200, upstream 502, and any other response that bubbles up from
+      // route handlers without going through an early-return stamp.
+      return stamp(response);
     } catch (err) {
       console.error("[proxy] Unhandled error:", { traceId, err });
       emitMetric("request_error", { status: 500, reason: "internal_error" });
       const resp = errorResponse("internal_error", "Internal server error", 500);
-      resp.headers.set("X-NullSpend-Trace-Id", traceId);
-      return resp;
+      return stamp(resp);
     }
   },
 };

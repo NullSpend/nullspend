@@ -49,8 +49,7 @@ vi.mock("../lib/auth.js", () => ({
 // Short-circuit budget orchestration — we never reach it.
 vi.mock("../lib/budget-orchestrator.js", () => ({
   checkBudget: vi.fn().mockResolvedValue({ status: "skipped", reservationId: null, budgetEntities: [] }),
-  reconcileBudgetQueued: vi.fn().mockResolvedValue(undefined),
-  getReconcileQueue: vi.fn().mockReturnValue(undefined),
+  reconcileBudget: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../lib/cost-event-queue.js", () => ({

@@ -14,7 +14,6 @@
 /** Bindings that may be absent in local dev or non-production deploys. */
 export interface OptionalEnv {
   BODY_STORAGE?: R2Bucket;
-  RECONCILE_QUEUE?: Queue;
   COST_EVENT_QUEUE?: Queue;
   WEBHOOK_QUEUE?: Queue;
   METRICS?: AnalyticsEngineDataset;
@@ -25,6 +24,24 @@ export interface OptionalEnv {
   FORCE_DB_PERSIST?: string;
   /** Local dev: skip DB writes entirely. */
   SKIP_DB_PERSIST?: string;
+  /**
+   * PR-2c: plan-counter enforcement flag. `"true"` enables hard denials
+   * on Free-tier orgs past the 100K governed-request cap. Default `"false"`
+   * (shadow mode: counter increments + metrics fire but no denials). Flag
+   * flip to `"true"` is a post-launch step (PR-2e).
+   */
+  PLAN_COUNTER_ENABLED?: string;
+  /**
+   * PR-2c: override for NullSpend pricing URL in plan-limit denial envelopes.
+   * Cloud deploy leaves unset → default `https://nullspend.dev/pricing` applies.
+   * Self-hosted / white-labeled deploys can override via wrangler.jsonc vars.
+   */
+  NULLSPEND_PRICING_URL_OVERRIDE?: string;
+  /**
+   * PR-2c: override for NullSpend self-host URL in plan-limit denial envelopes.
+   * Cloud deploy leaves unset → default `https://github.com/NullSpend/nullspend` applies.
+   */
+  NULLSPEND_SELF_HOST_URL_OVERRIDE?: string;
 }
 
 /**

@@ -94,9 +94,6 @@ vi.mock("../lib/webhook-cache.js", () => ({
   invalidateWebhookCache: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../lib/webhook-thresholds.js", () => ({
-  detectThresholdCrossings: vi.fn().mockReturnValue([]),
-}));
 
 vi.mock("../lib/webhook-dispatch.js", () => ({
   dispatchToEndpoints: vi.fn().mockResolvedValue(undefined),
@@ -107,9 +104,6 @@ vi.mock("../lib/webhook-expiry.js", () => ({
   expireRotatedSecrets: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../lib/reconciliation-queue.js", () => ({
-  enqueueReconciliation: vi.fn().mockResolvedValue(undefined),
-}));
 
 vi.mock("../lib/sanitize-upstream-error.js", () => ({
   sanitizeUpstreamError: vi.fn().mockResolvedValue('{"error":"upstream"}'),

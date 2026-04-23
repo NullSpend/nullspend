@@ -190,6 +190,78 @@ describe("logCostEvent", () => {
 
     errorSpy.mockRestore();
   });
+
+  // PR-2d: period stamping (codex R1 P1#3 + R4#1)
+  describe("period_start / period_end stamping (PR-2d)", () => {
+    // C52 — single-event INSERT stamps periods from caller-provided Dates
+    it("C52: single INSERT passes period_start/period_end to sql tagged template", async () => {
+      const periodStart = new Date("2026-04-01T00:00:00Z");
+      const periodEnd = new Date("2026-05-01T00:00:00Z");
+
+      await logCostEvent(CONN, makeCostEvent({ periodStart, periodEnd }));
+
+      expect(mockSql).toHaveBeenCalledTimes(1);
+      // sql tagged template: args[0] = TemplateStringsArray, args[1..] = interpolated values
+      const args = mockSql.mock.calls[0].slice(1);
+      expect(args).toContain(periodStart);
+      expect(args).toContain(periodEnd);
+    });
+
+    // C53 — batch INSERT preserves per-event periods
+    it("C53: batch INSERT preserves each event's periodStart/periodEnd", async () => {
+      const marchStart = new Date("2026-03-01T00:00:00Z");
+      const marchEnd = new Date("2026-04-01T00:00:00Z");
+      const aprilStart = new Date("2026-04-01T00:00:00Z");
+      const aprilEnd = new Date("2026-05-01T00:00:00Z");
+
+      await logCostEventsBatch(CONN, [
+        makeCostEvent({ requestId: "march-event", periodStart: marchStart, periodEnd: marchEnd }),
+        makeCostEvent({ requestId: "april-event", periodStart: aprilStart, periodEnd: aprilEnd }),
+      ]);
+
+      // Batch path: sql(array) helper is called first, then sql`INSERT...` tagged template.
+      // The first mockSql call is the sql(array) helper with the mapped rows.
+      expect(mockSql).toHaveBeenCalled();
+      const firstCallArg = mockSql.mock.calls[0][0] as unknown;
+      // sql(array) passes the array as the first positional arg.
+      expect(Array.isArray(firstCallArg)).toBe(true);
+      const rows = firstCallArg as Array<Record<string, unknown>>;
+      expect(rows).toHaveLength(2);
+      expect(rows[0].period_start).toBe(marchStart);
+      expect(rows[0].period_end).toBe(marchEnd);
+      expect(rows[1].period_start).toBe(aprilStart);
+      expect(rows[1].period_end).toBe(aprilEnd);
+    });
+
+    // C54 — missing periods insert NULL (backward-compat, no epoch-0 coercion)
+    it("C54: missing periods pass null to sql (no epoch-0 coercion)", async () => {
+      await logCostEvent(CONN, makeCostEvent());  // no periodStart/End in overrides
+
+      expect(mockSql).toHaveBeenCalledTimes(1);
+      const args = mockSql.mock.calls[0].slice(1);
+      // The last two interpolated values in the INSERT are periodStart ?? null, periodEnd ?? null
+      // Count nulls at the end: should include two trailing nulls (periods).
+      // This is a structural assertion — batch mode also tested below.
+      const trailingNulls = args.slice(-2);
+      expect(trailingNulls).toEqual([null, null]);
+    });
+
+    // C54 batch variant: missing periods in batch map to null per row
+    it("C54b: batch with missing periods yields per-row nulls", async () => {
+      await logCostEventsBatch(CONN, [
+        makeCostEvent({ requestId: "no-period-1" }),
+        makeCostEvent({ requestId: "no-period-2" }),
+      ]);
+
+      const firstCallArg = mockSql.mock.calls[0][0] as unknown;
+      expect(Array.isArray(firstCallArg)).toBe(true);
+      const rows = firstCallArg as Array<Record<string, unknown>>;
+      expect(rows[0].period_start).toBeNull();
+      expect(rows[0].period_end).toBeNull();
+      expect(rows[1].period_start).toBeNull();
+      expect(rows[1].period_end).toBeNull();
+    });
+  });
 });
 
 describe("logCostEventsBatch", () => {

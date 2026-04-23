@@ -30,8 +30,8 @@ vi.mock("@nullspend/cost-engine", () => ({
 
 // checkBudget is mocked in budget-orchestrator.js mock below
 
-const { mockReconcileBudgetQueued } = vi.hoisted(() => ({
-  mockReconcileBudgetQueued: vi.fn().mockResolvedValue(undefined),
+const { mockReconcileBudget } = vi.hoisted(() => ({
+  mockReconcileBudget: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { mockEstimateAnthropicMaxCost } = vi.hoisted(() => ({
@@ -47,9 +47,7 @@ vi.mock("../lib/budget-orchestrator.js", async (importOriginal) => {
   return {
     ...orig,
     checkBudget: vi.fn(),
-    reconcileBudget: vi.fn().mockResolvedValue(undefined),
-    reconcileBudgetQueued: (...args: unknown[]) => mockReconcileBudgetQueued(...args),
-    getReconcileQueue: vi.fn().mockReturnValue(undefined),
+    reconcileBudget: (...args: unknown[]) => mockReconcileBudget(...args),
   };
 });
 
@@ -154,7 +152,7 @@ describe("Anthropic budget enforcement", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     vi.spyOn(console, "log").mockImplementation(() => {});
     mockCheckBudget.mockReset();
-    mockReconcileBudgetQueued.mockReset().mockResolvedValue(undefined);
+    mockReconcileBudget.mockReset().mockResolvedValue(undefined);
     mockEstimateAnthropicMaxCost.mockReset().mockReturnValue(500_000);
   });
 
@@ -235,11 +233,11 @@ describe("Anthropic budget enforcement", () => {
 
     // waitUntil fires reconciliation asynchronously; verify it was called
     await vi.waitFor(() => {
-      expect(mockReconcileBudgetQueued).toHaveBeenCalled();
+      expect(mockReconcileBudget).toHaveBeenCalled();
     });
-    const callArgs = mockReconcileBudgetQueued.mock.calls[0];
-    expect(callArgs[4]).toBe("rsv_test_123");
-    expect(callArgs[5]).toBeGreaterThan(0);
+    const callArgs = mockReconcileBudget.mock.calls[0];
+    expect(callArgs[3]).toBe("rsv_test_123");
+    expect(callArgs[4]).toBeGreaterThan(0);
   });
 
   it("upstream 4xx error reconciles reservation with 0", async () => {
@@ -269,11 +267,11 @@ describe("Anthropic budget enforcement", () => {
     expect(res.status).toBe(400);
 
     await vi.waitFor(() => {
-      expect(mockReconcileBudgetQueued).toHaveBeenCalled();
+      expect(mockReconcileBudget).toHaveBeenCalled();
     });
-    const callArgs = mockReconcileBudgetQueued.mock.calls[0];
-    expect(callArgs[4]).toBe("rsv_test_err");
-    expect(callArgs[5]).toBe(0);
+    const callArgs = mockReconcileBudget.mock.calls[0];
+    expect(callArgs[3]).toBe("rsv_test_err");
+    expect(callArgs[4]).toBe(0);
   });
 
   it("budget lookup failure returns 503 budget_unavailable", async () => {
@@ -320,7 +318,7 @@ describe("Anthropic budget enforcement", () => {
     const res = await handleAnthropicMessages(makeRequest(body), makeEnv(), makeCtx(body));
 
     expect(res.status).toBe(200);
-    expect(mockReconcileBudgetQueued).not.toHaveBeenCalled();
+    expect(mockReconcileBudget).not.toHaveBeenCalled();
   });
 
   it("streaming request reconciles after stream completes", async () => {
@@ -360,11 +358,11 @@ describe("Anthropic budget enforcement", () => {
     await res.text();
 
     await vi.waitFor(() => {
-      expect(mockReconcileBudgetQueued).toHaveBeenCalled();
+      expect(mockReconcileBudget).toHaveBeenCalled();
     });
-    const callArgs = mockReconcileBudgetQueued.mock.calls[0];
-    expect(callArgs[4]).toBe("rsv_stream_test");
-    expect(callArgs[5]).toBeGreaterThan(0);
+    const callArgs = mockReconcileBudget.mock.calls[0];
+    expect(callArgs[3]).toBe("rsv_stream_test");
+    expect(callArgs[4]).toBeGreaterThan(0);
   });
 
   it("timeout/error reconciles reservation with 0 via outer catch", async () => {
@@ -387,10 +385,10 @@ describe("Anthropic budget enforcement", () => {
     ).rejects.toThrow("fetch timeout");
 
     await vi.waitFor(() => {
-      expect(mockReconcileBudgetQueued).toHaveBeenCalled();
+      expect(mockReconcileBudget).toHaveBeenCalled();
     });
-    const callArgs = mockReconcileBudgetQueued.mock.calls[0];
-    expect(callArgs[4]).toBe("rsv_timeout_test");
-    expect(callArgs[5]).toBe(0);
+    const callArgs = mockReconcileBudget.mock.calls[0];
+    expect(callArgs[3]).toBe("rsv_timeout_test");
+    expect(callArgs[4]).toBe(0);
   });
 });

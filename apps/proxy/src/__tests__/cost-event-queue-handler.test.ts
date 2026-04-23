@@ -204,4 +204,26 @@ describe("handleCostEventQueue", () => {
       { throwOnError: true },
     );
   });
+
+  // PR-2d: periods must survive the queue → batch-insert path unchanged.
+  // If this regresses, late-arriving cost events land on the WRONG period row
+  // under reconciliation — a silent billing-accuracy bug.
+  it("C55: preserves periodStart/periodEnd across queue → logCostEventsBatch", async () => {
+    mockLogCostEventsBatch.mockResolvedValue(undefined);
+
+    const periodStart = new Date("2026-04-01T00:00:00Z");
+    const periodEnd = new Date("2026-05-01T00:00:00Z");
+    const msg = makeMessage(makeCostEventMessage({ requestId: "r-period", periodStart, periodEnd }));
+    const batch = makeBatch([msg]);
+
+    await handleCostEventQueue(batch, makeEnv());
+
+    expect(mockLogCostEventsBatch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining([
+        expect.objectContaining({ requestId: "r-period", periodStart, periodEnd }),
+      ]),
+      { throwOnError: true },
+    );
+  });
 });

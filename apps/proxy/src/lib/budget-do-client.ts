@@ -1,5 +1,12 @@
-import type { BudgetRow, CheckResult, VelocityState, ThresholdCrossing } from "../durable-objects/user-budget.js";
+import type {
+  BudgetRow,
+  CheckResult,
+  IncrementPlanCounterResult,
+  VelocityState,
+  ThresholdCrossing,
+} from "../durable-objects/user-budget.js";
 import type { DOBudgetEntity } from "./budget-do-lookup.js";
+import type { TierLabel } from "./api-key-auth.js";
 import { emitMetric } from "./metrics.js";
 
 export interface DOReconcileOutcome {
@@ -146,6 +153,83 @@ export async function doBudgetResetSpend(
 ): Promise<void> {
   const stub = env.USER_BUDGET.get(env.USER_BUDGET.idFromName(ownerId));
   await stub.resetSpend(entityType, entityId);
+}
+
+/**
+ * PR-2b: Increment the governed-request counter in the user's UserBudgetDO.
+ *
+ * Throws on DO error (fail-closed). Caller (PR-2c orchestrator / PR-2d internal
+ * endpoint) decides how to translate `denied` / `skipped` results into HTTP
+ * responses — this client is a thin RPC pass-through.
+ *
+ * `orgId` MUST be a non-null UUID. Unlike the budget-spend client (`ownerId =
+ * orgId ?? userId` fallback), plan-counter requires a real org UUID because
+ * `upsertPlanCounterPeriod` casts `::uuid` against `org_period_usage.org_id`.
+ * Non-UUID inputs (`null`, empty, or a userId fallback) are rejected here at
+ * the client boundary with `{ status: "skipped", reason: "non_uuid_org" }` —
+ * matching what the DO itself would return (build-audit Finding #2). This
+ * saves one round-trip AND stops a misrouted DO from having its `ctx.id.name`
+ * pinned to a userId, which would pollute metrics + cache keys downstream.
+ */
+const UUID_RE_CLIENT =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_IDEMPOTENCY_KEY_LENGTH_CLIENT = 256;
+
+/**
+ * PR-2c (codex-round-1 M8 / D1 flipped / codex-round-2 M7): options-object
+ * signature. Client carries `orgId` (used for `idFromName()` routing); DO-side
+ * `stub.incrementPlanCounter(...)` receives args WITHOUT `orgId` (DO derives
+ * from `this.ctx.id.name`).
+ */
+export interface IncrementPlanCounterOptions {
+  orgId: string | null;                       // CLIENT-ONLY — used for idFromName() routing
+  planLimitBlockAt: number | null;
+  planLimitMode: "hard" | "soft";
+  tier: TierLabel;                            // PR-2c codex-round-1 F3 — emitted in shadow-mode metric tags
+  periodStart: number;
+  periodEnd: number;
+  idempotencyKey?: string;
+}
+
+export async function doIncrementPlanCounter(
+  env: Env,
+  opts: IncrementPlanCounterOptions,
+): Promise<IncrementPlanCounterResult> {
+  const { orgId, planLimitBlockAt, planLimitMode, tier, periodStart, periodEnd, idempotencyKey } = opts;
+
+  if (!orgId) {
+    emitMetric("do_increment_plan_counter_skipped_client", { reason: "null_org" });
+    return { status: "skipped", reason: "null_org" };
+  }
+  if (!UUID_RE_CLIENT.test(orgId)) {
+    emitMetric("do_increment_plan_counter_skipped_client", { reason: "non_uuid_org" });
+    return { status: "skipped", reason: "non_uuid_org" };
+  }
+  // Edge-case EC2: reject oversize idempotency keys at the client boundary so
+  // we don't open a DO round-trip just to be rejected there. Matches the DO's
+  // own guard for defense-in-depth.
+  if (idempotencyKey !== undefined && idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH_CLIENT) {
+    emitMetric("do_increment_plan_counter_skipped_client", { reason: "idempotency_key_too_long" });
+    return { status: "skipped", reason: "idempotency_key_too_long" };
+  }
+
+  const startMs = Date.now();
+  const stub = env.USER_BUDGET.get(env.USER_BUDGET.idFromName(orgId));
+  // DO args do NOT include orgId (derived from this.ctx.id.name). Tier IS passed
+  // so the DO can emit `plan_limit_would_block{tier, mode}` from shadow-mode branch.
+  const result = await stub.incrementPlanCounter({
+    planLimitBlockAt,
+    planLimitMode,
+    tier,
+    periodStart,
+    periodEnd,
+    idempotencyKey,
+  });
+  emitMetric("do_increment_plan_counter", {
+    status: result.status,
+    durationMs: Date.now() - startMs,
+  });
+  return result;
 }
 
 /**

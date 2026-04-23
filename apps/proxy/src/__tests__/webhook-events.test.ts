@@ -145,7 +145,7 @@ describe("buildBudgetExceededPayload", () => {
 });
 
 describe("buildThresholdPayload", () => {
-  it("builds a warning event for threshold < 90", () => {
+  it("builds a warning event when isCritical=false", () => {
     const event = buildThresholdPayload({
       budgetEntityType: "user",
       budgetEntityId: "user_abc",
@@ -153,6 +153,7 @@ describe("buildThresholdPayload", () => {
       budgetSpendMicrodollars: 40_100_000,
       thresholdPercent: 80,
       triggeredByRequestId: "req_xyz",
+      isCritical: false,
     });
 
     expect(event.type).toBe("budget.threshold.warning");
@@ -163,7 +164,7 @@ describe("buildThresholdPayload", () => {
     expect(event.data.object.triggered_by_request_id).toBe("req_xyz");
   });
 
-  it("builds a critical event for threshold >= 90", () => {
+  it("builds a critical event when isCritical=true (high threshold)", () => {
     const event = buildThresholdPayload({
       budgetEntityType: "api_key",
       budgetEntityId: "key_yyy",
@@ -171,6 +172,7 @@ describe("buildThresholdPayload", () => {
       budgetSpendMicrodollars: 95_000_000,
       thresholdPercent: 95,
       triggeredByRequestId: "req_abc",
+      isCritical: true,
     });
 
     expect(event.type).toBe("budget.threshold.critical");
@@ -179,7 +181,7 @@ describe("buildThresholdPayload", () => {
     expect(event.data.object.threshold_percent).toBe(95);
   });
 
-  it("builds a critical event for exactly 90%", () => {
+  it("builds a critical event when isCritical=true (90% boundary)", () => {
     const event = buildThresholdPayload({
       budgetEntityType: "user",
       budgetEntityId: "user_def",
@@ -187,12 +189,13 @@ describe("buildThresholdPayload", () => {
       budgetSpendMicrodollars: 9_000_000,
       thresholdPercent: 90,
       triggeredByRequestId: "req_ghi",
+      isCritical: true,
     });
 
     expect(event.type).toBe("budget.threshold.critical");
   });
 
-  it("builds a warning event for 50% threshold", () => {
+  it("builds a warning event when isCritical=false (low threshold)", () => {
     const event = buildThresholdPayload({
       budgetEntityType: "user",
       budgetEntityId: "user_jkl",
@@ -200,6 +203,7 @@ describe("buildThresholdPayload", () => {
       budgetSpendMicrodollars: 10_000_000,
       thresholdPercent: 50,
       triggeredByRequestId: "req_mno",
+      isCritical: false,
     });
 
     expect(event.type).toBe("budget.threshold.warning");
@@ -233,27 +237,9 @@ describe("buildThresholdPayload", () => {
     expect(event.type).toBe("budget.threshold.warning");
   });
 
-  it("omitted isCritical falls back to >= 90 logic (backward compat)", () => {
-    const warning = buildThresholdPayload({
-      budgetEntityType: "user",
-      budgetEntityId: "user_abc",
-      budgetLimitMicrodollars: 100_000_000,
-      budgetSpendMicrodollars: 80_000_000,
-      thresholdPercent: 80,
-      triggeredByRequestId: "req_1",
-    });
-    expect(warning.type).toBe("budget.threshold.warning");
-
-    const critical = buildThresholdPayload({
-      budgetEntityType: "user",
-      budgetEntityId: "user_abc",
-      budgetLimitMicrodollars: 100_000_000,
-      budgetSpendMicrodollars: 90_000_000,
-      thresholdPercent: 90,
-      triggeredByRequestId: "req_1",
-    });
-    expect(critical.type).toBe("budget.threshold.critical");
-  });
+  // Removed: "omitted isCritical falls back to >= 90 logic" test.
+  // The fallback was a compat shim; isCritical is now a required field and
+  // callers pass it explicitly based on their own per-entity threshold arrays.
 });
 
 describe("buildBudgetResetPayload", () => {

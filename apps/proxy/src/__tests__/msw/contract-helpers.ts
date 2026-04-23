@@ -46,7 +46,6 @@ export function makeContractEnv(overrides: Partial<Env> = {}): Env {
       idFromName: vi.fn().mockReturnValue("do-id"),
       get: vi.fn().mockReturnValue({}),
     },
-    RECONCILE_QUEUE: { send: vi.fn() },
     COST_EVENT_QUEUE: { send: vi.fn(), sendBatch: vi.fn() },
     BODY_STORAGE: { put: vi.fn(), get: vi.fn().mockResolvedValue(null) },
     ...overrides,

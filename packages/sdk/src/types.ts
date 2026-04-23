@@ -65,7 +65,7 @@ export interface NullSpendConfig {
    * Optional — header-based detection (`x-nullspend-key` set on the request) still
    * works as a fallback when `proxyUrl` is unset.
    *
-   * Example: `"https://nullspend.cjones6489.workers.dev"`
+   * Example: `"https://proxy.nullspend.dev"`
    */
   proxyUrl?: string;
   /** Override the API version sent via NullSpend-Version header. Defaults to the SDK's built-in version. */
@@ -271,7 +271,8 @@ export type DenialReason =
   | { type: "session_limit"; sessionSpend: number; sessionLimit: number }
   | { type: "velocity"; retryAfterSeconds?: number; limit?: number; window?: number; current?: number }
   | { type: "tag_budget"; tagKey?: string; tagValue?: string; remaining?: number; limit?: number; spend?: number }
-  | { type: "loop"; detectionType?: string; model?: string; callCount?: number; windowSeconds?: number; maxCalls?: number };
+  | { type: "loop"; detectionType?: string; model?: string; callCount?: number; windowSeconds?: number; maxCalls?: number }
+  | { type: "plan_limit"; count: number; blockAt: number; tier: string; upgradeUrl?: string; selfHostUrl?: string };
 
 // ---------------------------------------------------------------------------
 // Customer session

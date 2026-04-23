@@ -457,9 +457,9 @@ describe("Mandate enforcement + policy endpoint (live)", () => {
     expect(allowedRes.status).toBe(200);
     await allowedRes.text();
 
-    // Poll /v1/policy for the spend increase. Reconciliation rides the
-    // RECONCILE_QUEUE (async), so dwell time is the same 5-14s class as
-    // the cost-event queue. COST_EVENT_LANDING_TIMEOUT_MS (30s) gives
+    // Poll /v1/policy for the spend increase. Reconciliation is direct
+    // (DO RPC inside waitUntil), so dwell time is bounded by the DO alarm
+    // + PXY-2 outbox. COST_EVENT_LANDING_TIMEOUT_MS (30s) gives
     // 2× headroom over the observed p99.
     const newSpend = await waitForPolicyBudgetSpend(
       BASE,

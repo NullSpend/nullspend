@@ -18,6 +18,7 @@ const DEFAULT_ERROR_DOCS_URL: Record<string, string> = {
   VelocityExceededError: "https://nullspend.dev/docs/errors/velocity",
   LoopDetectedError: "https://nullspend.dev/docs/errors/loop-detected",
   TagBudgetExceededError: "https://nullspend.dev/docs/errors/tag-budget",
+  PlanLimitExceededError: "https://nullspend.dev/docs/errors/plan-limit",
 };
 
 export class NullSpendError extends Error {
@@ -271,6 +272,57 @@ export class TagBudgetExceededError extends NullSpendError {
     this.limitMicrodollars = details?.limit !== undefined ? safeFiniteNonNeg(details.limit) : undefined;
     this.spendMicrodollars = details?.spend !== undefined ? safeFiniteNonNeg(details.spend) : undefined;
     this.recovery = details?.recovery;
+  }
+
+  override get docsUrl(): string {
+    return this.recovery?.docs ?? super.docsUrl;
+  }
+}
+
+/**
+ * PR-2c: NullSpend-tier plan-limit denial. Thrown when an org's governed-request
+ * count exceeds its plan cap (Free = 100K per period). Unlike BudgetExceededError
+ * (org-configured budget), this comes from NullSpend's pricing tiers — the
+ * `upgradeUrl` points to NullSpend's canonical pricing page, and `selfHostUrl`
+ * gives the alternative remediation path. Both are top-level `error.*` fields
+ * on the 429 body, parsed by `dispatchDenialCode` in `tracked-fetch.ts`.
+ *
+ * `count`, `blockAt`, and `tier` carry the decision frozen at the ORIGINAL
+ * request time (PR-2c codex-round-3 C1 — DO idempotency replay persists the
+ * original outcome; retries of the same request produce identical errors
+ * regardless of current counter state).
+ */
+export class PlanLimitExceededError extends NullSpendError {
+  public readonly count: number;
+  public readonly blockAt: number;
+  public readonly tier: string;
+  public readonly upgradeUrl: string | undefined;
+  public readonly selfHostUrl: string | undefined;
+  public readonly recovery: Recovery | undefined;
+
+  constructor(details: {
+    count: number;
+    blockAt: number;
+    tier: string;
+    upgradeUrl?: string;
+    selfHostUrl?: string;
+    recovery?: Recovery;
+  }) {
+    const safeCount = safeFiniteNonNeg(details.count);
+    const safeBlockAt = safeFiniteNonNeg(details.blockAt);
+    const safeTier = typeof details.tier === "string" && details.tier.length > 0 ? details.tier : "unknown";
+    super(
+      `Plan limit reached: ${safeCount} of ${safeBlockAt} governed requests on ${safeTier} plan. Upgrade or wait for period reset.`,
+      429,
+      "plan_limit_exceeded",
+    );
+    this.name = "PlanLimitExceededError";
+    this.count = safeCount;
+    this.blockAt = safeBlockAt;
+    this.tier = safeTier;
+    this.upgradeUrl = details.upgradeUrl;
+    this.selfHostUrl = details.selfHostUrl;
+    this.recovery = details.recovery;
   }
 
   override get docsUrl(): string {

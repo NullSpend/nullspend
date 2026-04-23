@@ -18,6 +18,7 @@ _DEFAULT_ERROR_DOCS_URL = {
     "VelocityExceededError": "https://nullspend.dev/docs/errors/velocity",
     "LoopDetectedError": "https://nullspend.dev/docs/errors/loop-detected",
     "TagBudgetExceededError": "https://nullspend.dev/docs/errors/tag-budget",
+    "PlanLimitExceededError": "https://nullspend.dev/docs/errors/plan-limit",
 }
 
 
@@ -242,4 +243,45 @@ class TagBudgetExceededError(NullSpendError):
         self.remaining_microdollars = remaining_microdollars
         self.limit_microdollars = limit_microdollars
         self.spend_microdollars = spend_microdollars
+        self.recovery = recovery
+
+
+class PlanLimitExceededError(NullSpendError):
+    """Raised when an org exceeds its NullSpend plan-tier governed-request cap.
+
+    Unlike BudgetExceededError (org-configured budget), plan-limit denials come
+    from NullSpend's pricing tiers. ``upgrade_url`` points to the NullSpend
+    pricing page, ``self_host_url`` to the alternative remediation path. Both
+    are top-level ``error.*`` fields on the 429 response body (parsed by
+    :func:`_dispatch_denial` in ``_tracked_client.py``).
+
+    ``count``, ``block_at``, and ``tier`` carry the decision frozen at the
+    ORIGINAL request time (PR-2c codex-round-3 C1: DO idempotency replay
+    persists the original outcome; retries of the same request produce
+    identical errors regardless of current counter state).
+    """
+
+    def __init__(
+        self,
+        count: int,
+        block_at: int,
+        tier: str,
+        upgrade_url: str | None = None,
+        self_host_url: str | None = None,
+        recovery: dict | None = None,
+    ):
+        safe_count = count if isinstance(count, (int, float)) and count >= 0 else 0
+        safe_block_at = block_at if isinstance(block_at, (int, float)) and block_at >= 0 else 0
+        safe_tier = tier if isinstance(tier, str) and tier else "unknown"
+        super().__init__(
+            f"Plan limit reached: {safe_count} of {safe_block_at} governed requests "
+            f"on {safe_tier} plan. Upgrade or wait for period reset.",
+            status_code=429,
+            code="plan_limit_exceeded",
+        )
+        self.count = safe_count
+        self.block_at = safe_block_at
+        self.tier = safe_tier
+        self.upgrade_url = upgrade_url
+        self.self_host_url = self_host_url
         self.recovery = recovery

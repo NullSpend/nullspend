@@ -62,11 +62,12 @@ Pending invitations expire after **7 days**. Admins and owners can revoke pendin
 
 | Tier | Team Members (seat-counted) | Viewers |
 |---|---|---|
-| Free | 3 | Unlimited |
+| Free | Unlimited | Unlimited |
 | Pro | Unlimited | Unlimited |
+| Scale | Unlimited | Unlimited |
 | Enterprise | Unlimited | Unlimited |
 
-The seat count includes both active members and pending invitations (excluding viewer invitations).
+NullSpend is anti-per-seat across every tier (per [pricing strategy](https://nullspend.dev/pricing)). Invite as many teammates as you want — the seat count never blocks you. The seat count includes both active members and pending invitations (excluding viewer invitations).
 
 ## Managing Members
 
@@ -97,9 +98,10 @@ Switching is instant — the dashboard reloads with the selected org's data.
 
 Each organization has its own subscription. Personal orgs and team orgs are billed independently.
 
-- **Free tier** — includes 3 budgets, 10 API keys, 2 webhooks, 3 team members, $5K/mo spend cap, 30-day retention
-- **Pro ($49/mo)** — unlimited budgets, keys, members, 25 webhooks, $50K/mo spend cap, 90-day retention
-- **Enterprise** — unlimited everything, SSO/SAML, custom RBAC, dedicated support
+- **Free tier** — 100,000 governed requests/mo, 3 budgets, 10 API keys, 2 webhooks, unlimited team members, 7-day retention. Includes velocity limits, session caps, model/provider mandates, tag budgets, and multi-org. Self-hosted is unlimited.
+- **Pro ($49/mo)** — 500,000 governed requests/mo + overage, unlimited budgets/keys/members/webhooks, per-customer margin intelligence, Stripe revenue sync, cost regression alerts, 60-day retention.
+- **Scale ($199/mo)** — 2,000,000 governed requests/mo + overage, session replay, request body capture, custom cost reports, advanced RBAC, 180-day retention.
+- **Enterprise** — unlimited governed requests, SSO/SAML, SCIM, HIPAA BAA, EU data residency, custom retention, dedicated support.
 
 Only the **owner** can manage billing (upgrade, downgrade, access the Stripe portal).
 

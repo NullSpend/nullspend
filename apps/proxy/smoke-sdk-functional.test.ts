@@ -937,7 +937,7 @@ describeWithPrereqs("Section 4 — HITL error class fields", () => {
 // cost_events.customer_id column → SDK listCostEvents response.
 //
 // Prerequisites in addition to F1-F11:
-//   - PROXY_URL (deployed proxy, e.g. https://nullspend.cjones6489.workers.dev)
+//   - PROXY_URL (deployed proxy, e.g. https://proxy.nullspend.dev)
 //   - OPENAI_API_KEY (real spend, ~$0.005 per run)
 // ─────────────────────────────────────────────────────────────────
 describeWithPrereqs("Section 5 — Customer attribution end-to-end", () => {

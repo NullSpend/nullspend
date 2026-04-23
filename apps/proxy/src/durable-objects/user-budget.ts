@@ -6,9 +6,126 @@ import {
   markRetryFailed,
   deleteAbandonedEntries,
 } from "../lib/pg-sync-outbox.js";
+import {
+  createPlanCounterOutboxTable,
+  writePlanCounterOutboxEntry,
+  getRetryablePlanCounterEntries,
+  ackPlanCounterEntryById,
+  markPlanCounterEntryRetryFailed,
+  deleteAbandonedPlanCounterEntries,
+  deletePlanCounterEntryTerminal,
+  isTerminalPlanCounterFkError,
+  computePlanCounterOutboxLagMs,
+} from "../lib/pg-sync-outbox-plan-counter.js";
+import {
+  createPlanCounterDivergenceOutboxTable,
+  writePlanCounterDivergenceOutboxEntry,
+  getRetryablePlanCounterDivergenceEntries,
+  ackPlanCounterDivergenceEntryById,
+  markPlanCounterDivergenceEntryRetryFailed,
+  deleteAbandonedPlanCounterDivergenceEntries,
+  deletePlanCounterDivergenceEntryTerminal,
+  isTerminalPlanCounterDivergenceFkError,
+  computePlanCounterDivergenceOutboxLagMs,
+} from "../lib/pg-sync-outbox-plan-divergences.js";
 import { updateBudgetSpend } from "../lib/budget-spend.js";
+import { upsertPlanCounterPeriod } from "../lib/upsert-plan-counter.js";
+import { upsertPlanCounterDivergence } from "../lib/upsert-plan-counter-divergence.js";
+import { writePlanCounterSyncFailure } from "../lib/write-plan-counter-sync-failure.js";
 import { getSql } from "../lib/db.js";
+import type { TierLabel } from "../lib/api-key-auth.js";
+import { optionalBinding } from "../lib/env.js";
 import { emitMetric } from "../lib/metrics.js";
+import { stampPeriodClose } from "../lib/stamp-period-close.js";
+
+/**
+ * PR-2b: emergency safety valve for `plan_counter_idempotency`. Module-scope
+ * so callers / tests can pass a different bound to `compactIdempotencyTable`.
+ * Normal ops: 24h TTL handles it; this only fires on pathological key reuse
+ * or adversarial patterns.
+ */
+export const IDEMPOTENCY_EMERGENCY_BOUND = 1_000_000;
+
+/**
+ * PR-2b build-audit Finding #3: pure helper for the emergency compaction
+ * path, extracted so it's directly unit-testable with a small bound + 101
+ * rows. Previously the logic lived inline in `handleIdempotencyDedupPrune`
+ * and C30c couldn't stub `IDEMPOTENCY_EMERGENCY_BOUND` (module binding was
+ * already loaded by the time `vi.doMock` ran). Extraction also makes the
+ * `seen_at` index dependency explicit — the query plan MUST use
+ * `plan_counter_idempotency_seen_at_idx` or this becomes a full sort.
+ *
+ * Returns the number of rows removed (0 if under bound).
+ */
+export function compactIdempotencyTable(
+  sql: import("../lib/pg-sync-outbox.js").SqlStorage,
+  bound: number = IDEMPOTENCY_EMERGENCY_BOUND,
+): { removed: number; remaining: number } {
+  const cnt = sql.exec<{ cnt: number }>(
+    "SELECT COUNT(*) as cnt FROM plan_counter_idempotency",
+  ).toArray()[0]?.cnt ?? 0;
+  if (cnt <= bound) return { removed: 0, remaining: cnt };
+
+  const targetRemoved = Math.floor(cnt / 2);
+  sql.exec(
+    `DELETE FROM plan_counter_idempotency WHERE key IN (
+       SELECT key FROM plan_counter_idempotency
+       ORDER BY seen_at ASC
+       LIMIT ?
+     )`,
+    targetRemoved,
+  );
+  return { removed: targetRemoved, remaining: cnt - targetRemoved };
+}
+
+/**
+ * PR-2b: incrementPlanCounter return type. Discriminated union (per codex G3)
+ * so callers don't mistake a null-org no-op for a successful increment to 0.
+ * PR-2c's orchestrator + PR-2d's internal endpoint handle `skipped` by letting
+ * the request through without counter gating (debug/test paths).
+ *
+ * `skipped.reason = "non_uuid_org"` added per build-audit Finding #2 — the
+ * upstream DO routing key (`idFromName(ownerId)`) may legitimately be a
+ * userId (Free-tier / self-hosted fallback) for the budget-spend path. For
+ * plan-counter we MUST route on a UUID orgId because `upsertPlanCounterPeriod`
+ * casts `::uuid` against `org_period_usage.org_id`. Returning skipped early
+ * prevents a retry-loop that would eventually abandon the entry silently.
+ */
+export type IncrementPlanCounterResult =
+  | { status: "approved"; count: number }
+  | { status: "denied"; count: number; blockAt: number }
+  | { status: "skipped"; reason: "null_org" | "non_uuid_org" | "idempotency_key_too_long" };
+
+/**
+ * PR-2c codex-round-1 M8 / D1 flipped: options-object signature for the DO
+ * RPC. `orgId` is NOT here (DO derives from `this.ctx.id.name`). `tier` IS
+ * here so shadow-mode metric tags carry it without a second RPC round-trip.
+ */
+export interface IncrementPlanCounterArgs {
+  planLimitBlockAt: number | null;
+  planLimitMode: "hard" | "soft";
+  tier: TierLabel;
+  periodStart: number;
+  periodEnd: number;
+  idempotencyKey?: string;
+}
+
+/**
+ * PR-2b build-audit Finding #2: shared UUID validator for the DO-entry guard.
+ * Matches the canonical 8-4-4-4-12 lowercase hex form that Postgres UUID
+ * columns accept. Exported so tests can assert on it directly.
+ */
+export const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * PR-2b edge-case audit EC2: length cap on caller-supplied idempotency keys.
+ * Stops a malicious or buggy SDK caller from bloating DO SQLite (each key
+ * becomes a PRIMARY KEY row in `plan_counter_idempotency`) and the downstream
+ * outbox `request_id` + Postgres `plan_counter_sync_requests.request_id`.
+ * 256 chars fits UUID v4 / request-id ergonomics with headroom.
+ */
+export const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -250,15 +367,49 @@ export class UserBudgetDO extends DurableObject {
       ).toArray()[0]?.cnt ?? 0;
       console.log(`[UserBudgetDO] initialized, ${count} budgets loaded`);
 
-      // PXY-2: Schedule alarm if pending outbox entries exist (cold rehydration)
+      // PXY-2: Schedule alarm if pending outbox entries exist (cold rehydration).
+      // PR-2b: include plan-counter outbox so a cold DO with only plan-counter
+      // work still wakes for dispatch.
       const pendingOutbox = this.ctx.storage.sql.exec<{ cnt: number }>(
         "SELECT COUNT(*) as cnt FROM pg_sync_outbox",
       ).toArray()[0]?.cnt ?? 0;
-      if (pendingOutbox > 0) {
+      const pendingPlanCounterOutbox = this.ctx.storage.sql.exec<{ cnt: number }>(
+        "SELECT COUNT(*) as cnt FROM pg_sync_outbox_plan_counter",
+      ).toArray()[0]?.cnt ?? 0;
+      // PR-2e F2-partial (Issue 3): include divergence outbox pending count so a
+      // cold DO with only stalled divergence rows still wakes for dispatch.
+      // Per codex R7 C4: divergence outbox stall is a launch-safety signal —
+      // leaving it untracked means a silent visibility failure after a deploy.
+      //
+      // F2-partial codex-diff review (2026-04-19): no try/catch here. `initSchema()`
+      // above runs the v12 migration BEFORE this COUNT executes (both are inside
+      // the same `blockConcurrencyWhile`), so the table is guaranteed to exist.
+      // The original guard was a phantom race — it would have masked real SQLite
+      // corruption or migration bugs behind a silent 0 count.
+      const pendingPlanCounterDivergenceOutbox = this.ctx.storage.sql.exec<{ cnt: number }>(
+        "SELECT COUNT(*) as cnt FROM pg_sync_outbox_plan_divergences",
+      ).toArray()[0]?.cnt ?? 0;
+      // PR-6a edge-case E6: retained expired plan_counter rows also need a
+      // cold-start wake. Previously only outboxes triggered the reconstruction
+      // alarm, so a DO evicted between period-end and the first stampPeriodClose
+      // attempt would stay silent until unrelated activity woke it. Now
+      // reconstruction schedules the alarm for ANY work the alarm handler
+      // cares about, including retained plan_counter rows — which closes the
+      // pre-first-wake-after-eviction window the audit flagged.
+      const retainedExpiredPlanCounterRows = this.ctx.storage.sql.exec<{ cnt: number }>(
+        "SELECT COUNT(*) as cnt FROM plan_counter WHERE period_end < ?",
+        Date.now(),
+      ).toArray()[0]?.cnt ?? 0;
+      const totalPending =
+        pendingOutbox +
+        pendingPlanCounterOutbox +
+        pendingPlanCounterDivergenceOutbox +
+        retainedExpiredPlanCounterRows;
+      if (totalPending > 0) {
         const currentAlarm = await this.ctx.storage.getAlarm();
         if (!currentAlarm) {
           await this.ctx.storage.setAlarm(Date.now() + 1_000);
-          console.log(`[UserBudgetDO] scheduled alarm for ${pendingOutbox} pending outbox entries`);
+          console.log(`[UserBudgetDO] scheduled alarm for ${totalPending} pending entries (budget-spend=${pendingOutbox}, plan-counter=${pendingPlanCounterOutbox}, divergence=${pendingPlanCounterDivergenceOutbox}, expired-plan-counter=${retainedExpiredPlanCounterRows})`);
         }
       }
     });
@@ -396,6 +547,77 @@ export class UserBudgetDO extends DurableObject {
     if (version < 9) {
       try { this.ctx.storage.sql.exec("ALTER TABLE budgets ADD COLUMN synced_at INTEGER NOT NULL DEFAULT 0"); } catch { /* already exists */ }
       this.ctx.storage.sql.exec("INSERT OR IGNORE INTO _schema_version(version) VALUES (9)");
+    }
+
+    // v10 migration (PR-2b): plan-counter tables + period-scoped idempotency + dedicated outbox.
+    // - `plan_counter`: 1-row-at-a-time invariant (lazy period reset in incrementPlanCounter).
+    // - `plan_counter_idempotency`: period-scoped dedup per Decision #39. seen_at index
+    //   makes TTL prune + emergency compaction feasible at 1M+ rows (R3-M2).
+    // - `pg_sync_outbox_plan_counter`: dedicated table per Decision #25 — separate from
+    //   `pg_sync_outbox` so v_old isolates during rolling deploy don't accidentally
+    //   delete governed-request deltas via `updateBudgetSpend`'s `cost <= 0` short-circuit.
+    if (version < 10) {
+      this.ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS plan_counter (
+          period_start INTEGER PRIMARY KEY,
+          period_end INTEGER NOT NULL,
+          count INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS plan_counter_idempotency (
+          key TEXT PRIMARY KEY,
+          period_start INTEGER NOT NULL,
+          seen_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS plan_counter_idempotency_seen_at_idx ON plan_counter_idempotency(seen_at);
+      `);
+      createPlanCounterOutboxTable(this.ctx.storage.sql as import("../lib/pg-sync-outbox.js").SqlStorage);
+      this.ctx.storage.sql.exec("INSERT OR IGNORE INTO _schema_version(version) VALUES (10)");
+    }
+
+    // v11 migration (PR-2c codex-round-3 C1 + codex-round-4 M1): persist the
+    // original plan-limit decision per idempotency key so replay returns the
+    // exact outcome of the first attempt (not a recompute from live counter).
+    //
+    // Columns are NULLABLE (NO default) — codex-round-4 M1: during rolling
+    // deploy, a v_old isolate can still INSERT using the legacy 3-column shape.
+    // NULL in any of the new columns is a SENTINEL for "pre-migration or
+    // v_old-write row, do not trust". Replay path treats that as fresh and
+    // falls through, overwriting the row with the full v_new shape.
+    // codex-final review: ALTER TABLE ADD COLUMN is NOT idempotent on re-entry
+    // — SQLite throws `duplicate column` if a column already exists. Without
+    // a reentrancy guard, a DO that dies between the first ALTER and the
+    // `_schema_version` INSERT would brick on next startup. We probe the
+    // table's columns via `PRAGMA table_info` and add only the missing ones.
+    // Final `INSERT OR IGNORE` records the migration as complete regardless
+    // of how many columns were added this run.
+    if (version < 11) {
+      const existing = this.ctx.storage.sql.exec<{ name: string }>(
+        "PRAGMA table_info(plan_counter_idempotency)",
+      ).toArray().map((c) => c.name);
+      if (!existing.includes("status")) {
+        this.ctx.storage.sql.exec("ALTER TABLE plan_counter_idempotency ADD COLUMN status TEXT");
+      }
+      if (!existing.includes("decision_count")) {
+        this.ctx.storage.sql.exec("ALTER TABLE plan_counter_idempotency ADD COLUMN decision_count INTEGER");
+      }
+      if (!existing.includes("decision_block_at")) {
+        this.ctx.storage.sql.exec("ALTER TABLE plan_counter_idempotency ADD COLUMN decision_block_at INTEGER");
+      }
+      this.ctx.storage.sql.exec("INSERT OR IGNORE INTO _schema_version(version) VALUES (11)");
+    }
+
+    // v12 migration (PR-2e F2-partial): divergence outbox. Captures
+    // `plan_counter_period_divergence` events in a durable SQLite outbox
+    // that drains to `plan_counter_divergences` Postgres via the alarm
+    // handler. Without this, divergence events are emitMetric-only and the
+    // launch-watcher can false-green on a known double-count vector (per
+    // codex-adversarial-review 2026-04-19 R6 finding #2 / R7 C1/C2/C4).
+    //
+    // Helper is idempotent (CREATE TABLE IF NOT EXISTS + CREATE INDEX IF NOT EXISTS).
+    if (version < 12) {
+      createPlanCounterDivergenceOutboxTable(this.ctx.storage.sql as import("../lib/pg-sync-outbox.js").SqlStorage);
+      this.ctx.storage.sql.exec("INSERT OR IGNORE INTO _schema_version(version) VALUES (12)");
     }
   }
 
@@ -1287,6 +1509,64 @@ export class UserBudgetDO extends DurableObject {
     ).toArray();
   }
 
+  /** PR-2b: read-only plan-counter outbox state. */
+  async getPlanCounterOutboxEntries(): Promise<Array<{
+    id: number;
+    request_id: string;
+    org_id: string;
+    period_start: number;
+    period_end: number;
+    delta_count: number;
+    attempts: number;
+    next_attempt_at: number;
+    created_at: number;
+  }>> {
+    return this.ctx.storage.sql.exec<{
+      id: number;
+      request_id: string;
+      org_id: string;
+      period_start: number;
+      period_end: number;
+      delta_count: number;
+      attempts: number;
+      next_attempt_at: number;
+      created_at: number;
+    }>(
+      "SELECT id, request_id, org_id, period_start, period_end, delta_count, attempts, next_attempt_at, created_at FROM pg_sync_outbox_plan_counter ORDER BY id ASC",
+    ).toArray();
+  }
+
+  /** PR-2b: read-only plan_counter state (1-row-at-a-time invariant). */
+  async getPlanCounterRow(): Promise<{
+    period_start: number;
+    period_end: number;
+    count: number;
+    created_at: number;
+  } | null> {
+    const rows = this.ctx.storage.sql.exec<{
+      period_start: number;
+      period_end: number;
+      count: number;
+      created_at: number;
+    }>("SELECT * FROM plan_counter LIMIT 1").toArray();
+    return rows[0] ?? null;
+  }
+
+  /** PR-2b: read-only idempotency state. */
+  async getPlanCounterIdempotencyRows(): Promise<Array<{
+    key: string;
+    period_start: number;
+    seen_at: number;
+  }>> {
+    return this.ctx.storage.sql.exec<{
+      key: string;
+      period_start: number;
+      seen_at: number;
+    }>(
+      "SELECT key, period_start, seen_at FROM plan_counter_idempotency ORDER BY seen_at ASC",
+    ).toArray();
+  }
+
   /** Read-only reservation state (for PXY-2 observability and testing). */
   async getReservations(): Promise<Array<{
     id: string;
@@ -1407,6 +1687,573 @@ export class UserBudgetDO extends DurableObject {
   }
 
   /**
+   * PR-2b: increment the governed-request counter for the owning org.
+   *
+   * Wrapped in `transactionSync()` so the counter UPDATE + outbox INSERT +
+   * idempotency INSERT commit atomically — a throw anywhere rolls back all
+   * three. Atomicity proven by test C29.
+   *
+   * Null-orgId guard returns `{ status: "skipped", reason: "null_org" }` —
+   * `idFromString`-created DO stubs have null `ctx.id.name`, and the outbox's
+   * `org_id TEXT NOT NULL` would throw inside the transaction otherwise.
+   * Callers MUST handle `skipped` distinctly from `approved`.
+   *
+   * Period-scoped idempotency dedup (Decision #39): if a retry arrives with
+   * a DIFFERENT period than the stored dedup row, treat the stored row as
+   * stale — delete it and count fresh. See plan §"Period-scoped dedup
+   * invariant" for the Stripe-renewal edge + rationale.
+   */
+  async incrementPlanCounter(args: IncrementPlanCounterArgs): Promise<IncrementPlanCounterResult> {
+    const { planLimitBlockAt, planLimitMode, tier, periodStart, periodEnd, idempotencyKey } = args;
+    const now = Date.now();
+
+    const orgId = this.ctx.id.name;
+    if (!orgId) {
+      emitMetric("plan_counter_skipped_null_org", {});
+      return { status: "skipped", reason: "null_org" };
+    }
+
+    // Build-audit Finding #2: guard against non-UUID DO names. The existing
+    // budget-spend path keys on `orgId ?? userId`, so a Free-tier / self-hosted
+    // caller may legitimately route to a DO whose name is a userId. Trying to
+    // upsert that into `org_period_usage(org_id UUID)` throws at Postgres level,
+    // loops through MAX_ATTEMPTS, and silently abandons the entry. Fail fast
+    // with a distinct reason so PR-2c / PR-2d can treat it as a pass-through.
+    if (!UUID_RE.test(orgId)) {
+      emitMetric("plan_counter_skipped_non_uuid_org", {});
+      return { status: "skipped", reason: "non_uuid_org" };
+    }
+
+    // Edge-case EC2: cap idempotency key length at the DO boundary. Stops a
+    // buggy/malicious SDK caller from writing multi-MB keys into DO SQLite.
+    if (idempotencyKey !== undefined && idempotencyKey.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+      emitMetric("plan_counter_skipped_idempotency_key_too_long", { orgId });
+      return { status: "skipped", reason: "idempotency_key_too_long" };
+    }
+
+    // Period invariant (Decision #38 / codex N14): inverted/zero bounds → fall-soft
+    // to calendar month. Metric emission uses unified name across proxy + DO so
+    // `plan_counter_period_fallback{reason}` is a single queryable series.
+    let effectivePeriodStart = periodStart;
+    let effectivePeriodEnd = periodEnd;
+    if (!(effectivePeriodEnd > effectivePeriodStart)) {
+      emitMetric("plan_counter_period_fallback", { reason: "paid_inverted", orgId });
+      const d = new Date(now);
+      effectivePeriodStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+      effectivePeriodEnd = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+    }
+
+    const sqlStorage = this.ctx.storage.sql as import("../lib/pg-sync-outbox.js").SqlStorage;
+    let result: IncrementPlanCounterResult | undefined;
+
+    this.ctx.storage.transactionSync(() => {
+      // (1) Period-scoped idempotency (Decision #39 + PR-2c codex-round-3 C1
+      //     persisted decision replay). Read all 5 columns; NULL sentinel on
+      //     status/decision_count → pre-migration or v_old-write row, treat
+      //     as fresh (codex-round-4 M1).
+      if (idempotencyKey) {
+        const seen = this.ctx.storage.sql.exec<{
+          period_start: number;
+          status: string | null;
+          decision_count: number | null;
+          decision_block_at: number | null;
+        }>(
+          "SELECT period_start, status, decision_count, decision_block_at FROM plan_counter_idempotency WHERE key = ?",
+          idempotencyKey,
+        ).toArray()[0];
+        if (seen) {
+          if (seen.period_start !== effectivePeriodStart) {
+            // Stale key from prior period — delete + fall through to fresh increment.
+            //
+            // Edge-audit E1: emit a divergence metric BEFORE the delete so ops can
+            // chart subscription-renewal-driven over-counts. The intended use of this
+            // path is the SDK Stripe-renewal retry case (Decision #39 / plan
+            // §"Period-scoped dedup invariant"). Sustained rate > 0 in production
+            // signals the F1 partial-success window crossing a billing boundary —
+            // counter increments BOTH for the stored period (live-path) AND the
+            // incoming period (cron replay), inflating usage by 1 per occurrence.
+            // Tags include the period delta so operators can size the drift impact.
+            emitMetric("plan_counter_period_divergence", {
+              tier,
+              orgId,
+              storedPeriodStart: seen.period_start,
+              incomingPeriodStart: effectivePeriodStart,
+            });
+            // PR-2e F2-partial (codex R7 C1/Issue 1A): write a durable outbox
+            // entry for this divergence event. The emitMetric above goes only
+            // to AE/console; the launch-watcher queries Postgres via
+            // `/api/internal/metrics-summary` so we need a PG-side row. This
+            // outbox write is INSIDE the same transactionSync as the DELETE
+            // below — atomic per Decision #30.
+            //
+            // `eventId` (dedup key) and `divergenceAtMs` (event-time, NOT
+            // flush-time) are captured HERE so retry-dup protection works and
+            // the watcher's 15m window is aligned with when the event actually
+            // happened rather than when the outbox drained (codex R7 C1).
+            writePlanCounterDivergenceOutboxEntry(
+              this.ctx.storage.sql as import("../lib/pg-sync-outbox.js").SqlStorage,
+              {
+                eventId: crypto.randomUUID(),
+                orgId,
+                tier,
+                divergenceAtMs: Date.now(),
+                storedPeriodStart: seen.period_start,
+                incomingPeriodStart: effectivePeriodStart,
+              },
+            );
+            this.ctx.storage.sql.exec(
+              "DELETE FROM plan_counter_idempotency WHERE key = ?",
+              idempotencyKey,
+            );
+          } else if (seen.status === null || seen.decision_count === null) {
+            // Pre-migration row (PR-2b shape) OR v_old-write row during rolling deploy.
+            // Decision fields never populated — can't trust for replay. Delete + fall
+            // through so fresh path writes a proper v_new-shape row.
+            emitMetric("plan_counter_idempotency_pre_v11_upgrade", {});
+            this.ctx.storage.sql.exec(
+              "DELETE FROM plan_counter_idempotency WHERE key = ?",
+              idempotencyKey,
+            );
+          } else {
+            // Full v_new decision present — replay verbatim. Do NOT recompute from
+            // live counter (codex-round-3 C1: same key must produce same outcome).
+            // Do NOT emit plan_limit_would_block (codex-round-3 M4: fires only on
+            // fresh increments, not on replay).
+            if (seen.status === "denied") {
+              // edge-case-audit E4: avoid non-null assertion on decision_block_at.
+              // Write path invariant guarantees it's set on denied rows, but we
+              // fall back to 0 to avoid a surprise runtime cast if the invariant
+              // is ever violated (admin SQL UPDATE, future bug path, etc).
+              result = { status: "denied", count: seen.decision_count, blockAt: seen.decision_block_at ?? 0 };
+            } else {
+              result = { status: "approved", count: seen.decision_count };
+            }
+            emitMetric("plan_counter_idempotency_hit", { tier, replayed_status: result.status });
+            return; // exit transactionSync — replay path, no writes
+          }
+        }
+      }
+
+      // (2) Period boundary — lazy reset if caller's bounds differ from stored row.
+      //
+      // Per edge-case audit EC1: the OLD plan_counter row is a LOCAL enforcement
+      // cache; each individual increment already wrote a `deltaCount: 1` outbox
+      // entry with the correct `period_start` captured at write time. Postgres
+      // therefore already has the per-period count via the per-increment entries.
+      // We used to additionally flush `deltaCount: old.count` here, which added
+      // a second copy of the accumulated count on top of the already-synced
+      // +1 stream → 2x over-count at every boundary cross. The reset is now
+      // purely local: delete the stale row and insert a fresh one for the new
+      // period. The alarm-driven boundary reset in `handlePlanCounterBoundaryFlush`
+      // follows the same rule.
+      const current = this.ctx.storage.sql.exec<{ period_start: number; count: number }>(
+        "SELECT period_start, count FROM plan_counter WHERE period_start = ?",
+        effectivePeriodStart,
+      ).toArray()[0];
+      if (!current) {
+        this.ctx.storage.sql.exec("DELETE FROM plan_counter");
+        this.ctx.storage.sql.exec(
+          "INSERT INTO plan_counter (period_start, period_end, count, created_at) VALUES (?, ?, 0, ?)",
+          effectivePeriodStart, effectivePeriodEnd, now,
+        );
+      }
+
+      // (3) Atomic trio: counter UPDATE + outbox INSERT + idempotency INSERT.
+      const updated = this.ctx.storage.sql.exec<{ count: number }>(
+        "UPDATE plan_counter SET count = count + 1 WHERE period_start = ? RETURNING count",
+        effectivePeriodStart,
+      ).toArray()[0];
+      const count = updated.count;
+
+      writePlanCounterOutboxEntry(sqlStorage, {
+        requestId: idempotencyKey ?? crypto.randomUUID(),
+        orgId,
+        periodStart: effectivePeriodStart,
+        periodEnd: effectivePeriodEnd,
+        deltaCount: 1,
+      });
+
+      // PR-2c codex-round-1 F3 + H4 + codex-round-3 M4: compute denial decision
+      // for this fresh increment. Helper is invoked ONLY on the fresh path so
+      // the `plan_limit_would_block` shadow-mode metric fires once per original
+      // request, not once per retry. CRITICAL: flag gates ONLY the denial
+      // decision, NOT the counter increment — counter + outbox already wrote
+      // above so shadow-mode observability stays honest.
+      //
+      // codex-round-3 H2: PLAN_COUNTER_ENABLED via optionalBinding() so the var
+      // typechecks against the extended OptionalEnv interface.
+      const planEnabled = optionalBinding(this.env, "PLAN_COUNTER_ENABLED") === "true";
+      // Use `!= null` (loose equality) to match the orchestrator's style at
+      // budget-orchestrator.ts:110. In practice the orchestrator only calls
+      // with a defined blockAt, so both variants behave identically here — but
+      // keeping the style aligned prevents future refactor drift (build-audit F4).
+      if (planLimitBlockAt != null && count > planLimitBlockAt) {
+        if (planLimitMode === "hard") {
+          if (planEnabled) {
+            result = { status: "denied", count, blockAt: planLimitBlockAt };
+          } else {
+            // Shadow mode — would-block observability signal without enforcement.
+            // codex-round-1 H4: tags are {tier, mode} only. orgId lives in structured log.
+            emitMetric("plan_limit_would_block", { tier, mode: planLimitMode });
+            console.log("[UserBudgetDO] plan_limit_would_block (shadow):", {
+              orgId, tier, count, blockAt: planLimitBlockAt,
+            });
+            result = { status: "approved", count };
+          }
+        } else {
+          // PR-2e /review P1-3: soft-mode overflow observability. Pro/Scale
+          // customers hitting their included-requests cap never deny — overage
+          // is billed, not blocked. But without this metric, soft-mode had
+          // ZERO observability signal (plan_limit_would_block only fires in
+          // shadow mode). Overage-billing accuracy and Pro/Scale-conversion
+          // funnel analytics both depend on charting this.
+          //
+          // NOT wired into launch-watcher alerts — this is a billing /
+          // product metric, not an outage signal.
+          emitMetric("plan_limit_would_warn", { tier, mode: planLimitMode });
+          console.log("[UserBudgetDO] plan_limit_would_warn (soft overflow):", {
+            orgId, tier, count, blockAt: planLimitBlockAt,
+          });
+          result = { status: "approved", count };
+        }
+      } else {
+        result = { status: "approved", count };
+      }
+
+      // PR-2c codex-round-3 C1: persist the decision for idempotency replay
+      // correctness. INSERT OR REPLACE handles the NULL-sentinel delete-then-
+      // fresh path in the replay branch (DELETE already ran by the time we
+      // get here, but OR REPLACE keeps us safe against any race). Write
+      // status + decision_count for every idempotency-keyed request; blockAt
+      // only when denied.
+      if (idempotencyKey) {
+        const decisionStatus = result.status; // "approved" | "denied" (never "skipped" — early-returned above)
+        const decisionCount = result.count;
+        const decisionBlockAt = result.status === "denied" ? result.blockAt : null;
+        this.ctx.storage.sql.exec(
+          "INSERT OR REPLACE INTO plan_counter_idempotency (key, period_start, seen_at, status, decision_count, decision_block_at) VALUES (?, ?, ?, ?, ?, ?)",
+          idempotencyKey, effectivePeriodStart, now, decisionStatus, decisionCount, decisionBlockAt,
+        );
+      }
+    });
+
+    // Alarm scheduling OUTSIDE the transaction (matches existing reconcile pattern).
+    try {
+      const currentAlarm = await this.ctx.storage.getAlarm();
+      const soonAlarm = Date.now() + 1_000;
+      if (!currentAlarm || currentAlarm > soonAlarm) {
+        await this.ctx.storage.setAlarm(soonAlarm);
+      }
+    } catch { /* best-effort */ }
+
+    // transactionSync is synchronous — `result` is always assigned when the
+    // block completes. Non-null assertion is safe.
+    return result!;
+  }
+
+  /**
+   * PR-2b: alarm sub-handler — reset a closed plan_counter period if any.
+   *
+   * Per edge-case audit EC1, this sub-handler now ONLY deletes the local
+   * cache row. No outbox entry is written. Reason: Postgres already has
+   * the correct per-period count from the per-increment `deltaCount: 1`
+   * outbox entries; a flush with `deltaCount: row.count` would double-add
+   * the accumulated count on top of the already-synced stream. The old
+   * name "BoundaryFlush" reflected the original (incorrect) design that
+   * wrote an outbox entry here; the current behavior is a pure local reset.
+   *
+   * Atomicity (per codex round-2 H2) is preserved for defense-in-depth even
+   * though the only write is a DELETE — a future change that re-adds an
+   * outbox write must stay transactional.
+   */
+  async handlePlanCounterBoundaryFlush(): Promise<void> {
+    const orgId = this.ctx.id.name;
+    if (!orgId) {
+      // Build-audit Finding #4: observability parity with the increment path,
+      // which also emits a skipped-null-org metric. Without this, a misrouted
+      // stub (idFromString, newUniqueId) with a stranded plan_counter row
+      // would be silently stuck — no signal for ops.
+      emitMetric("plan_counter_flush_skipped_null_org", {});
+      return;
+    }
+
+    // Step 1: read the local plan_counter row without holding a write lock.
+    // Deletion happens later, conditionally on stampPeriodClose success.
+    const row = this.ctx.storage.sql.exec<{
+      period_start: number; period_end: number; count: number;
+    }>("SELECT * FROM plan_counter LIMIT 1").toArray()[0];
+
+    if (row && row.period_end < Date.now()) {
+      // PR-6a R3 P1: stamp `org_period_usage` snapshots BEFORE deleting the
+      // local counter. If stamp fails (HYPERDRIVE unavailable, PG error,
+      // unknown Stripe status, deferred on missing sub row), leave the
+      // counter in place so the next alarm tick retries. The alarm wrapper
+      // (handlePlanCounterBoundaryFlush is called inside try/catch in
+      // `alarm()`) converts throws into emitted metrics + continued alarm
+      // composition; returning early here has the same practical effect
+      // but avoids noise in the alarm's error path.
+      let connectionString: string | undefined;
+      try {
+        connectionString = this.env.HYPERDRIVE.connectionString;
+      } catch (err) {
+        emitMetric("stamp_period_close_failure", {
+          orgId,
+          reason: "hyperdrive_unavailable",
+        });
+        console.error(
+          "[UserBudgetDO] stampPeriodClose: HYPERDRIVE unavailable, plan_counter retained for retry:",
+          err,
+        );
+        return; // skip DELETE; next alarm tick retries
+      }
+
+      try {
+        const stampResult = await stampPeriodClose(connectionString, {
+          orgId,
+          periodStart: row.period_start,
+          periodEnd: row.period_end,
+        });
+        if (stampResult.deferred) {
+          // No sub row materialized yet for this org (e.g., unpaid→paid race).
+          // Leave the counter in place and retry on the next alarm.
+          return;
+        }
+      } catch (err) {
+        emitMetric("stamp_period_close_failure", {
+          orgId,
+          reason: "stamp_threw",
+          error: err instanceof Error ? err.message : String(err),
+        });
+        console.error(
+          "[UserBudgetDO] stampPeriodClose failed, plan_counter retained for retry:",
+          err,
+        );
+        return; // skip DELETE; next alarm tick retries
+      }
+
+      // Stamp succeeded (applied=true OR applied=false idempotent). The
+      // expired period's snapshot is now persisted; safe to purge the local
+      // counter. Re-check the row inside transactionSync because a fresh
+      // increment could have rotated the period since our initial SELECT
+      // (lazy reset in incrementPlanCounter replaces the row atomically).
+      this.ctx.storage.transactionSync(() => {
+        const current = this.ctx.storage.sql.exec<{
+          period_start: number;
+        }>("SELECT period_start FROM plan_counter LIMIT 1").toArray()[0];
+        if (current && current.period_start === row.period_start) {
+          this.ctx.storage.sql.exec("DELETE FROM plan_counter");
+        }
+      });
+    }
+
+    // PR-2d (Decision #34 / codex R2#2 / C60): emit outbox-drain lag for the
+    // shadow-mode alert. Outside transactionSync so a read-only SELECT never
+    // extends the write lock. Skip emit on empty outbox — quiet DOs shouldn't
+    // look like zero-lag to the alert consumer (see helper docstring).
+    const lagMs = computePlanCounterOutboxLagMs(
+      this.ctx.storage.sql as import("../lib/pg-sync-outbox.js").SqlStorage,
+      Date.now(),
+    );
+    if (lagMs !== null) {
+      emitMetric("plan_counter_outbox_lag_ms", { value: lagMs });
+    }
+  }
+
+  /**
+   * PR-2b: alarm sub-handler — prune `plan_counter_idempotency` by 24h TTL.
+   *
+   * Returns the next wake time (ms epoch) if the table still has rows
+   * post-prune, or `null` if empty. Per codex G2 — sub-handler does NOT
+   * call setAlarm itself; main alarm() composes Math.min across all sources.
+   *
+   * Emergency bound (codex round-2 M2): at extreme ingest rates the live 24h
+   * working set could hit millions of rows. If post-TTL count exceeds
+   * `IDEMPOTENCY_EMERGENCY_BOUND`, force-delete the oldest ~50% by `seen_at`
+   * and emit `plan_counter_idempotency_emergency_compact`. Safety valve only.
+   */
+  handleIdempotencyDedupPrune(): number | null {
+    const sql = this.ctx.storage.sql as import("../lib/pg-sync-outbox.js").SqlStorage;
+    const cutoff = Date.now() - 24 * 3600 * 1000;
+    sql.exec("DELETE FROM plan_counter_idempotency WHERE seen_at < ?", cutoff);
+
+    // Emergency compaction — safety valve. See `compactIdempotencyTable`
+    // (build-audit Finding #3) for the direct-unit-testable primitive.
+    const compaction = compactIdempotencyTable(sql);
+    if (compaction.removed > 0) {
+      emitMetric("plan_counter_idempotency_emergency_compact", {
+        removed: compaction.removed, remaining: compaction.remaining,
+      });
+      console.error(
+        `[UserBudgetDO] ALERT: plan_counter_idempotency exceeded ${IDEMPOTENCY_EMERGENCY_BOUND} rows — force-compacted oldest ${compaction.removed}`,
+      );
+    }
+    return compaction.remaining > 0 ? Date.now() + 3600 * 1000 : null;
+  }
+
+  /**
+   * PR-2e F2-partial: divergence outbox drain (codex R7 Issue 2A).
+   *
+   * Sibling to `handlePlanCounterBoundaryFlush`. Drains
+   * `pg_sync_outbox_plan_divergences` by calling `upsertPlanCounterDivergence`
+   * (dedup'd via `plan_counter_divergence_dedup`) per-entry. On success, ack
+   * by row id. On terminal FK 23503 against EITHER `plan_counter_divergences`
+   * OR `plan_counter_divergence_dedup` (codex R7 C2), delete the entry
+   * permanently. On other errors, mark retry with exponential backoff.
+   *
+   * After the retry loop, abandoned entries (attempts >= max) are deleted AND
+   * a row is written to `plan_counter_sync_failures` with
+   * `reason='divergence_outbox_abandoned'` so the launch-watcher surfaces the
+   * stall (codex R7 C4 observability fix). Best-effort — per
+   * `monitoring_hardening_can_introduce_failures` learning, the PG write for
+   * the stall signal is wrapped in try/catch so a PG outage cannot take down
+   * the DO alarm dispatcher.
+   *
+   * Returns the next wake time (ms epoch) if entries remain with
+   * `next_attempt_at > now`, or `null` if empty. Per codex G2 pattern, caller
+   * composes with Math.min.
+   */
+  async handlePlanCounterDivergenceOutboxDrain(): Promise<number | null> {
+    const sql = this.ctx.storage.sql as import("../lib/pg-sync-outbox.js").SqlStorage;
+    const now = Date.now();
+    const MAX_ATTEMPTS = 5;
+
+    // Per-tick lag emission for AE/log observability. Quiet DOs stay quiet
+    // (helper returns null on empty table) to avoid false-zero readings.
+    const lagMs = computePlanCounterDivergenceOutboxLagMs(sql, now);
+    if (lagMs !== null) {
+      emitMetric("plan_counter_divergence_outbox_lag_ms", { value: lagMs });
+    }
+
+    // F2-partial build-audit Finding 3 fix: check for ANY work BEFORE touching
+    // HYPERDRIVE so idle DOs (the 99% case) don't emit HYPERDRIVE-unavailable
+    // stderr on every alarm tick. `pending` = retryable rows; `initialAbandoned`
+    // = rows already at max attempts from a prior tick. If both are empty, no
+    // work to do — return without resolving HYPERDRIVE.
+    //
+    // We re-query the abandoned set AFTER the retry loop below (entries may
+    // have been bumped from attempts=4 to 5 in this tick). This initial query
+    // is a pre-check only.
+    const pending = getRetryablePlanCounterDivergenceEntries(sql, now, MAX_ATTEMPTS);
+    const initialAbandoned = sql.exec<{ id: number; orgId: string }>(
+      "SELECT id, org_id AS orgId FROM pg_sync_outbox_plan_divergences WHERE attempts >= ?",
+      MAX_ATTEMPTS,
+    ).toArray();
+
+    if (pending.length === 0 && initialAbandoned.length === 0) {
+      return null;
+    }
+
+    // There's work — resolve HYPERDRIVE once for BOTH branches (codex-diff
+    // review Bug 1+2 fix). Both the retry loop AND the abandoned-cleanup
+    // block must handle its absence gracefully.
+    //   - Bug 1: HYPERDRIVE-unavailable early-return skipped abandoned cleanup
+    //     entirely — stranded rows with attempts=5 in SQLite forever.
+    //   - Bug 2: alarm with ONLY abandoned rows (pending.length === 0) lost the
+    //     PG signal because connectionString was never populated.
+    let connectionString: string | undefined;
+    try {
+      connectionString = this.env.HYPERDRIVE.connectionString;
+    } catch (err) {
+      console.error("[UserBudgetDO] divergence drain: HYPERDRIVE unavailable this tick:", err);
+      // Do NOT early-return — we still need to: (a) mark pending rows as failed
+      // so they retry on the next alarm, and (b) delete any already-abandoned
+      // rows from SQLite so they don't leak.
+    }
+
+    if (pending.length > 0) {
+      if (!connectionString) {
+        // HYPERDRIVE down — mark all pending entries as failed and let the
+        // next alarm retry them after backoff. Same behavior as the PR-2b
+        // plan-counter outbox drain block.
+        for (const entry of pending) {
+          markPlanCounterDivergenceEntryRetryFailed(sql, entry.id, entry.attempts);
+        }
+      } else {
+        for (const entry of pending) {
+          try {
+            await upsertPlanCounterDivergence(connectionString, {
+              eventId: entry.eventId,
+              orgId: entry.orgId,
+              tier: entry.tier,
+              divergenceAtMs: entry.divergenceAtMs,
+              storedPeriodStart: entry.storedPeriodStart,
+              incomingPeriodStart: entry.incomingPeriodStart,
+            });
+            ackPlanCounterDivergenceEntryById(sql, entry.id);
+          } catch (err) {
+            if (isTerminalPlanCounterDivergenceFkError(err)) {
+              deletePlanCounterDivergenceEntryTerminal(sql, entry.id);
+              emitMetric("plan_counter_divergence_outbox_terminal_fk_violation", {});
+            } else {
+              markPlanCounterDivergenceEntryRetryFailed(sql, entry.id, entry.attempts);
+            }
+          }
+        }
+      }
+    }
+
+    // Drain abandoned entries AFTER the retry loop so any that JUST hit
+    // max-attempts in this tick are caught. Query BEFORE delete so we can
+    // write the stall signal per-org. Runs REGARDLESS of HYPERDRIVE status
+    // per Bug 1 fix — the SQLite cleanup doesn't need HYPERDRIVE.
+    const abandonedRows = sql.exec<{ id: number; orgId: string }>(
+      "SELECT id, org_id AS orgId FROM pg_sync_outbox_plan_divergences WHERE attempts >= ?",
+      MAX_ATTEMPTS,
+    ).toArray();
+    if (abandonedRows.length > 0) {
+      const removed = deleteAbandonedPlanCounterDivergenceEntries(sql, MAX_ATTEMPTS);
+      emitMetric("plan_counter_divergence_outbox_abandoned", { count: removed });
+
+      // C4 fix: durable PG signal for the launch-watcher. Best-effort —
+      // per `monitoring_hardening_can_introduce_failures`, PG outage must
+      // NOT propagate into the DO alarm dispatcher.
+      if (connectionString) {
+        for (const row of abandonedRows) {
+          try {
+            await writePlanCounterSyncFailure(connectionString, {
+              orgId: row.orgId,
+              reason: "divergence_outbox_abandoned",
+              count: 1,
+            });
+          } catch (writeErr) {
+            emitMetric("plan_counter_divergence_abandoned_signal_write_failed", {});
+            console.error("[UserBudgetDO] failed to write divergence_outbox_abandoned signal:", writeErr);
+          }
+        }
+      } else {
+        // F2-partial codex-diff Bug 1 fix: HYPERDRIVE was unavailable this tick
+        // so the PG signal is lost for these abandoned rows. Emit a secondary
+        // metric so ops can see the signal pipeline failed this round. Rows
+        // are still deleted from SQLite (no leak) but the watcher can't count
+        // them for 15 minutes.
+        emitMetric("plan_counter_divergence_abandoned_signal_skipped_no_hyperdrive", {
+          count: removed,
+        });
+      }
+    }
+
+    return this.computeNextDivergenceRetry(sql, now, MAX_ATTEMPTS);
+  }
+
+  /**
+   * Compute the earliest next-wake time for the divergence outbox.
+   * Extracted for readability; mirrors the inline `nextPlanCounterOutbox`
+   * SELECT pattern in `alarm()` for the plan-counter outbox.
+   */
+  private computeNextDivergenceRetry(
+    sql: import("../lib/pg-sync-outbox.js").SqlStorage,
+    _now: number,
+    maxAttempts: number,
+  ): number | null {
+    const next = sql.exec<{ next: number | null }>(
+      "SELECT MIN(next_attempt_at) as next FROM pg_sync_outbox_plan_divergences WHERE attempts < ?",
+      maxAttempts,
+    ).toArray()[0]?.next;
+    return next === null || next === undefined ? null : next;
+
+  }
+
+  /**
    * Alarm handler: clean up expired reservations.
    * Cleans up expired reservations and stale session spend entries.
    */
@@ -1489,6 +2336,32 @@ export class UserBudgetDO extends DurableObject {
       console.log(`[UserBudgetDO] alarm: cleaned up ${deleted.rowsWritten} stale session(s)`);
     }
 
+    // ── PR-2b: plan-counter sub-handlers ──
+    // Per codex round-2 H2: catch flush errors independently so they don't abort
+    // the rest of alarm composition. The flush is best-effort per-alarm; a failure
+    // just leaves the closed period in place for the next alarm to retry.
+    try {
+      await this.handlePlanCounterBoundaryFlush();
+    } catch (err) {
+      emitMetric("plan_counter_boundary_flush_error", {});
+      console.error("[UserBudgetDO] alarm: handlePlanCounterBoundaryFlush failed:", err);
+    }
+
+    // PR-2e F2-partial (codex R7 Issue 2A): drain the divergence outbox.
+    // Wrapped in try/catch at the alarm() level so a handler failure doesn't
+    // take down the rest of alarm composition (mirrors boundary flush).
+    let nextDivergenceOutbox: number | null = null;
+    try {
+      nextDivergenceOutbox = await this.handlePlanCounterDivergenceOutboxDrain();
+    } catch (err) {
+      emitMetric("plan_counter_divergence_outbox_drain_error", {});
+      console.error("[UserBudgetDO] alarm: handlePlanCounterDivergenceOutboxDrain failed:", err);
+    }
+
+    // Per codex G2: sub-handler returns its desired next-wake time; we compose
+    // with Math.min below rather than letting it setAlarm internally.
+    const nextIdempotencyPrune = this.handleIdempotencyDedupPrune();
+
     // ── PXY-2: Process pending PG sync outbox entries ──
     const MAX_OUTBOX_ATTEMPTS = 5;
     const sqlStorage = this.ctx.storage.sql as import("../lib/pg-sync-outbox.js").SqlStorage;
@@ -1550,6 +2423,101 @@ export class UserBudgetDO extends DurableObject {
       if (abandoned > 0) {
         emitMetric("pg_sync_abandoned", { count: abandoned });
         console.error(`[UserBudgetDO] ALERT: ${abandoned} outbox entries abandoned after ${MAX_OUTBOX_ATTEMPTS} attempts`);
+      }
+    }
+
+    // ── PR-2b: Process pending plan-counter outbox entries ──
+    // Independent from the budget-spend path above: one table failing doesn't
+    // block the other. Per codex G1: mirror the HYPERDRIVE-unavailable mark-failed
+    // semantics so rows with `next_attempt_at = 0` get a positive backoff stamp —
+    // otherwise the rescheduler's null-check would still fire, but the table would
+    // churn uselessly each alarm. Per codex round-2 H1: acquire Hyperdrive locally
+    // if the budget-spend branch didn't populate `connectionString` (plan-counter-
+    // only alarm — common case when budget-spend outbox is empty).
+    {
+      const planCounterEntries = getRetryablePlanCounterEntries(sqlStorage, now, MAX_OUTBOX_ATTEMPTS);
+
+      if (planCounterEntries.length > 0) {
+        if (!connectionString) {
+          try { connectionString = this.env.HYPERDRIVE.connectionString; }
+          catch { /* genuinely unavailable — fall through to mark-failed */ }
+        }
+
+        if (connectionString) {
+          for (const entry of planCounterEntries) {
+            try {
+              const { applied } = await upsertPlanCounterPeriod(connectionString, {
+                requestId: entry.requestId,
+                orgId: entry.orgId,
+                periodStart: entry.periodStart,
+                periodEnd: entry.periodEnd,
+                deltaCount: entry.deltaCount,
+              });
+              // Codex-final F1: ack by outbox row id, NOT by request_id. Same
+              // request_id can span two outbox rows when a cross-period retry
+              // exists; request_id ack would delete the sibling row and risk
+              // silent data loss if that row's own upsert later failed.
+              ackPlanCounterEntryById(sqlStorage, entry.id);
+              // `applied=false` means Postgres had already recorded this
+              // (org, requestId, periodStart) from a prior alarm that wrote
+              // but couldn't ack. Metric stays low-cardinality; structured log
+              // on dedup hit carries (orgId, periodStart, requestId) for
+              // post-hoc debugging without cardinality explosion — per codex
+              // R5 observability note.
+              emitMetric(
+                applied ? "plan_counter_sync_success" : "plan_counter_sync_dedup_hit",
+                { requestId: entry.requestId },
+              );
+              if (!applied) {
+                console.log(
+                  `[UserBudgetDO] plan_counter_sync_dedup_hit orgId=${entry.orgId} periodStart=${entry.periodStart} requestId=${entry.requestId}`,
+                );
+              }
+            } catch (err) {
+              // PR-2c plan-audit F2 + codex-round-1 H5 + codex-round-2 H5:
+              // classify FK-violation errors on allowlisted constraints as
+              // TERMINAL (org has been deleted; FK cascade dropped
+              // org_period_usage / plan_counter_sync_requests rows; retries
+              // will never succeed). Delete the outbox entry immediately + emit
+              // metric. Other errors (23503 on non-allowlisted constraints,
+              // transient connection failures, etc) go through the existing
+              // retry path — same behavior as before.
+              if (isTerminalPlanCounterFkError(err)) {
+                deletePlanCounterEntryTerminal(sqlStorage, entry.id);
+                // codex-round-1 H4: metric has NO tags — orgId + constraint live
+                // in the structured log below for forensic reconstruction.
+                emitMetric("plan_counter_outbox_terminal_fk_violation", {});
+                // edge-case-audit E1: postgres.js uses .constraint_name; other
+                // pg clients use .constraint. Read both for resilience.
+                const pgErr = err as { constraint_name?: string; constraint?: string } | null;
+                const constraint = pgErr?.constraint_name ?? pgErr?.constraint;
+                console.warn("[UserBudgetDO] plan_counter outbox TERMINAL (FK violation — org likely deleted):", {
+                  requestId: entry.requestId,
+                  orgId: entry.orgId,
+                  constraint,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              } else {
+                markPlanCounterEntryRetryFailed(sqlStorage, entry.id, entry.attempts);
+                console.error("[UserBudgetDO] plan_counter outbox PG sync failed:", {
+                  requestId: entry.requestId, attempt: entry.attempts + 1,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
+            }
+          }
+        } else {
+          console.error("[UserBudgetDO] alarm: HYPERDRIVE unavailable, marking plan_counter outbox entries failed");
+          for (const entry of planCounterEntries) {
+            markPlanCounterEntryRetryFailed(sqlStorage, entry.id, entry.attempts);
+          }
+        }
+
+        const abandonedPlanCounter = deleteAbandonedPlanCounterEntries(sqlStorage, MAX_OUTBOX_ATTEMPTS);
+        if (abandonedPlanCounter > 0) {
+          emitMetric("plan_counter_outbox_abandoned", { count: abandonedPlanCounter });
+          console.error(`[UserBudgetDO] ALERT: ${abandonedPlanCounter} plan_counter outbox entries abandoned after ${MAX_OUTBOX_ATTEMPTS} attempts`);
+        }
       }
     }
 
@@ -1629,14 +2597,38 @@ export class UserBudgetDO extends DurableObject {
       nextAlarm = nextAlarm ? Math.min(nextAlarm, sessionCleanup) : sessionCleanup;
     }
 
-    // C6: Schedule alarm for next outbox retry (uses persisted next_attempt_at)
+    // C6: Schedule alarm for next outbox retry (uses persisted next_attempt_at).
+    // Per codex round-2 M1: null-check explicitly instead of truthy. A
+    // `next_attempt_at = 0` is the "ready to fire now" sentinel — the previous
+    // `if (nextOutbox)` treated 0 as falsy and silently dropped it, leaving
+    // ready-to-retry entries unscheduled.
     const nextOutbox = this.ctx.storage.sql
       .exec<{ next: number | null }>(
         "SELECT MIN(next_attempt_at) as next FROM pg_sync_outbox WHERE attempts < ?",
         MAX_OUTBOX_ATTEMPTS,
       ).toArray()[0]?.next;
-    if (nextOutbox) {
-      nextAlarm = nextAlarm ? Math.min(nextAlarm, nextOutbox) : nextOutbox;
+    if (nextOutbox !== null && nextOutbox !== undefined) {
+      nextAlarm = nextAlarm !== null ? Math.min(nextAlarm, nextOutbox) : nextOutbox;
+    }
+
+    // PR-2b: same null-check semantics for the plan-counter outbox.
+    const nextPlanCounterOutbox = this.ctx.storage.sql
+      .exec<{ next: number | null }>(
+        "SELECT MIN(next_attempt_at) as next FROM pg_sync_outbox_plan_counter WHERE attempts < ?",
+        MAX_OUTBOX_ATTEMPTS,
+      ).toArray()[0]?.next;
+    if (nextPlanCounterOutbox !== null && nextPlanCounterOutbox !== undefined) {
+      nextAlarm = nextAlarm !== null ? Math.min(nextAlarm, nextPlanCounterOutbox) : nextPlanCounterOutbox;
+    }
+
+    // PR-2e F2-partial: compose divergence outbox next-wake time (codex G2 pattern).
+    if (nextDivergenceOutbox !== null) {
+      nextAlarm = nextAlarm !== null ? Math.min(nextAlarm, nextDivergenceOutbox) : nextDivergenceOutbox;
+    }
+
+    // PR-2b (codex G2): compose idempotency-prune desired wake time.
+    if (nextIdempotencyPrune !== null) {
+      nextAlarm = nextAlarm !== null ? Math.min(nextAlarm, nextIdempotencyPrune) : nextIdempotencyPrune;
     }
 
     // AUDIT-7: Housekeeping wake so idle DOs with budgets still run the orphan
@@ -1647,10 +2639,40 @@ export class UserBudgetDO extends DurableObject {
       .toArray()[0]?.cnt ?? 0;
     if (hasBudgetRows > 0) {
       const housekeeping = now + ORPHAN_SWEEP_INTERVAL_MS;
-      nextAlarm = nextAlarm ? Math.min(nextAlarm, housekeeping) : housekeeping;
+      nextAlarm = nextAlarm !== null ? Math.min(nextAlarm, housekeeping) : housekeeping;
     }
 
-    if (nextAlarm) {
+    // PR-6a audit finding #4: if an expired plan_counter row is retained
+    // (stampPeriodClose failed or hit HYPERDRIVE-unavailable above), we MUST
+    // explicitly schedule a retry — otherwise the DO only wakes on unrelated
+    // activity (reservations, outbox, idempotency prune). A quiet DO with a
+    // retained row could sit forever. 5-min retry matches the watcher's
+    // polling cadence so the retry loop is bounded.
+    //
+    // Edge-case audit E6 residual risk (narrowed):
+    //   - Cold-start reconstruction (constructor `blockConcurrencyWhile`) now
+    //     also wakes on retained expired plan_counter rows — so any request
+    //     to the evicted DO schedules the alarm within 1s.
+    //   - This reschedule branch handles the "alarm fired, stamp failed, DO
+    //     still alive" case — retry on next 5-min tick.
+    //   - The remaining narrow window: DO is evicted AND receives zero
+    //     requests until the period_end boundary passes by >7 days (CF
+    //     eviction policy). PR-6b's Postgres-side recovery sweep closes
+    //     that last gap — see TODOS.md `PR-6b missed-snapshot recovery`.
+    const retainedExpiredPlanCounter = this.ctx.storage.sql
+      .exec<{ cnt: number }>(
+        "SELECT COUNT(*) as cnt FROM plan_counter WHERE period_end < ?",
+        now,
+      )
+      .toArray()[0]?.cnt ?? 0;
+    if (retainedExpiredPlanCounter > 0) {
+      const planCounterRetry = now + 5 * 60 * 1000;
+      nextAlarm = nextAlarm !== null ? Math.min(nextAlarm, planCounterRetry) : planCounterRetry;
+    }
+
+    // Per codex round-2 M1: null-check, not truthy. `nextAlarm = 0` is a valid
+    // "fire now" signal and must set the alarm.
+    if (nextAlarm !== null) {
       await this.ctx.storage.setAlarm(nextAlarm);
     }
   }

@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  bigserial,
   boolean,
   index,
   integer,
@@ -86,7 +87,6 @@ export const actions = pgTable("actions", {
   errorMessage: text("error_message"),
   environment: text("environment"),
   sourceFramework: text("source_framework"),
-  slackThreadTs: text("slack_thread_ts"),
 }, (table) => [
   index("actions_owner_status_created_idx").on(table.ownerUserId, table.status, table.createdAt),
   index("actions_owner_created_idx").on(table.ownerUserId, table.createdAt),
@@ -95,22 +95,6 @@ export const actions = pgTable("actions", {
 
 export type ActionRow = typeof actions.$inferSelect;
 export type NewActionRow = typeof actions.$inferInsert;
-
-export const slackConfigs = pgTable("slack_configs", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  userId: text("user_id").notNull().unique(),
-  orgId: uuid("org_id").notNull(),
-  webhookUrl: text("webhook_url").notNull(),
-  channelName: text("channel_name"),
-  slackUserId: text("slack_user_id"),
-  isActive: boolean("is_active").notNull().default(true),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-}, (table) => [
-  index("slack_configs_org_id_idx").on(table.orgId),
-]);
-
-export type SlackConfigRow = typeof slackConfigs.$inferSelect;
 
 export const budgets = pgTable("budgets", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -177,6 +161,13 @@ export const costEvents = pgTable("cost_events", {
   budgetStatus: text("budget_status").$type<"skipped" | "approved" | "denied">(),
   stopReason: text("stop_reason"),
   estimatedCostMicrodollars: bigint("estimated_cost_microdollars", { mode: "number" }),
+  // PR-2d: billing period bounds stamped at ingest via resolvePeriodBounds(identity, createdAt).
+  // Paid orgs: Stripe subscription period. Free/unpaid: calendar-month fallback.
+  // NEVER null for new rows; legacy rows pre-PR-2d may be NULL.
+  // Used by the reconciliation cron to increment the EVENT's original period, not the current
+  // period at reconciliation time.
+  periodStart: timestamp("period_start", { withTimezone: true }),
+  periodEnd: timestamp("period_end", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   uniqueIndex("cost_events_request_id_provider_idx").on(table.requestId, table.provider),
@@ -190,6 +181,9 @@ export const costEvents = pgTable("cost_events", {
   index("cost_events_tags_idx").using("gin", table.tags),
   index("cost_events_org_id_created_at_idx").on(table.orgId, table.createdAt),
   index("cost_events_customer_id_idx").on(table.customerId).where(sql`customer_id IS NOT NULL`),
+  // PR-2d: index for period-scoped queries (reconciliation cron, future billing analytics).
+  // Partial index skips legacy NULL rows from pre-PR-2d writes.
+  index("idx_cost_events_period_start").on(table.orgId, table.periodStart).where(sql`period_start IS NOT NULL`),
 ]);
 
 export type CostEventRow = typeof costEvents.$inferSelect;
@@ -300,6 +294,10 @@ export const organizations = pgTable("organizations", {
   logoUrl: text("logo_url"),
   metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'`),
   createdBy: text("created_by").notNull(),
+  // If non-null, overrides TIERS[tier].retentionDays for this org. Used to grandfather
+  // existing orgs when tier retention changes (plan §1.1) and to implement the 14-day
+  // grace window on downgrade (refined spec §9.5). NULL = use tier default.
+  retentionOverrideDays: integer("retention_override_days"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
@@ -517,7 +515,7 @@ export const reconciledRequests = pgTable("reconciled_requests", {
 
 /**
  * Tracks which margin threshold crossings have already been dispatched
- * (webhook + Slack) so the same alert is not re-fired on every sync.
+ * so the same alert is not re-fired on every sync.
  *
  * Unique on (org_id, tag_value, period, to_tier) — one alert per customer
  * per period per worsening tier transition.
@@ -533,4 +531,246 @@ export const marginAlertsSent = pgTable("margin_alerts_sent", {
 }, (table) => [
   uniqueIndex("margin_alerts_sent_dedup_idx").on(table.orgId, table.tagValue, table.period, table.toTier),
   index("margin_alerts_sent_org_period_idx").on(table.orgId, table.period),
+]);
+
+// ---------------------------------------------------------------------------
+// Governed request usage history (PR-2b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-org billing-period governed-request counts. Populated by the DO's
+ * `incrementPlanCounter` path via the `pg_sync_outbox_plan_counter` outbox
+ * + alarm handler (`upsertPlanCounterPeriod`). Additive upserts — safe under
+ * out-of-order delivery.
+ *
+ * Primary key `(org_id, period_start)` — one row per org per billing period.
+ * Period bounds follow the Stripe subscription if present, calendar-month
+ * otherwise (per plan Decision #16). The DO stamps period bounds at
+ * increment time so late-arriving deltas land on the ORIGINAL period row.
+ */
+export const orgPeriodUsage = pgTable("org_period_usage", {
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+  periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
+  governedRequestsCount: bigint("governed_requests_count", { mode: "number" }).notNull().default(0),
+  lastUpdatedAt: timestamp("last_updated_at", { withTimezone: true }).notNull().defaultNow(),
+  // PR-6a overage foundation (drizzle/0066). All nullable; zero backfill.
+  //   overageInvoiceItemId / overageInvoicedAt — PR-6b cron writes on Stripe success. NEVER written in 6a.
+  //   tierAtPeriodEnd / statusAtPeriodEnd       — DO's stampPeriodClose writes at period boundary (R2 A2 + R3 P0).
+  //   disposition                                — 5-value state machine (PR-6b CX-R2-4).
+  //                                                billable_pending  | evaluated_skipped : DO writer stamps at period close.
+  //                                                billing_in_flight                     : PR-6b cron atomic-claim in-progress.
+  //                                                billed                                : PR-6b cron flipped after finalize.
+  //                                                needs_review                          : dead-letter (retry exhausted / orphaned / age-out).
+  //   claimedByRunId / claimedAt                — PR-6b atomic-claim columns (drizzle/0071). Populated on billing_in_flight;
+  //                                                cleared on revert/complete/sweep. Stale-claim sweeper reverts rows whose
+  //                                                claimedAt < now()-15m.
+  overageInvoiceItemId: text("overage_invoice_item_id"),
+  overageInvoicedAt: timestamp("overage_invoiced_at", { withTimezone: true }),
+  tierAtPeriodEnd: text("tier_at_period_end"),
+  statusAtPeriodEnd: text("status_at_period_end"),
+  disposition: text("disposition").$type<
+    | "billable_pending"
+    | "evaluated_skipped"
+    | "billing_in_flight"
+    | "billed"
+    | "needs_review"
+  >(),
+  claimedByRunId: uuid("claimed_by_run_id"),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
+}, (table) => [
+  primaryKey({ columns: [table.orgId, table.periodStart] }),
+  index("idx_org_period_usage_period").on(table.periodStart),
+  // PR-6a R3 P3: partial index covers genuinely-unbilled-but-billable rows only.
+  // The PR-6b cron scans this for invoice candidates; keying on disposition
+  // prevents the `overage_pending_stalled` alert from false-positiving on
+  // evaluated-and-skipped rows.
+  index("idx_opu_billable_pending").on(table.periodEnd).where(sql`disposition = 'billable_pending'`),
+]);
+
+export type OrgPeriodUsageRow = typeof orgPeriodUsage.$inferSelect;
+export type NewOrgPeriodUsageRow = typeof orgPeriodUsage.$inferInsert;
+
+/**
+ * PR-6b: per-reconcile audit row for the overage-billing cron.
+ *
+ * Spec: docs/plans/pricing-pr6b-overage-billing-cron.md §4 (schema) + C2 +
+ *       OV-8 + CX-R2-4 (row-per-reconciliation) + CX-R3-1 (invoice_state
+ *       state machine) + CX-R3-4 (currency persistence).
+ *
+ * One row per invocation of `reconcileOverageForPeriod`. INSERTed BEFORE the
+ * atomic claim so a mid-run crash leaves an audit row the stale-claim sweeper
+ * can reconcile.
+ *
+ * `invoice_state` drives Stripe-flow replay after partial crash:
+ *   none → draft_created → item_attached → finalized
+ *                       ↘ voided (on retry exhaustion at any step)
+ *
+ * `final_status` is NULL while in-flight; terminal transitions populate it.
+ * Watcher reads `WHERE final_status='failed' AND completed_at > now()-1h`
+ * for its failureCount1h metric.
+ */
+export const overageCronRuns = pgTable("overage_cron_runs", {
+  runId: uuid("run_id").primaryKey(),
+  orgId: uuid("org_id").notNull(),
+  periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  finalStatus: text("final_status").$type<
+    | "ok"
+    | "failed"
+    | "needs_review"
+    | "skipped"
+    | "abandoned"
+  >(),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  lastErrorSummary: jsonb("last_error_summary").$type<Record<string, unknown>>(),
+  invoiceItemId: text("invoice_item_id"),
+  stripeDraftInvoiceId: text("stripe_draft_invoice_id"),
+  invoiceState: text("invoice_state")
+    .$type<"none" | "draft_created" | "item_attached" | "finalized" | "voided">()
+    .notNull()
+    .default("none"),
+  currency: text("currency"),
+}, (table) => [
+  // completedAt DESC matches the live migration DDL + how queries read this
+  // (MAX/latest-first). Drizzle-kit regeneration would otherwise emit an ASC
+  // index and silently drift from prod.
+  index("idx_overage_cron_runs_final_status_completed_at").on(
+    table.finalStatus,
+    table.completedAt.desc(),
+  ),
+  index("idx_overage_cron_runs_org_period").on(table.orgId, table.periodStart),
+]);
+
+export type OverageCronRunRow = typeof overageCronRuns.$inferSelect;
+export type NewOverageCronRunRow = typeof overageCronRuns.$inferInsert;
+
+/**
+ * PR-2b build-audit Finding #1 + edge-case EC6 + codex-final F2: Dedup guard
+ * for plan-counter outbox retries, scoped to `(org_id, request_id, period_start)`.
+ *
+ * The DO alarm writes to `org_period_usage` additively. If the Postgres write
+ * succeeds but the DO-local ack of the outbox row fails (DO crash, isolate
+ * eviction, network hiccup between the two SQL calls), the next alarm retries
+ * the same request and double-adds the delta. This table gives the upsert a
+ * Postgres-side idempotency guard: `INSERT ... ON CONFLICT DO NOTHING` on the
+ * `(org_id, request_id, period_start)` tuple, then conditional upsert against
+ * `org_period_usage` only when the dedup insert actually landed.
+ *
+ * **Composite key rationale:**
+ * - `period_start` (EC6): the DO-side dedup is period-scoped — an SDK caller
+ *   reusing a deterministic idempotency key across a billing-period boundary
+ *   gets their stale row deleted and counted fresh in the new period. Without
+ *   `period_start` in the PK, the new period's upsert would conflict against
+ *   the prior period's row and be silently rejected.
+ * - `org_id` (codex-final F2): two DIFFERENT orgs using the same deterministic
+ *   idempotency key in the SAME billing period would otherwise collide — the
+ *   second org's upsert would be silently rejected even though it represents
+ *   independent governed-request work. Scoping by `org_id` keeps each org's
+ *   dedup namespace isolated.
+ *
+ * Mirrors the `reconciled_requests` pattern used by `updateBudgetSpend` for
+ * the budget-spend path — same M-3 "split-brain on retry" defense.
+ *
+ * `written_at` retained for TTL pruning via a future housekeeping task
+ * (rows older than ~7 days can be deleted; outbox max-retry window is minutes).
+ */
+export const planCounterSyncRequests = pgTable("plan_counter_sync_requests", {
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  requestId: text("request_id").notNull(),
+  periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+  writtenAt: timestamp("written_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.orgId, table.requestId, table.periodStart] }),
+  index("idx_plan_counter_sync_requests_written_at").on(table.writtenAt),
+]);
+
+// ---------------------------------------------------------------------------
+// PR-2e Sub-PR 11: launch-watcher telemetry tables.
+//
+// All three tables back the new `GET /api/internal/metrics-summary?window=15m`
+// dashboard endpoint, which the watcher worker polls every 5 min to detect
+// launch-day misconfigurations (M-30 pattern: pricing page advertises an
+// enforcement contract the proxy isn't actually enforcing).
+//
+// Per PR-2e codex R4 #1 cleanup contract:
+//   - planCounterCronHistory is GLOBAL (no org_id) -- skipped by the drift
+//     test at tests/e2e/lib/orphan-cleanup-tables.test.ts.
+//   - planCounterSyncFailures + planCounterDivergences are org-scoped with
+//     ON DELETE CASCADE -- excluded from ORG_ID_CLEANUP_TABLE_NAMES per the
+//     drift test rule "CASCADE tables MUST NOT be in inventory."
+//
+// Per PR-2e codex R4 #5 + R5 #3 schema lock: every column is NOT NULL.
+// Nullable telemetry columns silently drop or undercount rows.
+//
+// Per PR-2e codex R3 #1: planCounterSyncFailures.count is the BATCH SIZE
+// (1-100), NOT the failure ordinal. The metrics-summary endpoint MUST query
+// SUM(count) not COUNT(*).
+// ---------------------------------------------------------------------------
+
+export const planCounterCronHistory = pgTable("plan_counter_cron_history", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  tickAt: timestamp("tick_at", { withTimezone: true }).notNull().defaultNow(),
+  batchFull: boolean("batch_full").notNull(),
+  candidateCount: integer("candidate_count").notNull(),
+  reconciled: integer("reconciled").notNull(),
+  failed: integer("failed").notNull(),
+}, (table) => [
+  index("idx_plan_counter_cron_history_tick_at").on(table.tickAt),
+]);
+
+export const planCounterSyncFailures = pgTable("plan_counter_sync_failures", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  failedAt: timestamp("failed_at", { withTimezone: true }).notNull().defaultNow(),
+  reason: text("reason").notNull(),
+  count: integer("count").notNull(),
+}, (table) => [
+  index("idx_plan_counter_sync_failures_failed_at").on(table.failedAt),
+  index("idx_plan_counter_sync_failures_org_id").on(table.orgId),
+]);
+
+export const planCounterDivergences = pgTable("plan_counter_divergences", {
+  id: bigserial("id", { mode: "number" }).primaryKey(),
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  divergenceAt: timestamp("divergence_at", { withTimezone: true }).notNull().defaultNow(),
+  tier: text("tier").notNull(),
+  storedPeriodStart: timestamp("stored_period_start", { withTimezone: true }).notNull(),
+  incomingPeriodStart: timestamp("incoming_period_start", { withTimezone: true }).notNull(),
+}, (table) => [
+  index("idx_plan_counter_divergences_divergence_at").on(table.divergenceAt),
+  index("idx_plan_counter_divergences_org_id").on(table.orgId),
+]);
+
+/**
+ * PR-2e F2-partial: dedup guard for the divergence outbox (codex R7 Issue 1A).
+ *
+ * Mirrors `planCounterSyncRequests` — PG-side retry-idempotency for the
+ * DO alarm's divergence outbox. DO generates `eventId = crypto.randomUUID()`
+ * at divergence-detection time; `upsertPlanCounterDivergence` does
+ * `INSERT ON CONFLICT DO NOTHING` on this dedup table, then INSERTs into
+ * `plan_counter_divergences` only when the dedup row actually landed.
+ *
+ * Closes the retry race where PG commit succeeds but DO-local ack fails —
+ * without dedup, the next alarm retry would write a second divergence
+ * row, inflating the launch-watcher's COUNT(*) over 15m.
+ *
+ * Per cleanup-contract drift test: CASCADE on organizations → NOT in
+ * ORG_ID_CLEANUP_TABLE_NAMES.
+ *
+ * TODO(TODOS.md): retry-state pruning. `writtenAt` column + index exist for
+ * future 7-day pruning. Same gap as `planCounterSyncRequests` (shipped in
+ * PR-2b). At current volumes (<100 orgs, ~0-5 divergence events/org/month),
+ * the table stays under ~100 rows for the foreseeable future — not a launch
+ * blocker. Add both tables to the daily reconcile cron when retry-state
+ * volumes grow past observable dashboard-query cost.
+ */
+export const planCounterDivergenceDedup = pgTable("plan_counter_divergence_dedup", {
+  orgId: uuid("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  eventId: text("event_id").notNull(),
+  writtenAt: timestamp("written_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.orgId, table.eventId] }),
+  index("idx_plan_counter_divergence_dedup_written_at").on(table.writtenAt),
 ]);

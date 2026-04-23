@@ -1,3 +1,5 @@
+import type { IngressMetadata } from "./context.js";
+
 const UPSTREAM_FORWARD_HEADERS = [
   "authorization",
   "openai-organization",
@@ -5,6 +7,28 @@ const UPSTREAM_FORWARD_HEADERS = [
   "traceparent",
   "tracestate",
 ] as const;
+
+/**
+ * Stamp NullSpend identification headers on a response.
+ *
+ * Takes `IngressMetadata` (NOT full `RequestContext`) so it can stamp
+ * pre-auth early returns where `ctx` doesn't exist yet (PR-2c
+ * codex-round-3 H3). Route handlers pass `ctx` which extends
+ * `IngressMetadata` (type-compatible).
+ *
+ * Sets: `X-NullSpend-Trace-Id`, `X-NullSpend-Request-Id`, and optionally
+ * `X-NullSpend-Session`. The request-id echo lets retrying clients reuse
+ * their original id so DO idempotency dedup prevents governed-request
+ * double-counting.
+ *
+ * Returns the same Response with mutated headers. Call BEFORE returning.
+ */
+export function stampNullspendHeaders(response: Response, meta: IngressMetadata): Response {
+  response.headers.set("X-NullSpend-Trace-Id", meta.traceId);
+  response.headers.set("X-NullSpend-Request-Id", meta.nullspendRequestId);
+  if (meta.sessionId) response.headers.set("X-NullSpend-Session", meta.sessionId);
+  return response;
+}
 
 /**
  * Build headers for the upstream OpenAI request.

@@ -161,9 +161,11 @@ should appear within seconds of your first LLM call.
 
 | Feature | Helicone (was) | NullSpend |
 |---|---|---|
-| Free tier | 10K logs, 3-day retention | $5K/mo proxied spend, 3 budgets, 3 team members, 30-day retention |
-| Budget enforcement | Alerts only | Hard enforcement (all tiers) |
-| Starting paid tier | $20/mo (limited) | $49/mo (unlimited budgets/keys/members, 90-day retention) |
+| Free tier | 10K logs, 3-day retention | 100K governed requests/mo, 3 budgets, **unlimited team members**, 7-day retention, full enforcement (budgets + velocity + session + mandates + tag budgets + multi-org) |
+| Budget enforcement | Alerts only | Hard enforcement (all tiers, including Free) |
+| Velocity / session / mandates | Not available | Included in Free (every enforcement primitive) |
+| Starting paid tier | $20/seat/mo (limited) | $49/mo flat (per-customer margin intelligence, Stripe sync, cost regression alerts, 60-day retention) |
+| Production-scale tier | $79/mo flat | $199/mo Scale (session replay, body capture, custom reports, 180-day retention) |
 
 ## FAQ
 

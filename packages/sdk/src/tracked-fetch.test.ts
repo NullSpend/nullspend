@@ -445,11 +445,11 @@ describe("buildTrackedFetch", () => {
         undefined,
         queueCost,
         null,
-        "https://nullspend.cjones6489.workers.dev",
+        "https://proxy.nullspend.dev",
       );
 
       await trackedFetch(
-        "https://nullspend.cjones6489.workers.dev/v1/chat/completions",
+        "https://proxy.nullspend.dev/v1/chat/completions",
         { method: "POST", body: makeOpenAIBody() },
       );
 
@@ -465,7 +465,7 @@ describe("buildTrackedFetch", () => {
         undefined,
         queueCost,
         null,
-        "https://nullspend.cjones6489.workers.dev",
+        "https://proxy.nullspend.dev",
       );
 
       // Direct call to api.openai.com should still be tracked client-side
@@ -639,11 +639,11 @@ describe("buildTrackedFetch", () => {
         { customer: "acme-corp" },
         queueCost,
         null,
-        "https://nullspend.cjones6489.workers.dev",
+        "https://proxy.nullspend.dev",
       );
 
       await trackedFetch(
-        "https://nullspend.cjones6489.workers.dev/v1/chat/completions",
+        "https://proxy.nullspend.dev/v1/chat/completions",
         { method: "POST", body: makeOpenAIBody() },
       );
 

@@ -9,7 +9,7 @@ AI agents call LLMs autonomously. Without guardrails, a single runaway loop can 
 ## How It Works
 
 ```
-Your App ──► NullSpend Proxy ──► OpenAI / Anthropic
+Your App ──► NullSpend Proxy ──► OpenAI / Anthropic / Gemini
                 │                       │
                 │  ◄── streams back ────┘
                 │
@@ -17,7 +17,7 @@ Your App ──► NullSpend Proxy ──► OpenAI / Anthropic
          Dashboard & Webhooks
 ```
 
-Two config changes. No SDK. No code rewrite.
+Two config changes. No package to install. No code rewrite.
 
 ```bash
 # Before                                    # After
@@ -39,7 +39,7 @@ Add an `X-NullSpend-Key` header and every request is tracked, budgeted, and visi
 | **[Webhooks](webhooks/overview.md)** | 18 event types with HMAC-SHA256 signing — cost events, budget exceeded, velocity alerts, threshold crossings, margin alerts |
 | **[HITL approvals](features/human-in-the-loop.md)** | Human-in-the-loop approval workflow for high-cost or sensitive operations |
 | **[Margins](features/margins.md)** | Connect Stripe to see per-customer profitability — auto-match, health tiers, trajectory projection, Slack alerts, CSV export |
-| **Multi-provider** | OpenAI and Anthropic in a single dashboard with provider breakdown |
+| **Multi-provider** | OpenAI, Anthropic, and Google Gemini in a single dashboard with provider breakdown |
 | **MCP support** | Budget enforcement for Model Context Protocol servers and proxies |
 
 ## Trust Model

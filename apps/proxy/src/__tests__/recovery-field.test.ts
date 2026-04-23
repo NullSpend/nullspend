@@ -64,6 +64,20 @@ describe("buildRecovery helper", () => {
       docs: null,
     });
   });
+
+  // PR-2c plan-audit F10 + codex-round-1 C2 decision D1: plan-limit is a HARD
+  // block — not retryable, owner must upgrade or wait for period reset.
+  // Added to `ownerAction` array via array-membership check, NOT a switch
+  // refactor. This test fails loudly if an implementer emits {retryable: false}
+  // alone (missing owner_action_required: true).
+  it("plan_limit_exceeded → not retryable, owner action required", () => {
+    expect(buildRecovery("plan_limit_exceeded")).toEqual({
+      retryable: false,
+      owner_action_required: true,
+      retry_after_seconds: null,
+      docs: null,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -132,6 +146,7 @@ describe("shared.ts / mcp.ts parity", () => {
     "tag_budget_exceeded",
     "customer_budget_exceeded",
     "budget_exceeded",
+    "plan_limit_exceeded", // PR-2c plan-audit F1 — MCP + provider parity
   ] as const;
 
   it.each(SHARED_DENIAL_CODES)(

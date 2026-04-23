@@ -12,7 +12,21 @@
   "routes": [
     { "pattern": "proxy.nullspend.dev", "custom_domain": true }
   ],
-  "vars": {},
+  "vars": {
+    // PR-2c: plan-counter enforcement flag.
+    // FLIPPED 2026-04-19 in PR-2e Sub-PR 20 — launch gate.
+    // Rollback: set back to "false" + pnpm proxy:deploy (guard script wraps).
+    "PLAN_COUNTER_ENABLED": "true",
+    // NULLSPEND_CLOUD gates the cloud-vs-self-hosted identity branch in
+    // api-key-auth.ts::lookupKeyInDb. When NOT set to "true" (case-insensitive),
+    // ALL API keys resolve to the self-hosted identity shape with
+    // planLimitBlockAt: null — which short-circuits plan-counter enforcement
+    // entirely, regardless of PLAN_COUNTER_ENABLED. Missed during the
+    // PR-2e Sub-PR 20 pre-flip review because the deploy guard only checks
+    // PLAN_COUNTER_ENABLED, not NULLSPEND_CLOUD. Caught 2026-04-20 during
+    // live-stack T2 testing when counter didn't advance on proxy/MCP paths.
+    "NULLSPEND_CLOUD": "true"
+  },
   "ratelimits": [
     {
       "name": "IP_RATE_LIMITER",
@@ -48,23 +62,20 @@
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["UserBudgetDO"] }
   ],
+  // PR-2d: plan-counter drift reconciliation. The handler in
+  // src/routes/reconcile-plan-counter-cron.ts picks up cost_events tagged
+  // `_ns_counter_sync_skipped` (dashboard fail-open path) and replays the
+  // DO increment with the event's stored periodStart/End. 15 minutes gives
+  // real-time-ish convergence with plenty of CPU-budget headroom per tick.
+  "triggers": {
+    "crons": ["*/15 * * * *"]
+  },
   "queues": {
     "producers": [
-      { "binding": "RECONCILE_QUEUE", "queue": "nullspend-reconcile" },
       { "binding": "COST_EVENT_QUEUE", "queue": "nullspend-cost-events" },
       { "binding": "WEBHOOK_QUEUE", "queue": "nullspend-webhooks" }
     ],
     "consumers": [
-      {
-        "queue": "nullspend-reconcile",
-        "max_retries": 3,
-        "dead_letter_queue": "nullspend-reconcile-dlq",
-        "retry_delay": 5
-      },
-      {
-        "queue": "nullspend-reconcile-dlq",
-        "max_retries": 0
-      },
       {
         "queue": "nullspend-cost-events",
         "max_batch_size": 100,

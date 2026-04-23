@@ -5,6 +5,7 @@ export {
   RejectedError,
   BudgetExceededError,
   LoopDetectedError,
+  PlanLimitExceededError,
   MandateViolationError,
   SessionLimitExceededError,
   VelocityExceededError,

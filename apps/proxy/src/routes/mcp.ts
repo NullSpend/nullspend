@@ -3,16 +3,18 @@ import type { RequestContext } from "../lib/context.js";
 import { errorResponse } from "../lib/errors.js";
 import { lookupBudgetsForDO, lookupCustomerUpgradeUrl, type BudgetEntity } from "../lib/budget-do-lookup.js";
 import { logCostEventsBatchQueued, getCostEventQueue } from "../lib/cost-event-queue.js";
-import { checkBudget, reconcileBudgetQueued, getReconcileQueue } from "../lib/budget-orchestrator.js";
+import { checkBudget, reconcileBudget } from "../lib/budget-orchestrator.js";
+import { resolvePeriodBounds } from "../lib/period-math.js";
 import type { ThresholdCrossing } from "../durable-objects/user-budget.js";
 import { getWebhookEndpoints, getWebhookEndpointsWithSecrets } from "../lib/webhook-cache.js";
-import { buildCostEventPayload, buildThinCostEventPayload, buildThresholdPayload, buildVelocityExceededPayload, buildSessionLimitExceededPayload, buildTagBudgetExceededPayload, buildCustomerBudgetExceededPayload, buildBudgetExceededPayload } from "../lib/webhook-events.js";
+import { buildCostEventPayload, buildThinCostEventPayload, buildThresholdPayload, buildVelocityExceededPayload, buildSessionLimitExceededPayload, buildTagBudgetExceededPayload, buildCustomerBudgetExceededPayload, buildBudgetExceededPayload, buildPlanLimitExceededPayload } from "../lib/webhook-events.js";
 import { dispatchToEndpoints } from "../lib/webhook-dispatch.js";
 import { expireRotatedSecrets } from "../lib/webhook-expiry.js";
 import { UUID_RE } from "../lib/validation.js";
 import { emitMetric } from "../lib/metrics.js";
 import { dispatchDenialWebhook, dispatchVelocityRecoveryWebhooks, buildBudgetHeaders, buildRecovery } from "./shared.js";
 import { resolveUpgradeUrl } from "../lib/upgrade-url.js";
+import { getPricingUrl, getSelfHostUrl } from "../lib/constants.js";
 
 // ---------------------------------------------------------------------------
 // POST /v1/mcp/budget/check
@@ -70,14 +72,20 @@ export async function handleMcpBudgetCheck(
 
     // Metric emission deferred to the per-branch returns below so the
     // upgradeUrlEmitted tag reflects the actual response. See E5.
+    //
+    // PR-2c codex-round-1 H3: planLimitDenied is the FIRST branch — must match
+    // branch priority order below so metric reason tag aligns with body code.
     const reason = outcome.status === "denied"
-      ? (outcome.velocityDenied ? "velocity_exceeded"
+      ? (outcome.planLimitDenied ? "plan_limit_exceeded"
+         : outcome.velocityDenied ? "velocity_exceeded"
          : outcome.sessionLimitDenied ? "session_limit_exceeded"
          : outcome.tagBudgetDenied ? "tag_budget_exceeded"
          : outcome.deniedEntityType === "customer" ? "customer_budget_exceeded"
          : "budget_exceeded")
       : null;
-    function emitDenialMetric(upgradeUrlEmitted: boolean, upgradeUrlSource: "per_customer" | "org" | "none"): void {
+    // PR-2c codex-round-1 M9: "platform" added for plan-limit denials (upgrade URL
+    // from NullSpend defaults, NOT per-org settings).
+    function emitDenialMetric(upgradeUrlEmitted: boolean, upgradeUrlSource: "per_customer" | "org" | "platform" | "none"): void {
       emitMetric("budget_denied", {
         reason: reason ?? "unknown",
         provider: "mcp",
@@ -90,6 +98,49 @@ export async function handleMcpBudgetCheck(
     // MCP denials use static messages (machine-to-machine consumers parse code/details,
     // not message strings). Enriched dollar-amount messages are in shared.ts (provider routes).
     // Recovery objects are included on both paths for programmatic consumption.
+
+    // PR-2c plan-audit F1: plan-limit denial — FIRST branch, BEFORE velocity.
+    // Must fire before generic budget_exceeded fallthrough at bottom.
+    if (outcome.status === "denied" && outcome.planLimitDenied) {
+      emitDenialMetric(true, "platform");
+      const count = outcome.planLimitCount ?? 0;
+      const blockAt = outcome.planLimitBlockAt ?? 0;
+      const tier = outcome.planLimitTier ?? "free";
+      const upgradeUrl = getPricingUrl(env);
+      const selfHostUrl = getSelfHostUrl(env);
+      dispatchDenialWebhook(ctx, env, "[mcp-route]", () =>
+        buildPlanLimitExceededPayload({
+          count, blockAt, tier, upgradeUrl, selfHostUrl,
+          model: `${parsed.serverName}/${parsed.toolName}`,
+          provider: "mcp",
+        }, ctx.auth.apiVersion),
+      );
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: "plan_limit_exceeded",
+            message: "Request blocked: account plan limit reached. Upgrade or wait for period reset.",
+            upgrade_url: upgradeUrl,
+            self_host_url: selfHostUrl,
+            details: { current_count: count, block_at: blockAt, tier },
+            recovery: buildRecovery("plan_limit_exceeded"),
+          },
+        }),
+        {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "NullSpend-Version": ctx.resolvedApiVersion,
+            "X-NullSpend-Trace-Id": ctx.traceId,
+            "X-NullSpend-Request-Id": ctx.nullspendRequestId,
+            "X-NullSpend-Denied": "1",
+            ...(ctx.sessionId ? { "X-NullSpend-Session": ctx.sessionId } : {}),
+            ...budgetHeaders,
+          },
+        },
+      );
+    }
+
     if (outcome.status === "denied" && outcome.velocityDenied) {
       emitDenialMetric(false, "none");
       dispatchDenialWebhook(ctx, env, "[mcp-route]", () =>
@@ -439,6 +490,13 @@ export async function handleMcpEvents(
 
   const accepted = events.length;
 
+  // PR-2d: resolve billing period bounds once per request. Batch rows all land
+  // in the same period (single HTTP request → single `now`). Dates persist
+  // across structuredClone when events traverse Cloudflare Queues.
+  const periods = resolvePeriodBounds(ctx.auth, Date.now());
+  const periodStart = new Date(periods.periodStart);
+  const periodEnd = new Date(periods.periodEnd);
+
   waitUntil(
     (async () => {
       // Phase 1: Build all cost event rows
@@ -464,6 +522,8 @@ export async function handleMcpEvents(
         tags: ctx.tags,
         customerId: ctx.customerId,
         source: "mcp" as const,
+        periodStart,
+        periodEnd,
       }));
 
       // Phase 2: Single batch INSERT (never throws — errors logged internally)
@@ -521,7 +581,7 @@ export async function handleMcpEvents(
         }
         for (const event of eventsWithReservations) {
           try {
-            const result = await reconcileBudgetQueued(getReconcileQueue(env), env, ctx.ownerId, ctx.auth.orgId, event.reservationId!, event.costMicrodollars, budgetEntities, ctx.connectionString);
+            const result = await reconcileBudget(env, ctx.ownerId, ctx.auth.orgId, event.reservationId!, event.costMicrodollars, budgetEntities, ctx.connectionString);
             if (result.thresholdCrossings) {
               allCrossings.push(...result.thresholdCrossings);
             }

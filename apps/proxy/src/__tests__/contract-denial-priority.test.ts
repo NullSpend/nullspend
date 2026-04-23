@@ -35,8 +35,7 @@ const { mockCheckBudget } = vi.hoisted(() => ({
 }));
 vi.mock("../lib/budget-orchestrator.js", () => ({
   checkBudget: mockCheckBudget,
-  reconcileBudgetQueued: vi.fn().mockResolvedValue(undefined),
-  getReconcileQueue: vi.fn().mockReturnValue(undefined),
+  reconcileBudget: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../lib/cost-event-queue.js", () => ({
@@ -51,9 +50,6 @@ vi.mock("../lib/webhook-cache.js", () => ({
   invalidateWebhookCache: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../lib/webhook-thresholds.js", () => ({
-  detectThresholdCrossings: vi.fn().mockReturnValue([]),
-}));
 
 import { handleChatCompletions } from "../routes/openai.js";
 import { makeContractEnv, makeContractCtx } from "./msw/contract-helpers.js";

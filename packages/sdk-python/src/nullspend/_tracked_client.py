@@ -31,6 +31,7 @@ from nullspend.errors import (
     BudgetExceededError,
     LoopDetectedError,
     MandateViolationError,
+    PlanLimitExceededError,
     SessionLimitExceededError,
     VelocityExceededError,
     TagBudgetExceededError,
@@ -163,6 +164,13 @@ def _parse_denial_payload(response: httpx.Response) -> dict[str, Any] | None:
     if not isinstance(upgrade_url, str):
         upgrade_url = None
 
+    # PR-2c: self_host_url is a peer of upgrade_url, emitted on plan-limit
+    # denials. Parser supports it on all denial types (future-proof) even
+    # though only plan_limit_exceeded currently populates it.
+    self_host_url = error.get("self_host_url")
+    if not isinstance(self_host_url, str):
+        self_host_url = None
+
     retry_after = None
     ra_header = response.headers.get("retry-after")
     if ra_header:
@@ -196,6 +204,7 @@ def _parse_denial_payload(response: httpx.Response) -> dict[str, Any] | None:
         "details": details,
         "retry_after_seconds": retry_after,
         "upgrade_url": upgrade_url,
+        "self_host_url": self_host_url,
         "recovery": recovery,
     }
 
@@ -209,6 +218,7 @@ def _dispatch_denial(
     code = parsed["code"]
     details = parsed.get("details") or {}
     upgrade_url = parsed.get("upgrade_url")
+    self_host_url = parsed.get("self_host_url")
     retry_after = parsed.get("retry_after_seconds")
     recovery = parsed.get("recovery")
 
@@ -310,6 +320,28 @@ def _dispatch_denial(
             remaining_microdollars=remaining,
             limit_microdollars=_to_finite_number(details.get("budget_limit_microdollars")),
             spend_microdollars=_to_finite_number(details.get("budget_spend_microdollars")),
+            recovery=recovery,
+        )
+
+    elif code == "plan_limit_exceeded":
+        # PR-2c: NullSpend-tier plan-limit denial. Details: {current_count, block_at, tier}.
+        count = _to_finite_number(details.get("current_count")) or 0
+        block_at = _to_finite_number(details.get("block_at")) or 0
+        tier = details.get("tier") if isinstance(details.get("tier"), str) else "unknown"
+        _safe_denied(on_denied, {
+            "type": "plan_limit",
+            "count": count,
+            "block_at": block_at,
+            "tier": tier,
+            "upgrade_url": upgrade_url,
+            "self_host_url": self_host_url,
+        }, on_cost_error)
+        raise PlanLimitExceededError(
+            count=int(count),
+            block_at=int(block_at),
+            tier=tier,
+            upgrade_url=upgrade_url,
+            self_host_url=self_host_url,
             recovery=recovery,
         )
 

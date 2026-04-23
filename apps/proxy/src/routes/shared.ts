@@ -1,5 +1,7 @@
 import { waitUntil } from "cloudflare:workers";
 import type { RequestContext } from "../lib/context.js";
+import type { TierLabel } from "../lib/api-key-auth.js";
+import { getPricingUrl, getSelfHostUrl } from "../lib/constants.js";
 import { getWebhookEndpoints, getWebhookEndpointsWithSecrets } from "../lib/webhook-cache.js";
 import { lookupCustomerUpgradeUrl, type BudgetEntity } from "../lib/budget-do-lookup.js";
 import { resolveUpgradeUrl } from "../lib/upgrade-url.js";
@@ -10,6 +12,7 @@ import {
   buildTagBudgetExceededPayload,
   buildCustomerBudgetExceededPayload,
   buildBudgetExceededPayload,
+  buildPlanLimitExceededPayload,
   buildLoopDetectedPayload,
   buildCostEventPayload,
   buildThinCostEventPayload,
@@ -17,7 +20,6 @@ import {
   CURRENT_API_VERSION,
 } from "../lib/webhook-events.js";
 import { dispatchToEndpoints } from "../lib/webhook-dispatch.js";
-import { detectThresholdCrossings } from "../lib/webhook-thresholds.js";
 import { expireRotatedSecrets } from "../lib/webhook-expiry.js";
 import { emitMetric } from "../lib/metrics.js";
 
@@ -39,7 +41,10 @@ export function buildRecovery(
   retryAfterSeconds?: number | null,
 ): Recovery {
   const retryable = code === "velocity_exceeded" || code === "loop_detected";
-  const ownerAction = ["budget_exceeded", "customer_budget_exceeded", "tag_budget_exceeded"].includes(code);
+  // PR-2c plan-audit F10: add "plan_limit_exceeded" to the ownerAction array
+  // (NOT a switch refactor). Plan-limit is a hard block — owner must upgrade
+  // or wait for period reset. retry_after_seconds stays null (not retryable).
+  const ownerAction = ["budget_exceeded", "customer_budget_exceeded", "tag_budget_exceeded", "plan_limit_exceeded"].includes(code);
   return {
     retryable,
     owner_action_required: ownerAction,
@@ -157,6 +162,12 @@ export interface EnrichmentFields {
   budgetStatus: "skipped" | "approved" | "denied";
   estimatedCostMicrodollars: number;
   orgId: string | null;
+  // PR-2d: billing period bounds resolved via resolvePeriodBounds(ctx.auth, now).
+  // Stamped at ingest so late-arriving cost events land on the ORIGINAL period
+  // row instead of the current period at reconcile time. Never null for new
+  // writes — paid orgs use Stripe bounds, free/unpaid fall back to calendar month.
+  periodStart: Date;
+  periodEnd: Date;
 }
 
 interface BudgetCheckOutcome {
@@ -165,6 +176,11 @@ interface BudgetCheckOutcome {
   budgetEntities: BudgetEntity[];
   /** Set when the denial is due to an invalid cost estimate (NaN/Infinity/negative). */
   invalidEstimate?: boolean;
+  /** PR-2c: plan-limit denial (NullSpend-tier enforcement, fires BEFORE DO chain). */
+  planLimitDenied?: boolean;
+  planLimitCount?: number;
+  planLimitBlockAt?: number;
+  planLimitTier?: TierLabel;
   velocityDenied?: boolean;
   sessionLimitDenied?: boolean;
   tagBudgetDenied?: boolean;
@@ -225,8 +241,13 @@ export async function handleBudgetDenials(
   // resolution + customer_settings lookup), not just the auth identity.
   // See E5 in the edge-case audit. The reason is computed here once so
   // all branches share a single source of truth.
+  //
+  // PR-2c codex-round-1 H3: `planLimitDenied` is the FIRST branch. Without
+  // this ordering, metric tags `reason="budget_exceeded"` while body emits
+  // `plan_limit_exceeded` — alerts + dashboards would lie.
   const reason = outcome.status === "denied"
-    ? (outcome.velocityDenied ? "velocity_exceeded"
+    ? (outcome.planLimitDenied ? "plan_limit_exceeded"
+       : outcome.velocityDenied ? "velocity_exceeded"
        : outcome.loopDetected ? "loop_detected"
        : outcome.sessionLimitDenied ? "session_limit_exceeded"
        : outcome.tagBudgetDenied ? "tag_budget_exceeded"
@@ -234,7 +255,10 @@ export async function handleBudgetDenials(
        : "budget_exceeded")
     : null;
 
-  function emitDenialMetric(upgradeUrlEmitted: boolean, upgradeUrlSource: "per_customer" | "org" | "none"): void {
+  // PR-2c codex-round-1 M9: added "platform" for plan-limit denials —
+  // upgrade_url comes from NULLSPEND_PRICING_URL, NOT per-customer or org
+  // settings. Mis-attributing would corrupt org-upgrade-URL adoption analytics.
+  function emitDenialMetric(upgradeUrlEmitted: boolean, upgradeUrlSource: "per_customer" | "org" | "platform" | "none"): void {
     emitMetric("budget_denied", {
       reason: reason ?? "unknown",
       provider,
@@ -248,6 +272,49 @@ export async function handleBudgetDenials(
   // so pass 0 for reservedForThisRequest — headers reflect the state
   // right before this (rejected) request.
   const budgetHeaders = buildBudgetHeaders(budgetEntities, 0);
+
+  // PR-2c: plan-limit denial — fires BEFORE all other denial branches per
+  // Decision #28 priority. Only reachable when `checkBudget` returned early
+  // with `planLimitDenied: true` (Free-tier org at cap + PLAN_COUNTER_ENABLED=true).
+  // Upgrade URL + self-host URL come from NullSpend defaults (env-overridable
+  // for self-hosted / white-labeled deploys). No Retry-After header — plan-limit
+  // is a hard block, owner-action-required (upgrade or wait for period reset).
+  if (outcome.status === "denied" && outcome.planLimitDenied) {
+    emitDenialMetric(true, "platform");
+    const count = outcome.planLimitCount ?? 0;
+    const blockAt = outcome.planLimitBlockAt ?? 0;
+    const tier = outcome.planLimitTier ?? "free";
+    const upgradeUrl = getPricingUrl(env);
+    const selfHostUrl = getSelfHostUrl(env);
+    dispatchDenialWebhook(ctx, env, logPrefix, () =>
+      buildPlanLimitExceededPayload({
+        count, blockAt, tier, upgradeUrl, selfHostUrl, model: requestModel, provider,
+      }, ctx.auth.apiVersion),
+    );
+    return new Response(
+      JSON.stringify({
+        error: {
+          code: "plan_limit_exceeded",
+          message: `Plan limit reached: ${count} of ${blockAt} governed requests on ${tier} plan. Upgrade or wait for period reset.`,
+          upgrade_url: upgradeUrl,
+          self_host_url: selfHostUrl,
+          details: { current_count: count, block_at: blockAt, tier },
+          recovery: buildRecovery("plan_limit_exceeded"),
+        },
+      }),
+      {
+        status: 429,
+        headers: {
+          "Content-Type": "application/json",
+          "X-NullSpend-Trace-Id": ctx.traceId,
+          "X-NullSpend-Request-Id": ctx.nullspendRequestId,
+          "X-NullSpend-Denied": "1",
+          ...(ctx.sessionId ? { "X-NullSpend-Session": ctx.sessionId } : {}),
+          ...budgetHeaders,
+        },
+      },
+    );
+  }
 
   // NF-2: Invalid cost estimate — client/caller produced NaN / Infinity /
   // negative microdollars (see budget-orchestrator.ts validation-denial
@@ -694,11 +761,11 @@ export async function dispatchCostEventWebhooks(
         }
       }
 
-      // P0-1: Use DO-deduped threshold crossings when available.
-      // undefined = not available (fallback to stale detection)
-      // [] = DO confirmed zero crossings (don't fire any)
-      // [...] = use these deduped crossings
-      if (preComputedCrossings !== undefined) {
+      // Use DO-deduped threshold crossings from reconcile. When undefined
+      // (reconcile failed/skipped) or empty, don't fire — the DO is the
+      // source of truth; stale local detection would emit duplicate or
+      // false-positive webhooks when the spend never landed.
+      if (preComputedCrossings && preComputedCrossings.length > 0) {
         const epVersion = endpoints[0]?.apiVersion ?? CURRENT_API_VERSION;
         for (const c of preComputedCrossings) {
           const event = buildThresholdPayload({
@@ -711,13 +778,6 @@ export async function dispatchCostEventWebhooks(
             isCritical: c.isCritical,
           }, epVersion);
           await dispatchToEndpoints(ctx.webhookDispatcher!, endpoints, event);
-        }
-      } else if (budgetEntities.length > 0) {
-        // Fallback: stale-data detection (MCP route, backward compat)
-        const epVersion = endpoints[0]?.apiVersion ?? CURRENT_API_VERSION;
-        const thresholdEvents = detectThresholdCrossings(budgetEntities, costEvent.costMicrodollars, costEvent.requestId, epVersion);
-        for (const te of thresholdEvents) {
-          await dispatchToEndpoints(ctx.webhookDispatcher!, endpoints, te);
         }
       }
       expireRotatedSecrets(ctx.connectionString, endpoints).catch(() => {});

@@ -1,11 +1,53 @@
-import { invalidateAuthCacheForOwner } from "../lib/api-key-auth.js";
-import { doBudgetRemove, doBudgetResetSpend, doBudgetUpsertEntities, doBudgetGetVelocityState } from "../lib/budget-do-client.js";
+import { invalidateAuthCacheForOwner, authenticateApiKey } from "../lib/api-key-auth.js";
+import { doBudgetRemove, doBudgetResetSpend, doBudgetUpsertEntities, doBudgetGetVelocityState, doIncrementPlanCounter } from "../lib/budget-do-client.js";
 import { lookupBudgetsForDO } from "../lib/budget-do-lookup.js";
 import { errorResponse } from "../lib/errors.js";
 import { optionalBinding } from "../lib/env.js";
 import { emitMetric } from "../lib/metrics.js";
 import { timingSafeStringEqual } from "../lib/timing-safe-equal.js";
 import { retrieveBodies } from "../lib/body-storage.js";
+import { resolvePeriodBounds } from "../lib/period-math.js";
+
+/**
+ * PR-2d / Decision #40: dual-secret authentication for internal endpoints.
+ *
+ * Accept Bearer tokens matching `INTERNAL_SECRET` OR `INTERNAL_SECRET_NEXT`.
+ * During rotation, ops sets `INTERNAL_SECRET_NEXT` to the current value (on both
+ * proxy and dashboard sides) and rolls the dashboard's `PROXY_INTERNAL_SECRET`
+ * to the new value. When cutover completes, ops clears `INTERNAL_SECRET_NEXT`
+ * and the proxy rotates `INTERNAL_SECRET` to match.
+ *
+ * Short-circuits on first match — the constant-time guarantee is per-secret
+ * byte compare, which each `timingSafeStringEqual` call provides. Revealing
+ * which-of-two-valid-secrets-matched does NOT help an attacker guess either.
+ *
+ * Returns a `Response` on failure (500/401), or `null` on success.
+ *
+ * Typed via cast because `INTERNAL_SECRET_NEXT` is not yet in the auto-generated
+ * `worker-configuration.d.ts` (opt-in per-deploy secret, added to `.dev.vars.example`
+ * for docs). Runtime presence is enforced by `typeof === "string" && length > 0`.
+ */
+export function authenticateInternal(request: Request, env: Env): Response | null {
+  const e = env as unknown as { INTERNAL_SECRET?: string; INTERNAL_SECRET_NEXT?: string };
+  const secrets = [e.INTERNAL_SECRET, e.INTERNAL_SECRET_NEXT].filter(
+    (s): s is string => typeof s === "string" && s.length > 0,
+  );
+  if (secrets.length === 0) {
+    console.error("[internal] INTERNAL_SECRET not configured");
+    return errorResponse("internal_error", "Server misconfigured", 500);
+  }
+
+  const authHeader = request.headers.get("authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return errorResponse("unauthorized", "Missing or malformed Authorization header", 401);
+  }
+
+  const token = authHeader.slice(7);
+  for (const secret of secrets) {
+    if (timingSafeStringEqual(token, secret)) return null;
+  }
+  return errorResponse("unauthorized", "Invalid token", 401);
+}
 
 interface InvalidationBody {
   action: "remove" | "reset_spend" | "sync" | "auth_only";
@@ -62,22 +104,8 @@ export async function handleBudgetInvalidation(
   request: Request,
   env: Env,
 ): Promise<Response> {
-  // Validate INTERNAL_SECRET is configured
-  if (!env.INTERNAL_SECRET) {
-    console.error("[internal] INTERNAL_SECRET not configured");
-    return errorResponse("internal_error", "Server misconfigured", 500);
-  }
-
-  // Auth: timing-safe comparison of Bearer token
-  const authHeader = request.headers.get("authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return errorResponse("unauthorized", "Missing or malformed Authorization header", 401);
-  }
-
-  const token = authHeader.slice(7);
-  if (!timingSafeStringEqual(token, env.INTERNAL_SECRET)) {
-    return errorResponse("unauthorized", "Invalid token", 401);
-  }
+  const authFail = authenticateInternal(request, env);
+  if (authFail) return authFail;
 
   // Parse and validate body
   let raw: unknown;
@@ -180,22 +208,8 @@ export async function handleVelocityState(
   request: Request,
   env: Env,
 ): Promise<Response> {
-  // Validate INTERNAL_SECRET is configured
-  if (!env.INTERNAL_SECRET) {
-    console.error("[internal] INTERNAL_SECRET not configured");
-    return errorResponse("internal_error", "Server misconfigured", 500);
-  }
-
-  // Auth: timing-safe comparison of Bearer token
-  const authHeader = request.headers.get("authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return errorResponse("unauthorized", "Missing or malformed Authorization header", 401);
-  }
-
-  const token = authHeader.slice(7);
-  if (!timingSafeStringEqual(token, env.INTERNAL_SECRET)) {
-    return errorResponse("unauthorized", "Invalid token", 401);
-  }
+  const authFail = authenticateInternal(request, env);
+  if (authFail) return authFail;
 
   // Read ownerId from query param
   const url = new URL(request.url);
@@ -238,20 +252,8 @@ export async function handleRequestBodies(
   request: Request,
   env: Env,
 ): Promise<Response> {
-  if (!env.INTERNAL_SECRET) {
-    console.error("[internal] INTERNAL_SECRET not configured");
-    return errorResponse("internal_error", "Server misconfigured", 500);
-  }
-
-  const authHeader = request.headers.get("authorization");
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return errorResponse("unauthorized", "Missing or malformed Authorization header", 401);
-  }
-
-  const token = authHeader.slice(7);
-  if (!timingSafeStringEqual(token, env.INTERNAL_SECRET)) {
-    return errorResponse("unauthorized", "Invalid token", 401);
-  }
+  const authFail = authenticateInternal(request, env);
+  if (authFail) return authFail;
 
   const url = new URL(request.url);
   const ownerId = url.searchParams.get("ownerId");
@@ -308,4 +310,136 @@ export async function handleRequestBodies(
     console.error("[internal] Request body retrieval failed:", err);
     return errorResponse("internal_error", "Body retrieval failed", 500);
   }
+}
+
+// ---------------------------------------------------------------------------
+// POST /internal/plan-counter/increment  (PR-2d / Decision #26)
+// ---------------------------------------------------------------------------
+
+/**
+ * Body schema: `{ apiKey: string, idempotencyKeys: string[] (1–100) }`.
+ *
+ * Fail-open reconciliation from the dashboard's `/api/cost-events` path — the
+ * dashboard holds the caller's raw API key (SDK direct-mode), computes per-event
+ * idempotency keys as `sha256Hex(JSON.stringify([requestId, provider]))` (64 hex
+ * chars, well under the DO's 256-char limit + collision-safe against delimiters),
+ * and POSTs the batch here. The proxy resolves the apiKey to an identity
+ * server-side — caller-supplied orgId would be an attack surface (C36).
+ */
+const PLAN_COUNTER_APIKEY_MAX_LENGTH = 256;
+const PLAN_COUNTER_IDEMPOTENCY_KEY_MAX_LENGTH = 256;  // matches DO's MAX_IDEMPOTENCY_KEY_LENGTH
+const PLAN_COUNTER_MAX_KEYS = 100;                    // matches costEventBatchInputSchema cap
+
+interface PlanCounterIncrementBody {
+  apiKey: string;
+  idempotencyKeys: string[];
+}
+
+function parsePlanCounterBody(raw: unknown): PlanCounterIncrementBody | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+
+  if (typeof obj.apiKey !== "string") return null;
+  if (obj.apiKey.length === 0 || obj.apiKey.length > PLAN_COUNTER_APIKEY_MAX_LENGTH) return null;
+
+  if (!Array.isArray(obj.idempotencyKeys)) return null;
+  const keys = obj.idempotencyKeys;
+  if (keys.length === 0 || keys.length > PLAN_COUNTER_MAX_KEYS) return null;
+  for (const k of keys) {
+    if (typeof k !== "string") return null;
+    if (k.length === 0 || k.length > PLAN_COUNTER_IDEMPOTENCY_KEY_MAX_LENGTH) return null;
+  }
+
+  return { apiKey: obj.apiKey, idempotencyKeys: keys as string[] };
+}
+
+/**
+ * POST /internal/plan-counter/increment
+ *
+ * Increment the DO plan-counter for each supplied idempotency key. Replay-safe:
+ * DO-side dedup ensures a previously-seen key is a no-op. Returns the final
+ * call's result so the dashboard helper can observe current count/status.
+ *
+ * Auth: dual-secret Bearer (INTERNAL_SECRET or INTERNAL_SECRET_NEXT).
+ * Scope: derived from `apiKey` — caller cannot target arbitrary orgs.
+ */
+export async function handlePlanCounterIncrement(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  const authFail = authenticateInternal(request, env);
+  if (authFail) return authFail;
+
+  let raw: unknown;
+  try {
+    raw = await request.json();
+  } catch {
+    return errorResponse("bad_request", "Invalid JSON body", 400);
+  }
+
+  const body = parsePlanCounterBody(raw);
+  if (!body) {
+    return errorResponse(
+      "bad_request",
+      "Body must be { apiKey: string, idempotencyKeys: string[] (1–100, each 1–256 chars) }",
+      400,
+    );
+  }
+
+  const connectionString = env.HYPERDRIVE.connectionString;
+
+  // Resolve identity from the caller-supplied apiKey. The hash → DB lookup
+  // + positive/negative caching already live inside `authenticateApiKey`.
+  let identity;
+  try {
+    identity = await authenticateApiKey(body.apiKey, connectionString, env);
+  } catch (err) {
+    console.error("[internal] plan-counter apiKey lookup failed:", err);
+    emitMetric("plan_counter_endpoint", { status: "db_error" });
+    return errorResponse("internal_error", "Identity lookup failed", 503);
+  }
+  if (!identity) {
+    emitMetric("plan_counter_endpoint", { status: "unknown_key" });
+    return errorResponse("unauthorized", "Unknown API key", 401);
+  }
+
+  const { periodStart, periodEnd } = resolvePeriodBounds(identity, Date.now());
+
+  // Per-key loop. Each iteration is its own DO transactionSync — a mid-batch
+  // throw leaves prior increments durably committed (replay-safe via dedup).
+  // The LAST result is the return value; `count` reflects the current DO total.
+  const startMs = Date.now();
+  let lastResult: Awaited<ReturnType<typeof doIncrementPlanCounter>> | null = null;
+  try {
+    for (const key of body.idempotencyKeys) {
+      lastResult = await doIncrementPlanCounter(env, {
+        orgId: identity.orgId,
+        planLimitBlockAt: identity.planLimitBlockAt,
+        planLimitMode: identity.planLimitMode,
+        tier: identity.tierLabel,
+        periodStart,
+        periodEnd,
+        idempotencyKey: key,
+      });
+    }
+  } catch (err) {
+    console.error("[internal] plan-counter DO increment failed:", err);
+    emitMetric("plan_counter_endpoint", {
+      status: "do_error",
+      tier: identity.tierLabel,
+      keyCount: body.idempotencyKeys.length,
+    });
+    return errorResponse("internal_error", "Plan counter increment failed", 500);
+  }
+
+  emitMetric("plan_counter_endpoint", {
+    status: "ok",
+    finalStatus: lastResult?.status ?? "unknown",
+    tier: identity.tierLabel,
+    keyCount: body.idempotencyKeys.length,
+    durationMs: Date.now() - startMs,
+  });
+
+  // Return last call's result verbatim (discriminated union carries count/blockAt/reason).
+  return Response.json(lastResult ?? { status: "skipped", reason: "no_keys" });
 }

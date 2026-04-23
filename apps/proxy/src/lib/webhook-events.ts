@@ -20,6 +20,7 @@ export type WebhookEventType =
   | "tag_budget.exceeded"
   | "customer_budget.exceeded"
   | "loop.detected"
+  | "plan_limit.exceeded"
   | "test.ping";
 
 export interface WebhookEvent {
@@ -153,16 +154,20 @@ interface ThresholdData {
   budgetSpendMicrodollars: number;
   thresholdPercent: number;
   triggeredByRequestId: string;
-  isCritical?: boolean;
+  /**
+   * Caller-computed critical flag. Originates from the DO's threshold
+   * crossing detection — the DO knows the per-entity threshold array and
+   * passes the correct value. Required: no default, no `>= 90` fallback
+   * (removed when all call sites moved to explicit passing).
+   */
+  isCritical: boolean;
 }
 
 export function buildThresholdPayload(
   data: ThresholdData,
   apiVersion: string = CURRENT_API_VERSION,
 ): WebhookEvent {
-  // isCritical can be explicitly set by the caller (per-entity thresholds).
-  // Fallback: >= 90 is critical (preserves backward compat for default thresholds).
-  const type: WebhookEventType = (data.isCritical ?? data.thresholdPercent >= 90)
+  const type: WebhookEventType = data.isCritical
     ? "budget.threshold.critical"
     : "budget.threshold.warning";
 
@@ -444,6 +449,45 @@ export function buildLoopDetectedPayload(
         window_seconds: data.windowSeconds,
         max_calls: data.maxCalls,
         // contentHash intentionally omitted — prompt fingerprint leakage risk
+        blocked_at: new Date().toISOString(),
+      },
+    },
+  };
+}
+
+/**
+ * PR-2c: plan-limit denial webhook payload. Emitted when a Free-tier org
+ * exceeds its governed-request cap (100K per period) in enforce mode. The
+ * envelope mirrors the 429 response body shape from `handlePlanLimitDenial`.
+ */
+interface PlanLimitExceededData {
+  count: number;
+  blockAt: number;
+  tier: string;
+  upgradeUrl: string;
+  selfHostUrl: string;
+  model: string;
+  provider: string;
+}
+
+export function buildPlanLimitExceededPayload(
+  data: PlanLimitExceededData,
+  apiVersion: string = CURRENT_API_VERSION,
+): WebhookEvent {
+  return {
+    id: `evt_${crypto.randomUUID()}`,
+    type: "plan_limit.exceeded",
+    api_version: apiVersion,
+    created_at: Math.floor(Date.now() / 1000),
+    data: {
+      object: {
+        current_count: data.count,
+        block_at: data.blockAt,
+        tier: data.tier,
+        upgrade_url: data.upgradeUrl,
+        self_host_url: data.selfHostUrl,
+        model: data.model,
+        provider: data.provider,
         blocked_at: new Date().toISOString(),
       },
     },

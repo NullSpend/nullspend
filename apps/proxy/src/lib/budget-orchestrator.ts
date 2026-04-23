@@ -1,10 +1,11 @@
 import { waitUntil } from "cloudflare:workers";
 import type { RequestContext } from "./context.js";
 import type { BudgetEntity } from "./budget-do-lookup.js";
-import { doBudgetCheck, doBudgetReconcile } from "./budget-do-client.js";
+import type { TierLabel } from "./api-key-auth.js";
+import { doBudgetCheck, doBudgetReconcile, doIncrementPlanCounter } from "./budget-do-client.js";
 import type { ThresholdCrossing } from "../durable-objects/user-budget.js";
 import { resetBudgetPeriod } from "./budget-spend.js";
-import { optionalBinding } from "./env.js";
+import { resolvePeriodBounds } from "./period-math.js";
 import { emitMetric } from "./metrics.js";
 
 export interface ReconcileOutcome {
@@ -17,6 +18,11 @@ interface BudgetCheckOutcome {
   budgetEntities: BudgetEntity[];
   /** Set when the denial is due to an invalid cost estimate (NaN/Infinity/negative). */
   invalidEstimate?: boolean;
+  /** PR-2c: plan-limit denial (NullSpend-tier enforcement, fires BEFORE DO chain). */
+  planLimitDenied?: boolean;
+  planLimitCount?: number;
+  planLimitBlockAt?: number;
+  planLimitTier?: TierLabel;
   deniedEntityType?: string;
   deniedEntityId?: string;
   remaining?: number;
@@ -70,6 +76,83 @@ export async function checkBudget(
   finalize: boolean = false,
   loopContext: { provider: string; model: string; contentHash: string } | null = null,
 ): Promise<BudgetCheckOutcome> {
+  // PR-2c build-audit F6: fail-loud if `ctx.nullspendRequestId` is missing.
+  // index.fetch populates this before every RequestContext construction; any
+  // test fixture or internal caller that forgets loses idempotency dedup
+  // silently. Runtime check catches the regression at test time rather than
+  // letting it slip into production as a silent double-count on retry.
+  if (typeof ctx.nullspendRequestId !== "string" || ctx.nullspendRequestId.length === 0) {
+    // edge-case-audit E2: metric has NO tags (cardinality-safe) — ownerId lives
+    // in the structured log so forensic queries can find the offending source.
+    emitMetric("nullspend_request_id_missing_on_ctx", {});
+    console.error(
+      "[budget-orchestrator] ctx.nullspendRequestId is missing or empty — idempotency dedup disabled for this request. Check index.fetch ingress setup.",
+      { ownerId: ctx.ownerId, orgId: ctx.auth?.orgId ?? "unknown" },
+    );
+  }
+
+  // PR-2c codex-round-1 C1: invalid-estimate guard at TOP of checkBudget, BEFORE
+  // any plan-counter increment. Malformed requests (NaN, Infinity, negative)
+  // must NOT burn governed-request quota. Existing checkBudgetDO guard stays as
+  // defense-in-depth. Returns invalidEstimate outcome shape expected by the
+  // existing 422 path in shared.ts handleBudgetDenials.
+  if (!Number.isFinite(estimateMicrodollars) || estimateMicrodollars < 0) {
+    emitMetric("budget_check_invalid_estimate", {
+      ownerId: ctx.ownerId,
+      orgId: ctx.auth.orgId ?? "unknown",
+    });
+    return {
+      status: "denied",
+      reservationId: null,
+      budgetEntities: [],
+      invalidEstimate: true,
+    };
+  }
+
+  // PR-2c: plan-limit check fires BEFORE the DO's velocity/loop/session/budget
+  // chain (Decision #28 priority). Runs EVEN when hasBudgets=false — plan-limit
+  // is NullSpend-tier gating, independent of org-configured budgets.
+  //
+  // Skipped when planLimitBlockAt is null (Enterprise + self-hosted — these tiers
+  // never enforce).
+  //
+  // INTENTIONAL (codex-round-1 M7): plan-limit-denied requests do NOT update
+  // loop_call_log or velocity windows downstream. A denied request has no LLM
+  // spend, no reservation — loop state on never-forwarded requests would produce
+  // misleading analytics on users who are already blocked. Do not extend loop
+  // tracking to cover plan-limit-denied requests.
+  // Use `!= null` (loose equality) so both `null` and `undefined` skip the check.
+  // `undefined` can occur in test fixtures that pre-date PR-2a and don't populate
+  // the field — treating them as "enforcement skipped" is the safe default.
+  if (ctx.auth.planLimitBlockAt != null) {
+    const { periodStart, periodEnd } = resolvePeriodBounds(ctx.auth, Date.now());
+    const planResult = await doIncrementPlanCounter(env, {
+      orgId: ctx.auth.orgId,
+      planLimitBlockAt: ctx.auth.planLimitBlockAt,
+      planLimitMode: ctx.auth.planLimitMode,
+      tier: ctx.auth.tierLabel,
+      periodStart,
+      periodEnd,
+      // PR-2c codex-round-1 C2: threading nullspendRequestId as idempotencyKey
+      // so client retries (500/502/503 → retry) don't double-count governed
+      // requests. DO's v11 plan_counter_idempotency persistence returns the
+      // stored decision verbatim on replay (codex-round-3 C1).
+      idempotencyKey: ctx.nullspendRequestId,
+    });
+    if (planResult.status === "denied") {
+      return {
+        status: "denied",
+        reservationId: null,
+        budgetEntities: [],
+        planLimitDenied: true,
+        planLimitCount: planResult.count,
+        planLimitBlockAt: planResult.blockAt,
+        planLimitTier: ctx.auth.tierLabel,
+      };
+    }
+    // status === "approved" or "skipped" → fall through to budget check.
+  }
+
   if (!ctx.auth.hasBudgets) {
     // P1 note: hasBudgets is cached for up to 120s (POSITIVE_TTL_MS) in the auth
     // cache. If an org adds its first budget and invalidation misses, requests
@@ -132,40 +215,6 @@ export async function reconcileBudget(
   return {};
 }
 
-/**
- * Extract the optional RECONCILE_QUEUE binding from env.
- * The binding is not in the generated Env type (optional infra).
- */
-export function getReconcileQueue(env: Env): Queue | undefined {
-  return optionalBinding(env, "RECONCILE_QUEUE");
-}
-
-/**
- * Reconcile via the DO directly — always calls the DO for atomic threshold
- * dedup (P0-1 fix). The DO's PXY-2 outbox handles Postgres sync via alarm.
- *
- * Previously this enqueued to RECONCILE_QUEUE, but that deferred the DO call
- * and caused duplicate threshold webhooks under concurrency. Strategy E
- * removed the optimistic PG write too — the DO RPC takes ~10ms, well within
- * the waitUntil budget. The alarm handler writes to PG in ~1-5s.
- *
- * The queue consumer (queue-handler.ts) is kept for draining in-flight
- * messages from before this change.
- */
-export async function reconcileBudgetQueued(
-  _queue: Queue | undefined,
-  env: Env,
-  ownerId: string | null,
-  orgId: string | null,
-  reservationId: string | null,
-  actualCost: number,
-  budgetEntities: BudgetEntity[],
-  connectionString: string,
-): Promise<ReconcileOutcome> {
-  // Always direct — DO provides atomic threshold crossing dedup
-  return reconcileBudget(env, ownerId, orgId, reservationId, actualCost, budgetEntities, connectionString);
-}
-
 // ---------------------------------------------------------------------------
 // Internal: DO-first path — single RPC, no Postgres on hot path
 // ---------------------------------------------------------------------------
@@ -193,21 +242,17 @@ async function checkBudgetDO(
   const checkResult = await doBudgetCheck(env, ownerId, keyId, estimateMicrodollars, sessionId, tagEntityIds, orgId, finalize, loopContext);
 
   // NF-2: The DO returns `{ status: "denied", hasBudgets: false }` ONLY when
-  // the incoming estimate is invalid (NaN / Infinity / negative — see
-  // user-budget.ts:384-385). Previously the bare `!hasBudgets` branch below
-  // treated this as stale auth cache and emitted `budget_cache_stale`, hiding
-  // a real validation failure behind a misleading signal AND letting the
-  // request proceed without budget enforcement (fail-open).
+  // the incoming estimate is invalid (NaN / Infinity / negative).
   //
-  // With estimator sanitization (P0-4) invalid estimates cannot reach the DO
-  // through normal request paths, so this branch is defense-in-depth. When
-  // it DOES fire, we FAIL CLOSED: return "denied" with `invalidEstimate:true`
-  // so the downstream denial handler rejects the request with 400 bad_request.
-  // Any future estimator miss, new provider adapter, or internal caller that
-  // leaks an invalid estimate will be caught here instead of silently
-  // bypassing budgets.
+  // PR-2c codex-round-1 C1 moved the primary invalid-estimate guard to the TOP
+  // of checkBudget above, so by the time we reach checkBudgetDO the estimate
+  // is guaranteed finite + non-negative. This branch is therefore UNREACHABLE
+  // via the normal checkBudget -> checkBudgetDO path but stays as defense-in-
+  // depth for any future caller that bypasses the outer guard. Uses a distinct
+  // metric name (`budget_check_invalid_estimate_defense`) so metric tag
+  // schemas don't collide with the upstream emission (F3 from build-audit).
   if (checkResult.status === "denied" && !checkResult.hasBudgets) {
-    emitMetric("budget_check_invalid_estimate", {
+    emitMetric("budget_check_invalid_estimate_defense", {
       ownerId,
       estimateIsFinite: Number.isFinite(estimateMicrodollars),
       estimateIsNegative: estimateMicrodollars < 0,

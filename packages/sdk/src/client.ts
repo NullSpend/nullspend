@@ -44,7 +44,7 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const API_KEY_HEADER = "x-nullspend-key";
 const MAX_RETRIES_CEILING = 10;
 const SDK_API_VERSION = "2026-04-01";
-const SDK_VERSION = "0.2.1";
+const SDK_VERSION = "0.3.0";
 
 function toFiniteInt(value: number | undefined, fallback: number): number {
   const v = value ?? fallback;

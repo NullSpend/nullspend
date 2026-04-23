@@ -7,7 +7,7 @@ Cloudflare Workers proxy that sits between agents and LLM providers (OpenAI, Ant
 ```bash
 pnpm test                      # Proxy unit + contract tests (PR gate)
 pnpm dev                       # Start wrangler dev server
-pnpm deploy                    # Deploy to Cloudflare
+pnpm deploy                    # Deploy to Cloudflare (wrapped by proxy-deploy-guard.ts — see Critical Rules below)
 SMOKE_LIVE=1 pnpm test:smoke   # Live smoke (manual/nightly; real API calls)
 pnpm test:smoke                # Prints help + exits 0 without SMOKE_LIVE=1
 pnpm smoke:record              # Refresh MSW cassettes (quarterly or on provider shape drift)
@@ -15,6 +15,14 @@ pnpm test:stress               # Stress tests — production-mutating, manual on
 ```
 
 ## Critical Rules
+
+### PLAN_COUNTER_ENABLED flag (PR-2e)
+
+- **Lives in `wrangler.jsonc::vars` only.** Never use `wrangler deploy --var PLAN_COUNTER_ENABLED:...` or `wrangler secret put PLAN_COUNTER_ENABLED`. Both override config-file vars per Cloudflare docs and create silent split-brain between deployed Worker behavior and the repo source of truth.
+- **`pnpm deploy` is wrapped** by `scripts/proxy-deploy-guard.ts` (PR-2e Sub-PR 2) which catches both vectors at deploy time and exits 1 with a clear error message. The guard runs `wrangler secret list | grep PLAN_COUNTER_ENABLED` and inspects passthrough argv for `--var PLAN_COUNTER_ENABLED:`.
+- Direct `wrangler deploy` (bypassing `pnpm deploy`) bypasses the guard. Documented limitation — don't do it unless you have a specific reason.
+- The reconciliation cron at `src/routes/reconcile-plan-counter-cron.ts` writes a heartbeat to `CACHE_KV` (key: `plan_counter_cron_last_tick_at`) on every tick BEFORE the PG query. This is read cross-worker by `apps/launch-watcher` to detect cron staleness. The KV write is wrapped in its own try/catch and treated as best-effort (per codex R5 #1) — a KV outage cannot kill the cron itself.
+
 
 - **NEVER use `passThroughOnException()`** — proxy must fail closed (502), never forward unauthenticated/untracked requests to origin
 - **NEVER add failover logic** that bypasses auth or cost tracking — this undermines the entire FinOps purpose
