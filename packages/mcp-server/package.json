@@ -1,6 +1,6 @@
 {
   "name": "@nullspend/mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server that exposes NullSpend approval tools to MCP clients",
   "license": "Apache-2.0",
   "repository": {

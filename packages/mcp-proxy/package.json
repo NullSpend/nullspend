@@ -1,6 +1,6 @@
 {
   "name": "@nullspend/mcp-proxy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP proxy that gates risky tool calls through NullSpend approval before forwarding to an upstream MCP server",
   "license": "Apache-2.0",
   "repository": {

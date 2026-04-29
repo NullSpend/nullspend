@@ -1,6 +1,6 @@
 {
   "name": "@nullspend/cost-engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Model pricing catalog and cost calculation engine for OpenAI, Anthropic, and Google AI",
   "license": "Apache-2.0",
   "repository": {
