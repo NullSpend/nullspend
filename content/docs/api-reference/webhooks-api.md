@@ -17,7 +17,7 @@ Retrieve all webhook endpoints for the current organization.
 
 ### Authentication
 
-Session (dashboard)
+Session (viewer role)
 
 ### Request
 
@@ -65,7 +65,7 @@ Register a new webhook endpoint. The signing secret is returned only in this res
 
 ### Authentication
 
-Session (dashboard)
+Session (admin role)
 
 ### Parameters
 
@@ -74,11 +74,11 @@ Session (dashboard)
 | `url` | body | string | Yes | HTTPS URL. No private IPs (10.x, 192.168.x, 172.16-31.x, 127.x, 169.254.x, .local). No IPv6 literals. |
 | `description` | body | string | No | Human-readable description. Max 200 chars. |
 | `eventTypes` | body | string[] | No | Event types to subscribe to. Default `[]` (receives all). |
-| `payloadMode` | body | string | No | `"full"` or `"thin"`. Default `"full"`. |
+| `payloadMode` | body | string | No | `"full"` or `"thin"`. The route auto-selects based on tier when omitted: Free → `"thin"`, Pro and above → `"full"`. Pass an explicit value to override. |
 
-**Valid event types** (15):
+**Valid event types** (20): see the [event types catalog](../webhooks/event-types.md) for the full list and payload examples.
 
-`cost_event.created`, `budget.threshold.warning`, `budget.threshold.critical`, `budget.exceeded`, `budget.reset`, `request.blocked`, `action.created`, `action.approved`, `action.rejected`, `action.expired`, `velocity.exceeded`, `velocity.recovered`, `session.limit_exceeded`, `tag_budget.exceeded`, `test.ping`
+`cost_event.created`, `budget.threshold.warning`, `budget.threshold.critical`, `budget.exceeded`, `budget.increased`, `budget.reset`, `request.blocked`, `action.created`, `action.approved`, `action.rejected`, `action.expired`, `velocity.exceeded`, `velocity.recovered`, `session.limit_exceeded`, `tag_budget.exceeded`, `customer_budget.exceeded`, `loop.detected`, `plan_limit.exceeded`, `margin.threshold_crossed`, `test.ping`
 
 ### Request
 
@@ -124,7 +124,7 @@ curl -X POST https://nullspend.dev/api/webhooks \
 |---|---|---|
 | `validation_error` | 400 | Invalid URL, invalid event types, or other field errors |
 | `authentication_required` | 401 | No valid session |
-| `limit_exceeded` | 409 | Organization has reached the endpoint limit for its tier (Free: 2, Pro: 25, Enterprise: unlimited) |
+| `limit_exceeded` | 409 | Organization has reached the webhook-endpoint limit for its tier (Free: 2; Pro / Scale / Enterprise: unlimited) |
 
 ---
 
@@ -136,7 +136,7 @@ Update one or more fields of a webhook endpoint. At least one field must be prov
 
 ### Authentication
 
-Session (dashboard)
+Session (admin role)
 
 ### Parameters
 
@@ -197,7 +197,7 @@ Permanently delete a webhook endpoint and all its delivery history.
 
 ### Authentication
 
-Session (dashboard)
+Session (admin role)
 
 ### Parameters
 
@@ -240,7 +240,7 @@ Send a `test.ping` event to a webhook endpoint with a proper HMAC signature. Use
 
 ### Authentication
 
-Session (dashboard)
+Session (admin role)
 
 ### Parameters
 
@@ -299,7 +299,7 @@ Generate a new signing secret. The previous secret remains valid for 24 hours to
 
 ### Authentication
 
-Session (dashboard)
+Session (admin role)
 
 ### Parameters
 
@@ -349,7 +349,7 @@ Retrieve the most recent 50 deliveries for a webhook endpoint, sorted by creatio
 
 ### Authentication
 
-Session (dashboard)
+Session (viewer role)
 
 ### Parameters
 
@@ -375,7 +375,7 @@ curl https://nullspend.dev/api/webhooks/ns_wh_a1b2c3d4-e5f6-7890-abcd-ef12345678
     {
       "id": "ns_del_b2c3d4e5-f6a7-8901-bcde-f12345678901",
       "eventType": "cost_event.created",
-      "eventId": "ns_evt_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "eventId": "evt_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
       "status": "delivered",
       "attempts": 1,
       "lastAttemptAt": "2026-03-20T14:30:01.000Z",
@@ -385,7 +385,7 @@ curl https://nullspend.dev/api/webhooks/ns_wh_a1b2c3d4-e5f6-7890-abcd-ef12345678
     {
       "id": "ns_del_c3d4e5f6-a7b8-9012-cdef-123456789012",
       "eventType": "budget.exceeded",
-      "eventId": "ns_bgt_aabbccdd-eeff-0011-2233-445566778899",
+      "eventId": "evt_d4e5f6a7-b8c9-0123-def0-456789012345",
       "status": "failed",
       "attempts": 3,
       "lastAttemptAt": "2026-03-20T14:35:00.000Z",

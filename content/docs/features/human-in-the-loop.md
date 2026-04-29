@@ -11,7 +11,7 @@ Agents pause before sensitive operations and wait for human approval. NullSpend 
 Agent                    NullSpend                  Human
   │                         │                         │
   ├─ POST /api/actions ────►│                         │
-  │                         ├─ Slack notification ───►│
+  │                         ├─ Webhook fan-out ──────►│
   │                         │                         │
   │   (polls GET /api/      │    Reviews in dashboard │
   │    actions/:id)         │                         │
@@ -57,6 +57,7 @@ Terminal states (`rejected`, `expired`, `executed`, `failed`) cannot transition 
 | `db_write` | Write to a database |
 | `file_write` | Write to a file |
 | `file_delete` | Delete a file |
+| `budget_increase` | Request approval to raise a NullSpend budget ceiling (used by `request_budget_increase` in the SDK + MCP server) |
 
 Action types are informational labels — NullSpend does not enforce or validate what the agent actually does after approval. Only the values listed above are accepted; arbitrary strings are rejected by validation.
 
@@ -196,15 +197,11 @@ Actions expire automatically if no decision is made within the TTL.
 | `0` or `null` | No expiration — action stays pending indefinitely |
 | Positive number | Expires in that many seconds from creation |
 
-Maximum expiration is 30 days (2,592,000 seconds).
+Maximum effective expiration is **7 days** (604,800 seconds). The validator currently accepts up to 30 days, but `computeExpiresAt` clamps any value above 7 days to 7 days — a value of `2_592_000` is silently treated as `604_800`.
 
 When an action expires, its status transitions to `expired` and an `action.expired` webhook is fired. The SDK's `waitForDecision` resolves with the expired action (it doesn't throw — check `action.status`). `proposeAndWait` throws a `RejectedError` with `actionStatus: "expired"`.
 
 ## Notifications
-
-### Slack
-
-If Slack is configured (Settings → Slack), NullSpend sends a notification to your channel when an action is created. This is fire-and-forget — Slack delivery failures don't affect the action.
 
 ### Webhooks
 

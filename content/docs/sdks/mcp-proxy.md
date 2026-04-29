@@ -22,13 +22,19 @@ The proxy sits between the LLM client and the upstream MCP server. It discovers 
 
 ## Installation
 
-Build from source (private package):
+The package is published to npm and ships a `nullspend-mcp-proxy` binary.
 
 ```bash
-cd packages/mcp-proxy
-npm install
-npm run build
+npm install -g @nullspend/mcp-proxy
 ```
+
+Or run via `npx` without installing globally (recommended for `claude_desktop_config.json`):
+
+```bash
+npx -y @nullspend/mcp-proxy
+```
+
+Requires Node.js 20.11 or higher.
 
 ## Configuration
 
@@ -142,8 +148,8 @@ Example `claude_desktop_config.json` with gating and passthrough:
 {
   "mcpServers": {
     "gated-filesystem": {
-      "command": "node",
-      "args": ["path/to/packages/mcp-proxy/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "@nullspend/mcp-proxy"],
       "env": {
         "NULLSPEND_URL": "https://nullspend.dev",
         "NULLSPEND_API_KEY": "ns_live_sk_your-key-here",
@@ -164,8 +170,8 @@ Example `claude_desktop_config.json` with gating and passthrough:
 {
   "mcpServers": {
     "gated-everything": {
-      "command": "node",
-      "args": ["path/to/packages/mcp-proxy/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "@nullspend/mcp-proxy"],
       "env": {
         "NULLSPEND_URL": "https://nullspend.dev",
         "NULLSPEND_API_KEY": "ns_live_sk_your-key-here",

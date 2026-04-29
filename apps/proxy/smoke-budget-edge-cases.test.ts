@@ -1,6 +1,5 @@
 /**
- * Budget edge-case smoke tests, specifically designed to verify we don't
- * have the same budget bugs as LiteLLM and other competitors.
+ * Budget edge-case smoke tests for proxy budget enforcement.
  *
  * Tests cover: user budget enforcement, API key budget enforcement,
  * dual (user + key) budget enforcement, precise exhaustion, and
@@ -36,7 +35,7 @@ import {
   syncBudget,
 } from "./smoke-test-helpers.js";
 
-describe("Budget edge cases (LiteLLM bug avoidance)", () => {
+describe("Budget edge cases", () => {
   let sql: postgres.Sql;
   let orgId: string;
 

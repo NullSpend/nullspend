@@ -129,4 +129,4 @@ Gemini cost formula: `(promptTokenCount - cachedContentTokenCount) × input + ca
 
 **Model aliases:** Dated model names (e.g., `gemini-2.5-flash-preview-04-17`) are resolved to their base model for pricing via prefix matching.
 
-**Tiered pricing:** `gemini-2.5-pro` and `gemini-3.1-pro-preview` charge 2× rates for prompts exceeding 200K tokens. NullSpend currently uses the ≤200K rate. Long-context cost underreporting for these two models is a known limitation.
+**Tiered pricing:** `gemini-2.5-pro` is the only Gemini model with a long-context tier — prompts exceeding 200K tokens are billed at 2× input, 2× cached input, and 1.5× output. NullSpend applies these multipliers automatically. All other Gemini models (flash family, 2.0 series, 3.x previews) price flat regardless of prompt length.

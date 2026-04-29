@@ -8,6 +8,8 @@ TypeScript/JavaScript client for the NullSpend API.
 npm install @nullspend/sdk
 ```
 
+Requires Node.js 20.11 or higher.
+
 ## Quick Start
 
 ```typescript
@@ -144,7 +146,7 @@ Three approaches for reporting cost events.
 ```typescript
 const { id, createdAt } = await ns.reportCost({
   provider: "anthropic",
-  model: "claude-sonnet-4-20250514",
+  model: "claude-sonnet-4-6",
   inputTokens: 1000,
   outputTokens: 500,
   costMicrodollars: 6750,
@@ -468,7 +470,7 @@ try {
 
 ## Error Handling
 
-Eight error classes, all extending `Error`. All constructors validate arguments — `NaN`, `Infinity`, and negative numbers are clamped to `0`.
+Ten error classes, all extending `Error`. All constructors validate arguments — `NaN`, `Infinity`, and negative numbers are clamped to `0`.
 
 ### `NullSpendError`
 
@@ -563,17 +565,43 @@ Thrown in proxy mode when the proxy returns a `tag_budget_exceeded` 429. Indicat
 | `limitMicrodollars` | `number \| undefined` | Tag budget ceiling |
 | `spendMicrodollars` | `number \| undefined` | Current tag spend |
 
+### `LoopDetectedError`
+
+Thrown when the proxy or the SDK's built-in `LoopDetector` blocks a request because the same prompt fingerprint repeated more times than the configured threshold within a sliding window. Pass `loopDetection: true` (or an options object) to `createTrackedFetch` to enable client-side detection.
+
+| Property | Type | Description |
+|---|---|---|
+| `detectionType` | `string \| undefined` | `"exact"` (identical hash) or `"semantic"` (similar fingerprint) |
+| `model` | `string \| undefined` | Model the loop was detected against |
+| `callCount` | `number \| undefined` | Repeated-call count observed in the window |
+| `windowSeconds` | `number \| undefined` | Sliding window size in seconds |
+| `maxCalls` | `number \| undefined` | Configured ceiling that was exceeded |
+
+### `PlanLimitExceededError`
+
+Thrown when an org exceeds its monthly governed-request allowance and is on a tier that hard-blocks at the cap (Free tier today). The error carries the upgrade URL so callers can surface a CTA.
+
+| Property | Type | Description |
+|---|---|---|
+| `count` | `number` | Governed requests used in the current period |
+| `blockAt` | `number` | Cap that triggered the block |
+| `tier` | `string` | Current tier (e.g., `"free"`) |
+| `upgradeUrl` | `string \| undefined` | URL to upgrade the plan |
+| `selfHostUrl` | `string \| undefined` | URL with self-host instructions |
+
 ### `DenialReason` (callback type)
 
 The `onDenied` callback receives a `DenialReason` union before the error is thrown:
 
 | `type` | Fields | Description |
 |---|---|---|
-| `"budget"` | `remaining`, `entityType?`, `entityId?`, `limit?`, `spend?` | Budget entity denied |
+| `"budget"` | `remaining`, `entityType?`, `entityId?`, `limit?`, `spend?`, `finalizationReserve?`, `finalizationRemaining?` | Budget entity denied |
 | `"mandate"` | `mandate`, `requested`, `allowed` | Policy rule violation |
 | `"session_limit"` | `sessionSpend`, `sessionLimit` | Session spend cap exceeded |
 | `"velocity"` | `retryAfterSeconds?`, `limit?`, `window?`, `current?` | Velocity rate limit hit |
 | `"tag_budget"` | `tagKey?`, `tagValue?`, `remaining?`, `limit?`, `spend?` | Tag-scoped budget denied |
+| `"loop"` | `detectionType?`, `model?`, `callCount?`, `windowSeconds?`, `maxCalls?` | Loop detection blocked the request |
+| `"plan_limit"` | `count`, `blockAt`, `tier`, `upgradeUrl?`, `selfHostUrl?` | Org governed-request cap hit |
 
 ### Example
 
@@ -584,6 +612,8 @@ import {
   SessionLimitExceededError,
   VelocityExceededError,
   TagBudgetExceededError,
+  LoopDetectedError,
+  PlanLimitExceededError,
 } from "@nullspend/sdk";
 
 try {
@@ -600,6 +630,10 @@ try {
     console.log(`Session spent $${err.sessionSpendMicrodollars / 1_000_000} of $${err.sessionLimitMicrodollars / 1_000_000} limit`);
   } else if (err instanceof MandateViolationError) {
     console.log(`${err.mandate} blocks "${err.requested}". Allowed: ${err.allowed.join(", ")}`);
+  } else if (err instanceof LoopDetectedError) {
+    console.log(`Loop blocked: ${err.callCount}/${err.maxCalls} calls in ${err.windowSeconds}s`);
+  } else if (err instanceof PlanLimitExceededError) {
+    console.log(`Plan cap hit (${err.count}/${err.blockAt}). Upgrade: ${err.upgradeUrl}`);
   }
 }
 ```

@@ -75,12 +75,53 @@ Tags are **supplementary** — they never cause a request to be rejected. Invali
 
 ## System Tags
 
-NullSpend uses the `_ns_` prefix for internal tags. You cannot set these — they are added automatically when applicable.
+NullSpend uses the `_ns_` prefix for internal tags. You cannot set these — they are added automatically when applicable. User-supplied tags with the `_ns_` prefix are silently dropped.
+
+### All providers
 
 | Tag | Value | When |
 |---|---|---|
-| `_ns_estimated` | `"true"` | Cost is an estimate (stream was cancelled before completion) |
+| `_ns_estimated` | `"true"` | Cost is an estimate (stream was cancelled before completion or no usage was reported) |
 | `_ns_cancelled` | `"true"` | The streaming response was cancelled by the client |
+| `_ns_no_usage` | `"true"` | The provider returned a response without usage metadata |
+| `_ns_unpriced` | `"true"` | The model isn't in the pricing catalog — cost recorded as 0 |
+| `_ns_max_tokens` | string | The `max_tokens` / `maxOutputTokens` value sent on the request |
+| `_ns_temperature` | string | The `temperature` value sent on the request |
+| `_ns_tool_count` | string | Number of tool definitions in the request |
+
+### OpenAI / Anthropic
+
+| Tag | Value | When |
+|---|---|---|
+| `_ns_ratelimit_remaining_requests` | string | Provider-reported requests-remaining (from `x-ratelimit-remaining-requests`) |
+| `_ns_ratelimit_remaining_tokens` | string | Provider-reported tokens-remaining (from `x-ratelimit-remaining-tokens`) |
+
+### Anthropic only
+
+| Tag | Value | When |
+|---|---|---|
+| `_ns_cache_write_tokens` | string | Tokens written to the prompt cache (`cache_creation_input_tokens`) |
+| `_ns_cache_read_tokens` | string | Tokens read from the prompt cache (`cache_read_input_tokens`) |
+| `_ns_long_context` | `"true"` | Total input exceeded 200K tokens — long-context multipliers applied |
+
+### Gemini only
+
+| Tag | Value | When |
+|---|---|---|
+| `_ns_thinking_tokens` | string | Thinking tokens consumed (`thoughtsTokenCount`, Gemini 2.5+) |
+| `_ns_google_response_id` | string | Google's `responseId` from the response body (proxy generates its own `x-request-id` header) |
+
+## Customer Attribution
+
+For per-customer cost tracking and margin analysis, use the dedicated [`X-NullSpend-Customer`](../api-reference/custom-headers.md#x-nullspend-customer) header instead of (or in addition to) tags. The customer ID lands in the `customer_id` column of cost events, which the Margins dashboard and the [Margins API](../api-reference/margins-api.md) read from directly.
+
+If you cannot set a custom header (e.g., a third-party SDK that strips unknown headers), use the `customer` tag fallback:
+
+```bash
+X-NullSpend-Tags: {"customer":"acme-corp"}
+```
+
+The proxy auto-elevates the `customer` tag value into the `customer_id` column, so margin tracking works the same either way. The header takes precedence when both are present.
 
 ## Cost Attribution by Tags
 

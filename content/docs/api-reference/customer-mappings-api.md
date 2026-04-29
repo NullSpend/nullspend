@@ -5,6 +5,8 @@ description: "API reference for managing Stripe-to-NullSpend customer mappings f
 
 Manage mappings between Stripe customers and NullSpend cost attribution tags. These mappings power the [Margins](/docs/features/margins) feature by linking Stripe revenue to NullSpend cost data.
 
+**Tier requirement:** All endpoints in this section are gated to Pro tier and above. Free tier orgs receive `403 forbidden` with an upgrade pointer.
+
 ## List mappings
 
 ```

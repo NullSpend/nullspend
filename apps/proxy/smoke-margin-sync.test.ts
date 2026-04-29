@@ -3,7 +3,7 @@
  *
  * Full production-parity test:
  * 1. Creates Stripe test fixtures (customer + paid $50 invoice)
- * 2. Encrypts Stripe key with real STRIPE_ENCRYPTION_KEY (same as production)
+ * 2. Encrypts Stripe key with real STRIPE_ENCRYPTION_KEYS (same as production)
  * 3. Stores connection in stripe_connections via SQL
  * 4. Triggers sync via GET /api/stripe/revenue-sync with CRON_SECRET (same as Vercel Cron)
  * 5. Verifies revenue data in DB
@@ -12,7 +12,7 @@
  *
  * Prerequisites (.env.smoke):
  *   - STRIPE_SECRET_KEY or STRIPE_TEST_KEY (sk_test_...)
- *   - STRIPE_ENCRYPTION_KEY (from Vercel — same key production uses)
+ *   - STRIPE_ENCRYPTION_KEYS (from Vercel — same key production uses)
  *   - CRON_SECRET (from Vercel — triggers revenue sync)
  *   - DATABASE_URL
  *   - PROXY_URL, OPENAI_API_KEY, NULLSPEND_API_KEY, NULLSPEND_SMOKE_KEY_ID
@@ -35,13 +35,19 @@ import {
 
 const DASHBOARD_URL = process.env.NULLSPEND_DASHBOARD_URL ?? "http://127.0.0.1:3000";
 const STRIPE_TEST_KEY = process.env.STRIPE_TEST_KEY ?? process.env.STRIPE_SECRET_KEY;
-const STRIPE_ENCRYPTION_KEY = process.env.STRIPE_ENCRYPTION_KEY;
+// Mirrors lib/margins/encryption.ts: comma-separated, primary first.
+// Smoke uses the primary key for encrypt; decrypt is exercised via the
+// dashboard sync endpoint which reads its own STRIPE_ENCRYPTION_KEYS env.
+const STRIPE_ENCRYPTION_PRIMARY_KEY = (process.env.STRIPE_ENCRYPTION_KEYS ?? "")
+  .split(",")
+  .map((k) => k.trim())
+  .filter((k) => k.length > 0)[0];
 const CRON_SECRET = process.env.CRON_SECRET;
 
 function encryptStripeKey(plaintext: string, orgId: string): string {
-  if (!STRIPE_ENCRYPTION_KEY) throw new Error("STRIPE_ENCRYPTION_KEY required");
-  const key = Buffer.from(STRIPE_ENCRYPTION_KEY, "base64");
-  if (key.length !== 32) throw new Error("STRIPE_ENCRYPTION_KEY must be 32 bytes base64");
+  if (!STRIPE_ENCRYPTION_PRIMARY_KEY) throw new Error("STRIPE_ENCRYPTION_KEYS required");
+  const key = Buffer.from(STRIPE_ENCRYPTION_PRIMARY_KEY, "base64");
+  if (key.length !== 32) throw new Error("STRIPE_ENCRYPTION_KEYS primary must be 32 bytes base64");
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   cipher.setAAD(Buffer.from(orgId, "utf8"));
@@ -68,7 +74,7 @@ describe("ST-7: Margin sync + proxy interaction", () => {
     if (!OPENAI_API_KEY) missing.push("OPENAI_API_KEY");
     if (!NULLSPEND_API_KEY) missing.push("NULLSPEND_API_KEY");
     if (!STRIPE_TEST_KEY) missing.push("STRIPE_SECRET_KEY or STRIPE_TEST_KEY");
-    if (!STRIPE_ENCRYPTION_KEY) missing.push("STRIPE_ENCRYPTION_KEY");
+    if (!STRIPE_ENCRYPTION_PRIMARY_KEY) missing.push("STRIPE_ENCRYPTION_KEYS");
     if (!CRON_SECRET) missing.push("CRON_SECRET");
     if (!process.env.DATABASE_URL) missing.push("DATABASE_URL");
     if (!process.env.NULLSPEND_SMOKE_KEY_ID) missing.push("NULLSPEND_SMOKE_KEY_ID");

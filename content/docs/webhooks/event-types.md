@@ -1,9 +1,9 @@
 ---
 title: "Webhook Event Types"
-description: "NullSpend emits 18 event types. Each event is delivered as an HTTP POST with a JSON body."
+description: "NullSpend emits 20 event types. Each event is delivered as an HTTP POST with a JSON body."
 ---
 
-NullSpend emits 18 event types. Each event is delivered as an HTTP POST with a JSON body.
+NullSpend emits 20 event types. Each event is delivered as an HTTP POST with a JSON body.
 
 ## Event Envelope
 
@@ -42,7 +42,7 @@ Used for `cost_event.created` on endpoints with `payloadMode: "thin"`. All other
 | Field | Type | Description |
 |---|---|---|
 | `id` | string | Unique event ID (`evt_` + UUID). Use for deduplication. |
-| `type` | string | One of the 18 event types below. |
+| `type` | string | One of the 20 event types below. |
 | `api_version` | string | API version (`"2026-04-01"`). |
 | `created_at` | integer | Unix timestamp in seconds. |
 | `data.object` | object | Event-specific payload (full mode). |
@@ -77,7 +77,7 @@ Fires when a cost event is recorded — once per proxied request.
 | `tool_calls_requested` | array or null | Array of `{name, id}` objects representing tool calls, or `null` |
 | `tool_definition_tokens` | integer | Token count for tool definitions (defaults to 0) |
 | `api_key_id` | string | API key that made the request |
-| `source` | string | `"proxy"`, `"api"`, or `"mcp"` |
+| `source` | string | `"proxy"`, `"sdk"`, `"api"`, or `"mcp"` |
 | `tags` | object | Key-value pairs from `X-NullSpend-Tags` |
 | `created_at` | string | ISO 8601 timestamp |
 
@@ -538,6 +538,86 @@ Fires when a customer-scoped budget is exceeded. Similar to `budget.exceeded` bu
 }
 ```
 
+### `loop.detected`
+
+Fires when the proxy detects a runaway agent loop — the same prompt or near-identical prompt fingerprint repeated more times than the configured threshold within a sliding window. The offending request is blocked.
+
+**`data.object` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `detection_type` | string | `"exact"` (identical content hash) or `"semantic"` (similar fingerprint) |
+| `model` | string | Model the loop was detected against |
+| `provider` | string | Provider name |
+| `call_count` | integer | Repeated-call count observed in the window |
+| `window_seconds` | integer | Sliding window size in seconds |
+| `max_calls` | integer | Configured ceiling that was exceeded |
+| `blocked_at` | string | ISO 8601 timestamp when blocked |
+
+The content hash that triggered the detection is intentionally omitted from the payload — surfacing it would leak prompt fingerprints to webhook subscribers.
+
+**Example:**
+
+```json
+{
+  "id": "evt_a4b5c6d7-e8f9-0123-abcd-456789012347",
+  "type": "loop.detected",
+  "api_version": "2026-04-01",
+  "created_at": 1711036800,
+  "data": {
+    "object": {
+      "detection_type": "exact",
+      "model": "gpt-4o",
+      "provider": "openai",
+      "call_count": 50,
+      "window_seconds": 60,
+      "max_calls": 25,
+      "blocked_at": "2026-03-21T12:00:00.000Z"
+    }
+  }
+}
+```
+
+### `plan_limit.exceeded`
+
+Fires when an org exceeds its NullSpend plan-tier governed-request cap (Free tier hard-blocks today). Distinct from `budget.exceeded`, which is for org-configured budgets. The payload mirrors the 429 response body so subscribers can react identically to inline errors and out-of-band alerts.
+
+**`data.object` fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `current_count` | integer | Governed requests used in the current period |
+| `block_at` | integer | Cap that triggered the block |
+| `tier` | string | Current plan tier (e.g., `"free"`) |
+| `upgrade_url` | string or null | URL the caller should send users to upgrade |
+| `self_host_url` | string or null | URL with self-host instructions |
+| `model` | string | Model the blocked request targeted |
+| `provider` | string | Provider the blocked request targeted (`"openai"`, `"anthropic"`, `"google"`) |
+| `blocked_at` | string | ISO 8601 timestamp when blocked |
+
+**Example:**
+
+```json
+{
+  "id": "evt_b5c6d7e8-f9a0-1234-bcde-567890123458",
+  "type": "plan_limit.exceeded",
+  "api_version": "2026-04-01",
+  "created_at": 1711036800,
+  "data": {
+    "object": {
+      "current_count": 100000,
+      "block_at": 100000,
+      "tier": "free",
+      "upgrade_url": "https://nullspend.dev/pricing",
+      "self_host_url": "https://nullspend.dev/docs",
+      "model": "gpt-4o",
+      "provider": "openai",
+      "blocked_at": "2026-03-21T12:00:00.000Z"
+    }
+  }
+}
+```
+
 ---
 
 ## Margin Events
@@ -590,7 +670,7 @@ Fires when a customer's margin health tier worsens (e.g., healthy to moderate, m
 }
 ```
 
-Health tier thresholds: **healthy** (≥ 25%), **moderate** (10–25%), **at_risk** (0–10%), **critical** (< 0%).
+Health tier thresholds: **healthy** (≥ 50%), **moderate** (20%–49%), **at_risk** (0%–19%), **critical** (< 0%). See [Margins — Health Tiers](../features/margins.md#health-tiers) for the full breakdown.
 
 ---
 

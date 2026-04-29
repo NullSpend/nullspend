@@ -37,6 +37,9 @@ API key
 | `toolName` | body | string | No | Tool name for tool-use events. Max 200 chars. |
 | `toolServer` | body | string | No | Tool server name. Max 200 chars. |
 | `tags` | body | object | No | Key-value metadata. Max 10 keys, key 1–64 chars (`^[a-zA-Z0-9_-]+$`), value max 256 chars. |
+| `customer` | body | string | No | Customer identifier for per-customer cost tracking. 1–256 chars. Lands in the `customer_id` column for margin attribution. |
+| `costBreakdown` | body | object | No | Per-component cost breakdown: `{ input, output, cached, reasoning? }`, all integer microdollars. Optional. |
+| `source` | body | string | No | Origin tag for analytics: `"sdk"` (default for SDK clients) or `"api"` (manual API posts). Proxy writes set `"proxy"` directly via the proxy-side helper. |
 | `idempotencyKey` | body | string | No | Deduplication key. Max 200 chars. Alternative to `Idempotency-Key` header. |
 | `Idempotency-Key` | header | string | No | Deduplication key. Takes priority over body field. |
 
@@ -207,7 +210,7 @@ curl -X POST https://nullspend.dev/api/cost-events/batch \
   -d '{
     "events": [
       {"provider":"openai","model":"gpt-4o","inputTokens":500,"outputTokens":200,"costMicrodollars":2100},
-      {"provider":"anthropic","model":"claude-sonnet-4-5-20250514","inputTokens":800,"outputTokens":300,"costMicrodollars":4950}
+      {"provider":"anthropic","model":"claude-sonnet-4-6","inputTokens":800,"outputTokens":300,"costMicrodollars":4950}
     ]
   }'
 ```
@@ -261,7 +264,7 @@ Session (dashboard)
 | `apiKeyId` | query | string | No | Filter by API key (`ns_key_*`). |
 | `model` | query | string | No | Filter by model name. |
 | `provider` | query | string | No | Filter by provider. |
-| `source` | query | string | No | Filter by source: `"proxy"`, `"api"`, or `"mcp"`. |
+| `source` | query | string | No | Filter by source: `"proxy"`, `"sdk"`, `"api"`, or `"mcp"`. |
 | `traceId` | query | string | No | Filter by trace ID (32 hex chars). |
 | `sessionId` | query | string | No | Filter by session ID. 1–200 chars. Returns events for a specific [session](../features/cost-tracking.md#session-replay). |
 | `tag.*` | query | string | No | JSONB containment filter. Example: `tag.environment=production`. |
@@ -388,11 +391,11 @@ curl https://nullspend.dev/api/cost-events/ns_evt_a1b2c3d4-e5f6-7890-abcd-ef1234
 
 `GET /api/cost-events/sessions/:sessionId`
 
-Retrieve all cost events for a session, in chronological order, with aggregate summary stats. Use this to build session replay views.
+Retrieve all cost events for a session, in chronological order (capped at 200 events), with aggregate summary stats. Use this to build session replay views.
 
 ### Authentication
 
-Session (dashboard)
+Session (viewer role)
 
 ### Parameters
 
@@ -490,7 +493,7 @@ curl "https://nullspend.dev/api/cost-events/summary?period=7d" \
 | `providers` | Cost and request count per provider |
 | `keys` | Cost and request count per API key |
 | `tools` | Cost, request count, and avg duration per tool |
-| `sources` | Cost and request count per source (proxy/api/mcp) |
+| `sources` | Cost and request count per source (proxy/sdk/api/mcp) |
 | `traces` | Cost and request count per trace ID |
 | `totals` | Total cost, total requests, and the period value |
 | `costBreakdown` | Input, output, cached, and reasoning cost breakdown |
@@ -533,7 +536,8 @@ curl "https://nullspend.dev/api/cost-events/summary?period=7d" \
     }
   ],
   "sources": [
-    { "source": "proxy", "totalCostMicrodollars": 80000, "requestCount": 38 }
+    { "source": "proxy", "totalCostMicrodollars": 80000, "requestCount": 38 },
+    { "source": "sdk", "totalCostMicrodollars": 5000, "requestCount": 6 }
   ],
   "traces": [
     {
@@ -573,6 +577,8 @@ Headers: `NullSpend-Version: 2026-04-01`
 
 Export cost events as a CSV file. Returns up to 10,000 rows sorted by `createdAt DESC`. Supports the same filters as the list endpoint.
 
+**Tier requirement:** Pro and above. Free-tier orgs receive `403 forbidden`.
+
 ### Authentication
 
 Session (dashboard)
@@ -584,7 +590,7 @@ Session (dashboard)
 | `provider` | query | string | No | Filter by provider. |
 | `model` | query | string | No | Filter by model name. |
 | `apiKeyId` | query | string | No | Filter by API key (`ns_key_*`). |
-| `source` | query | string | No | Filter by source: `"proxy"`, `"api"`, or `"mcp"`. |
+| `source` | query | string | No | Filter by source: `"proxy"`, `"sdk"`, `"api"`, or `"mcp"`. |
 | `sessionId` | query | string | No | Filter by session ID. |
 | `traceId` | query | string | No | Filter by trace ID (32 hex chars). |
 | `tag.*` | query | string | No | JSONB containment filter. Example: `tag.environment=production`. |

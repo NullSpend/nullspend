@@ -57,7 +57,7 @@ function registerRequestBudgetIncrease(
   server.tool(
     "request_budget_increase",
     "Request a budget increase from a human approver. " +
-      "The request is sent to Slack (if configured) or the NullSpend dashboard. " +
+      "The request appears in the NullSpend dashboard and dispatches a webhook event. " +
       "Blocks until approved, rejected, or timed out.",
     {
       amount: z.number().positive().describe("Amount to request in dollars (e.g. 5 for $5)"),

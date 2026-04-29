@@ -21,8 +21,8 @@ Returns all tool cost entries for your organization.
 {
   "data": [
     {
-      "id": "tc_550e8400-e29b-41d4-a716-446655440000",
-      "userId": "usr_...",
+      "id": "ns_tc_550e8400-e29b-41d4-a716-446655440000",
+      "userId": "ns_usr_660e8400-e29b-41d4-a716-446655440000",
       "serverName": "weather-server",
       "toolName": "get_forecast",
       "costMicrodollars": 50000,
@@ -42,7 +42,8 @@ Returns all tool cost entries for your organization.
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | string | Prefixed ID (`tc_...`) |
+| `id` | string | Prefixed ID (`ns_tc_...`) |
+| `userId` | string | Owning user ID (`ns_usr_...`) |
 | `serverName` | string | MCP server name |
 | `toolName` | string | Tool name within the server |
 | `costMicrodollars` | integer | Cost per invocation in microdollars (1,000,000 = $1.00) |
@@ -87,8 +88,10 @@ Returns the updated tool cost object (same shape as list response items), or `40
 ## Reset tool cost
 
 ```
-DELETE /api/tool-costs/:id
+DELETE /api/tool-costs/{ns_tc_id}
 ```
+
+The path parameter must include the `ns_tc_` prefix — unprefixed UUIDs are rejected.
 
 Reset a tool's cost back to 0 and change its source back to `"discovered"`. This effectively removes a manual override.
 

@@ -11,8 +11,8 @@ NullSpend has two independent systems that dispatch webhooks, depending on where
 
 | Path | Events | Transport | Retries |
 |---|---|---|---|
-| **Proxy-side** | `cost_event.created`, all budget events, `velocity.*`, `session.*`, `tag_budget.*`, `request.blocked` | Cloudflare Queue | 5 retries, exponential backoff |
-| **Dashboard-side** | `action.*`, `test.ping`, dashboard-originated `cost_event.created` | Direct HTTP POST | None (fire-and-forget) |
+| **Proxy-side** | `cost_event.created`, all budget events, `velocity.*`, `session.*`, `tag_budget.*`, `customer_budget.*`, `loop.detected`, `plan_limit.exceeded`, `request.blocked` | Cloudflare Queue | 5 retries with a 10-second delay between attempts |
+| **Dashboard-side** | `action.*`, `margin.threshold_crossed`, `test.ping`, dashboard-originated `cost_event.created` | Direct HTTP POST | None (fire-and-forget) |
 
 Both paths sign payloads identically — your verification code works the same regardless of which path delivered the event.
 
@@ -28,9 +28,9 @@ Events from the proxy worker are delivered via a Cloudflare Queue-based dispatch
 
 **Retry behavior:**
 
-- **5 retry attempts** with exponential backoff
+- **5 retry attempts** with a fixed **10-second delay** between attempts (Cloudflare Queue `retry_delay`)
 - Your endpoint must return a **2xx** status code within **5 seconds**
-- After all retries are exhausted, the event goes to the dead-letter queue (DLQ)
+- After all retries are exhausted, the event goes to the dead-letter queue (`nullspend-webhooks-dlq`)
 
 **Event type filtering:** Each endpoint can subscribe to specific event types. If an endpoint's `eventTypes` array is empty, it receives all events. If it lists specific types, only matching events are dispatched.
 
@@ -80,7 +80,7 @@ Payload mode only affects `cost_event.created` events. All other event types alw
 |---|---|
 | Logging/analytics pipeline that processes every event | Full |
 | High-volume stream, filter then fetch | Thin |
-| Slack/PagerDuty alerting on specific conditions | Full |
+| PagerDuty / chat alerting on specific conditions | Full |
 | Billing reconciliation (batch, periodic) | Thin |
 
 ### Thin payload example
@@ -104,7 +104,7 @@ Payload mode only affects `cost_event.created` events. All other event types alw
 Use the `related_object.url` path with your API key:
 
 ```bash
-curl "https://www.nullspend.dev/api/cost-events?requestId=req_xyz&provider=openai" \
+curl "https://nullspend.dev/api/cost-events?requestId=req_xyz&provider=openai" \
   -H "Authorization: Bearer ns_live_..."
 ```
 
@@ -154,5 +154,5 @@ For expanded best practices with code examples, see [Best Practices](best-practi
 - [Webhooks Overview](overview.md) — setup, event types, and quick start
 - [Webhook Security](security.md) — HMAC signature verification with code examples
 - [Best Practices](best-practices.md) — expanded patterns with code examples
-- [Event Types](event-types.md) — full catalog of all 18 events with JSON examples
+- [Event Types](event-types.md) — full catalog of all 20 events with JSON examples
 - [Webhooks API](../api-reference/webhooks-api.md) — manage endpoints programmatically

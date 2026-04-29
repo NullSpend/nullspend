@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { calculateAnthropicCost } from "../lib/anthropic-cost-calculator.js";
 import { getModelPricing } from "@nullspend/cost-engine";
 
-describe("calculateAnthropicCost — bug avoidance (AC-1 through AC-7)", () => {
-  it("AC-1: no double-counting via OTel normalization (Langfuse #12306)", () => {
+describe("calculateAnthropicCost: pricing correctness (AC-1 through AC-7)", () => {
+  it("AC-1: no double-counting via OTel normalization", () => {
     const result = calculateAnthropicCost(
       "claude-sonnet-4-6",
       null,
@@ -24,7 +24,7 @@ describe("calculateAnthropicCost — bug avoidance (AC-1 through AC-7)", () => {
     expect(result.costBreakdown!.input! + result.costBreakdown!.cached! + result.costBreakdown!.output!).toBe(50945);
   });
 
-  it("AC-2: cache write uses independent rate, not base+premium (LiteLLM #6575)", () => {
+  it("AC-2: cache write uses independent rate, not base+premium", () => {
     const result = calculateAnthropicCost(
       "claude-sonnet-4-6",
       null,
@@ -44,7 +44,7 @@ describe("calculateAnthropicCost — bug avoidance (AC-1 through AC-7)", () => {
     expect(result.costMicrodollars).toBe(54399);
   });
 
-  it("AC-3: cache costs NOT omitted (LiteLLM #5443)", () => {
+  it("AC-3: cache costs NOT omitted", () => {
     const result = calculateAnthropicCost(
       "claude-sonnet-4-6",
       null,

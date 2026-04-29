@@ -9,13 +9,19 @@ MCP server that makes AI agents cost-aware and safety-conscious. Exposes tools f
 
 ## Installation
 
-Build from source (private package):
+The package is published to npm and ships a `nullspend-mcp` binary.
 
 ```bash
-cd packages/mcp-server
-npm install
-npm run build
+npm install -g @nullspend/mcp-server
 ```
+
+Or run via `npx` without installing globally (recommended for `claude_desktop_config.json`):
+
+```bash
+npx -y @nullspend/mcp-server
+```
+
+Requires Node.js 20.11 or higher.
 
 ## Configuration
 
@@ -37,7 +43,7 @@ These tools let agents request more budget when they hit a limit — instead of 
 
 ### `request_budget_increase`
 
-Request a budget increase from a human approver. The request is sent to Slack (if configured) or the NullSpend dashboard. Blocks until approved, rejected, or timed out.
+Request a budget increase from a human approver. The request appears in the NullSpend dashboard and dispatches a webhook event. Blocks until approved, rejected, or timed out.
 
 **Parameters:**
 
@@ -312,8 +318,8 @@ Add the server to your `claude_desktop_config.json`:
 {
   "mcpServers": {
     "nullspend": {
-      "command": "node",
-      "args": ["path/to/packages/mcp-server/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "@nullspend/mcp-server"],
       "env": {
         "NULLSPEND_URL": "https://nullspend.dev",
         "NULLSPEND_API_KEY": "ns_live_sk_your-key-here"

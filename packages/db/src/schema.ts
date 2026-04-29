@@ -774,3 +774,29 @@ export const planCounterDivergenceDedup = pgTable("plan_counter_divergence_dedup
   primaryKey({ columns: [table.orgId, table.eventId] }),
   index("idx_plan_counter_divergence_dedup_written_at").on(table.writtenAt),
 ]);
+
+// ---------------------------------------------------------------------------
+// ISSUE-014: Stripe inbound webhook idempotency (drizzle/0072).
+//
+// Cross-instance dedup table. Replaces the in-memory Map in
+// app/api/stripe/webhook/route.ts which couldn't survive multi-instance
+// Vercel Fluid Compute or cold starts.
+//
+// State machine: not-seen → processing → processed.
+//   - processing entries older than 5 min are eligible for stale reclaim.
+//   - processed entries are terminal; subsequent same-id deliveries dedupe.
+//   - On transient failures, the row is DELETEd so Stripe retries are
+//     accepted and the next attempt re-claims fresh.
+// ---------------------------------------------------------------------------
+export const stripeWebhookEventsProcessed = pgTable("stripe_webhook_events_processed", {
+  eventId: text("event_id").primaryKey(),
+  state: text("state").$type<"processing" | "processed">().notNull(),
+  processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index("idx_stripe_webhook_events_processed_processed_at")
+    .on(table.processedAt)
+    .where(sql`state = 'processing'`),
+]);
+
+export type StripeWebhookEventProcessedRow = typeof stripeWebhookEventsProcessed.$inferSelect;
+export type NewStripeWebhookEventProcessedRow = typeof stripeWebhookEventsProcessed.$inferInsert;

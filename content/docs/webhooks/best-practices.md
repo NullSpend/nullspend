@@ -161,5 +161,5 @@ Your existing verification code already checks any `v1` signature value in the h
 
 - [Webhook Security](security.md) — HMAC signature verification with code examples
 - [Delivery](delivery.md) — transport, retries, failure handling
-- [Event Types](event-types.md) — full catalog of all 18 events with JSON examples
+- [Event Types](event-types.md) — full catalog of all 20 events with JSON examples
 - [Webhooks Overview](overview.md) — setup and quick start

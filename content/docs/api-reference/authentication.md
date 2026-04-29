@@ -1,6 +1,6 @@
 ---
 title: "Authentication"
-description: "NullSpend uses two authentication modes:"
+description: "NullSpend uses two authentication modes — API key for proxy and SDK requests, session cookies for the dashboard. Includes key lifecycle, caching, and validation details."
 ---
 
 NullSpend uses two authentication modes:
@@ -40,7 +40,7 @@ Each key can have:
 
 Revoke keys in the dashboard or via `DELETE /api/keys/:id`. Revocation is a soft delete (`revoked_at` timestamp).
 
-**Propagation delay: up to 30 seconds.** The proxy caches valid keys with a 30-second TTL, so a revoked key may continue to authenticate for up to 30 seconds after revocation.
+**Propagation: near-instant when revoked through the dashboard or `DELETE /api/keys/:id`** — the API fires an `invalidateProxyCache` hook that flushes the proxy's positive cache entry across all isolates. If a key is revoked out-of-band (e.g., direct database update), propagation can take **up to 120 seconds** while the positive-cache TTL expires.
 
 ---
 
@@ -50,11 +50,13 @@ When a request arrives at the proxy:
 
 1. Read the `x-nullspend-key` header
 2. SHA-256 hash the raw key
-3. Check the **positive cache** (256 entries, 30s TTL) — if found and not expired, return the cached identity
+3. Check the **positive cache** (256 entries, 120s TTL with ±10s jitter to prevent thundering herd on isolate recycle) — if found and not expired, return the cached identity
 4. Check the **negative cache** (2,048 entries, 30s TTL) — if found and not expired, reject immediately
 5. If both miss, query the database: `WHERE key_hash = $1 AND revoked_at IS NULL`
-6. The DB query also checks for enabled webhooks (`has_webhooks` flag) and loads key-level settings
-7. Cache the result in the appropriate cache (positive for valid keys, negative for invalid)
+6. The DB query also loads webhooks state, default tags, allowed models/providers, plan-tier limits, and the subscription billing period
+7. On success: populate the positive cache. On "not found": populate the negative cache. On DB error: throw (caller returns 503 — never negative-cached)
+
+Dashboard mutations (`PATCH /api/keys/:id`, `DELETE /api/keys/:id`) fire an `invalidateProxyCache` hook so the next request hits a fresh DB lookup.
 
 Timing-safe comparison prevents timing attacks. Database connection timeout: 5,000ms.
 

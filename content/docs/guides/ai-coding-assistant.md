@@ -12,7 +12,7 @@ Add to `.cursor/rules` or paste into a conversation:
 ````markdown
 # NullSpend API Reference
 
-NullSpend is a proxy for OpenAI/Anthropic that tracks costs, enforces budgets, and provides attribution. Integration: change base URL + add one header.
+NullSpend is a proxy for OpenAI, Anthropic, and Gemini that tracks costs, enforces budgets, and provides attribution. Integration: change base URL + add one header. Or use the typed SDK and keep your provider clients as-is.
 
 ## Setup
 ```bash
@@ -42,10 +42,24 @@ const openai = new OpenAI({
 ```typescript
 import Anthropic from "@anthropic-ai/sdk";
 const anthropic = new Anthropic({
-  baseURL: "https://proxy.nullspend.dev/v1",
+  baseURL: "https://proxy.nullspend.dev", // Anthropic SDK appends /v1/messages itself
   defaultHeaders: { "X-NullSpend-Key": process.env.NULLSPEND_API_KEY },
 });
 // Use anthropic.messages.create() as normal
+```
+
+## Gemini Integration
+```typescript
+// Native Gemini fetch — proxy uses the same /v1beta/models/{model}:generateContent path
+const res = await fetch(`https://proxy.nullspend.dev/v1beta/models/gemini-2.5-flash:generateContent`, {
+  method: "POST",
+  headers: {
+    "X-NullSpend-Key": process.env.NULLSPEND_API_KEY,
+    "x-goog-api-key": process.env.GOOGLE_API_KEY,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ contents: [{ parts: [{ text: "Hello" }] }] }),
+});
 ```
 
 ## API Endpoints (API Key auth via X-NullSpend-Key header)

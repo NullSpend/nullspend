@@ -1,6 +1,6 @@
 ---
 title: "Migrating from Helicone to NullSpend"
-description: "Migrating from Helicone to NullSpend documentation"
+description: "Side-by-side mapping from Helicone concepts to NullSpend equivalents — base URL swap, custom properties → tags, alerts → hard enforcement, and what to expect."
 ---
 
 Helicone was acquired by Mintlify on March 3, 2026 and is entering maintenance
@@ -65,8 +65,8 @@ ANTHROPIC_BASE_URL=https://proxy.nullspend.dev
 | Cost tracking | Cost tracking | Per-request, per-model, per-key breakdown |
 | Dashboard | Analytics dashboard | Daily spend, model breakdown, provider breakdown |
 | Custom properties | [Tags](../api-reference/custom-headers.md#x-nullspend-tags) | `X-NullSpend-Tags` header — JSON object with up to 10 key-value pairs for cost attribution |
-| Alerts | Budget enforcement + [Webhooks](../webhooks/overview.md) | Hard stops (not just alerts) + 15 webhook event types with HMAC-SHA256 signing |
-| Caching | — | Not yet supported (roadmap) |
+| Alerts | Budget enforcement + [Webhooks](../webhooks/overview.md) | Hard stops (not just alerts) + 20 webhook event types with HMAC-SHA256 signing |
+| Caching | Helicone response cache | Provider prompt caching is preserved end-to-end (Anthropic `cache_control`, OpenAI cached input, Gemini cached content) and tracked separately in cost events. Response caching is not on the roadmap. |
 | Rate limiting | Budget enforcement + Velocity limits | Budget ceilings + velocity limits detect runaway loops by spend rate |
 | User tracking | API key tracking + Session limits | Track costs per key, plus per-conversation spend caps via `X-NullSpend-Session` |
 | Prompt templates | — | Not supported (out of scope) |
@@ -83,8 +83,8 @@ requests.
 
 ### Multi-provider unified dashboard
 
-See OpenAI and Anthropic costs in a single dashboard with provider breakdown
-charts. Helicone supported multiple providers but the experience was fragmented.
+See OpenAI, Anthropic, and Gemini costs in a single dashboard with provider
+breakdown charts. Helicone supported multiple providers but the experience was fragmented.
 
 ### Identity-based enforcement
 
@@ -106,7 +106,7 @@ Cap spend per conversation with the `X-NullSpend-Session` header. When a session
 
 ### Webhooks
 
-18 event types with HMAC-SHA256 signed payloads: cost events, budget exceeded, threshold crossings, velocity alerts, budget resets, blocked requests, and more. Supports both full and thin (Stripe v2 pattern) payload modes. See [Webhooks](../webhooks/overview.md). Helicone had no webhook support.
+20 event types with HMAC-SHA256 signed payloads: cost events, budget exceeded, threshold crossings, velocity alerts, budget resets, blocked requests, loop detection, plan-limit denials, and more. Supports both full and thin (Stripe v2 pattern) payload modes. See [Webhooks](../webhooks/overview.md). Helicone had no webhook support.
 
 ### W3C traceparent propagation
 
@@ -183,9 +183,12 @@ The actual code change takes under 5 minutes. It's one environment variable
 swap and adding the auth header.
 
 **What if I was using Helicone's caching?**
-NullSpend doesn't support response caching yet. If you relied on Helicone's
-cache, you'll need to implement caching at the application level or wait for
-our caching feature (on the roadmap).
+NullSpend does not offer a response cache and it isn't on the roadmap — the
+wider FinOps thesis is that the right place to cache is your application or
+the provider itself (Anthropic prompt cache, OpenAI cached input, Gemini
+cached content), all of which NullSpend tracks as separate cost components.
+If you relied on Helicone's response cache, implement caching at the
+application level or use provider-side prompt caching.
 
 **What about Helicone's custom properties?**
 Use [tags](../features/tags.md) — add the `X-NullSpend-Tags` header with a JSON object to attribute costs by team, environment, feature, or any custom dimension. You can also segment by API key (one key per agent or user).

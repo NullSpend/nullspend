@@ -1,6 +1,6 @@
 ---
 title: "Budget Configuration"
-description: "Budget Configuration documentation"
+description: "Step-by-step guide to creating budgets, configuring velocity / session / loop limits, choosing enforcement policies, and using finalization reserves."
 ---
 
 Set spending ceilings to prevent cost overruns from runaway agents.
@@ -56,7 +56,7 @@ Each budget has a `policy` that controls what happens when the limit is exceeded
 |---|---|---|
 | `strict_block` (default) | Blocks the request with `429`. The request is never forwarded to the provider. | Production cost control. You want hard spending caps. |
 | `soft_block` | Logs the overage and allows the request through. Cost events are tagged with budget status `denied`. | Transitioning from tracking to enforcement. See the impact before turning on hard blocks. |
-| `warn` | Tracks spend but never blocks. Threshold webhooks and Slack alerts still fire. | Monitoring-only mode. Useful during initial rollout or for customer budgets where you want visibility without disruption. |
+| `warn` | Tracks spend but never blocks. Threshold webhooks still fire. | Monitoring-only mode. Useful during initial rollout or for customer budgets where you want visibility without disruption. |
 
 Set the policy when creating a budget via the dashboard or API:
 
@@ -222,12 +222,13 @@ models and agents drive the most cost.
 
 | Tier | Budgets | API Keys | Webhooks | Team Members |
 |---|---|---|---|---|
-| Free | 3 | 10 | 2 | 3 (viewers unlimited) |
-| Pro ($49/mo) | Unlimited | Unlimited | 25 | Unlimited |
+| Free | 3 | 10 | 2 | Unlimited |
+| Pro ($49/mo) | Unlimited | Unlimited | Unlimited | Unlimited |
+| Scale ($199/mo) | Unlimited | Unlimited | Unlimited | Unlimited |
 | Enterprise | Unlimited | Unlimited | Unlimited | Unlimited |
 
 The Free tier includes 3 budgets — enough for separate production, staging, and development keys.
-Upgrade to Pro for unlimited budgets across all keys and environments.
+Upgrade to Pro for unlimited budgets across all keys and environments. See the [pricing page](https://nullspend.dev/pricing) for the full feature matrix.
 
 ## API Reference
 

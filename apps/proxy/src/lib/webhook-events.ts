@@ -21,6 +21,7 @@ export type WebhookEventType =
   | "customer_budget.exceeded"
   | "loop.detected"
   | "plan_limit.exceeded"
+  | "margin.threshold_crossed"
   | "test.ping";
 
 export interface WebhookEvent {

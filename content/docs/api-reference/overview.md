@@ -86,9 +86,6 @@ Session-authenticated endpoints require a browser session cookie from the NullSp
 | `POST /api/orgs/:orgId/transfer` | Transfer ownership | Session (owner) |
 | `GET /api/auth/session` | Current session | Session |
 | `POST /api/auth/switch-org` | Switch active org | Session |
-| `GET /api/slack/config` | Get Slack config | Session (admin) |
-| `POST /api/slack/config` | Set Slack config | Session (admin) |
-| `POST /api/slack/test` | Test Slack webhook | Session (admin) |
 | `POST /api/stripe/checkout` | Create checkout | Session (owner) |
 | `POST /api/stripe/portal` | Billing portal | Session (owner) |
 | `GET /api/stripe/subscription` | Get subscription | Session (viewer) |
@@ -98,6 +95,13 @@ Session-authenticated endpoints require a browser session cookie from the NullSp
 | `DELETE /api/customer-mappings?id=` | Delete customer mapping | Session (admin) |
 | `GET /api/policy` | Get enforcement policy | API key |
 | `GET /api/health` | Health check | Public |
+| `GET /api/version` | Build / runtime version | Public |
+| `GET /api/cost-events/sessions` | List recent sessions | Session (viewer) |
+| `GET /api/budgets/:id/sources` | List cost-event sources contributing to a budget | Session (viewer) |
+| `GET /api/orgs/me/usage` | Current-period governed-request count + tier cap | Session |
+| `GET /api/margins` | Margin table for the current period | Session (viewer, Pro+) |
+| `GET /api/margins/:customer` | Per-customer margin detail | Session (viewer, Pro+) |
+| `GET /api/margins/unmatched` | Revenue rows without matched cost events | Session (viewer, Pro+) |
 
 ---
 

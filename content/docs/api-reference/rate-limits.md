@@ -1,4 +1,8 @@
-# Rate Limits
+---
+title: "Rate Limits"
+description: "Per-IP and per-key request limits enforced by the NullSpend proxy."
+---
+
 
 The NullSpend proxy enforces rate limits to protect against abuse. Two layers run concurrently: per-IP and per-key.
 

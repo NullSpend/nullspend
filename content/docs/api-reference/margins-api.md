@@ -7,6 +7,8 @@ description: "Dashboard endpoints for customer margin analytics."
 
 Dashboard endpoints for customer margin analytics. All endpoints require session authentication.
 
+**Tier requirement:** All margins endpoints (`/api/margins`, `/api/margins/:customer`, `/api/margins/unmatched`, `/api/customer-mappings`) and Stripe revenue-sync (`/api/stripe/connect`, `/api/stripe/disconnect`, `/api/stripe/revenue-sync`) are gated to **Pro tier and above**. Free-tier orgs receive `403 forbidden` with an upgrade pointer.
+
 ## GET /api/margins
 
 Returns the margin table for a given period.
@@ -287,6 +289,6 @@ Delete a mapping by ID. Returns 404 if not found or not owned by the org.
 
 ## Related
 
-- [Margins Feature Guide](../features/margins.md) — setup, health tiers, Slack alerts
+- [Margins Feature Guide](../features/margins.md) — setup, health tiers, webhook alerts
 - [Customer Attribution](../features/tags.md#customer-attribution) — `X-NullSpend-Customer` header
 - [Webhook Event Types](../webhooks/event-types.md) — `margin.threshold_crossed`

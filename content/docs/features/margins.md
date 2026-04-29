@@ -30,8 +30,7 @@ Margin Table
     │
     ▼
 Alerts
-    ├─ Webhook: margin.threshold_crossed
-    └─ Slack: rich message with action buttons
+    └─ Webhook: margin.threshold_crossed
 ```
 
 ## Setup
@@ -89,16 +88,16 @@ The sparkline shows 3 months of margin history. If all 3 months have data, NullS
 
 This is directional, not a forecast. It shows where the trend is heading so you can act before a customer goes critical.
 
-## Slack Alerts
+## Margin Webhooks
 
-When a customer's margin crosses into a worse tier (e.g., moderate to at-risk), NullSpend sends a Slack alert to your configured webhook. The message includes:
+When a customer's margin crosses into a worse tier (e.g., moderate to at-risk), NullSpend dispatches a `margin.threshold_crossed` webhook to every endpoint subscribed to it. The payload includes:
 
 - Customer name and period
 - Previous and current margin with tier emojis
 - Revenue and cost amounts
-- **View Margins** and **Set Budget Cap** buttons (deep links to the dashboard)
+- Tier transition (e.g., `moderate` → `at_risk`)
 
-Slack alerts require a Slack webhook configured in Settings. They fire independently of webhook events, so a Slack outage never blocks your webhooks.
+Margin webhook delivery is fail-open — a delivery failure never blocks underlying margin tracking or cost logging.
 
 ## CSV Export
 
@@ -119,7 +118,7 @@ Each sync:
 2. Groups by customer and calendar month
 3. Replaces (DELETE + re-INSERT) revenue data per customer per period
 4. Runs auto-match against cost event tags
-5. Detects margin threshold crossings and dispatches webhook + Slack alerts
+5. Detects margin threshold crossings and dispatches webhook events
 
 Sync is idempotent. Running it multiple times produces the same result.
 

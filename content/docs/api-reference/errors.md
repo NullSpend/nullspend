@@ -1,6 +1,6 @@
 ---
 title: "Errors"
-description: "Every error response from NullSpend — both the proxy and the dashboard API — uses the same format:"
+description: "Standard error response format and complete catalog of error codes returned by the NullSpend proxy and dashboard API."
 ---
 
 Every error response from NullSpend — both the proxy and the dashboard API — uses the same format:
@@ -38,7 +38,15 @@ These errors are returned by the NullSpend proxy (`proxy.nullspend.dev`).
 | `velocity_exceeded` | 429 | Spend rate within the velocity window exceeds the configured limit | Wait for the cooldown period (check `Retry-After` header). The response `details` includes `limitMicrodollars`, `windowSeconds`, and `currentMicrodollars` |
 | `session_limit_exceeded` | 429 | Cumulative spend for this session ID exceeds the session limit | Start a new session (new `X-NullSpend-Session` value) or increase the session limit. The response `details` includes `session_id`, `session_spend_microdollars`, and `session_limit_microdollars` |
 | `tag_budget_exceeded` | 429 | Estimated cost exceeds a tag-level budget limit | Adjust the tag budget. The response `details` includes `tag_key`, `tag_value`, `budget_limit_microdollars`, and `budget_spend_microdollars` |
+| `loop_detected` | 429 | Repeated identical or similar prompts exceeded the loop-detection threshold within the sliding window | Inspect agent logic for retry loops. Adjust thresholds in budget settings, or set `loop_max_calls` to disable. `Retry-After` returns the recommended cooldown |
+| `plan_limit_exceeded` | 429 | Org exceeded its NullSpend plan-tier governed-request cap (Free tier hard-blocks today) | Upgrade via the `upgrade_url` returned in the body, or wait for the next period reset. Top-level `error.upgrade_url` and `error.self_host_url` are set on this denial |
 | `budget_unavailable` | 503 | Budget enforcement service is temporarily unavailable | Retry after a brief delay. The proxy fails closed — requests are blocked, not passed through |
+
+### Policy (Mandates)
+
+| Code | HTTP | When | Fix |
+|---|---|---|---|
+| `mandate_violation` | 403 | The request's model or provider is not in the API key's `allowed_models` / `allowed_providers` policy | Use a model/provider on the allow list. The response `details` includes `mandate` (`"allowed_models"` or `"allowed_providers"`), `requested`, and `allowed` |
 
 ### Request Validation
 
@@ -48,6 +56,7 @@ These errors are returned by the NullSpend proxy (`proxy.nullspend.dev`).
 | `invalid_model` | 400 | The `model` field is not in the pricing catalog | Check [supported models](../reference/supported-models.md) |
 | `payload_too_large` | 413 | Request body exceeds 1 MB | Reduce the request body size |
 | `invalid_upstream` | 400 | `X-NullSpend-Upstream` URL is not in the allowlist | Use the default upstream or contact support to add your URL |
+| `invalid_estimate` | 422 | The cost estimator could not produce a finite cost (e.g., negative or non-finite `max_tokens`) | Check that `max_tokens` / `max_completion_tokens` are positive finite integers |
 
 ### Rate Limiting
 
@@ -172,6 +181,17 @@ if (!response.ok) {
       break;
     case "rate_limited":
       // Reduce request rate
+      break;
+    case "loop_detected":
+      // Stop the agent loop — repeated calls were blocked
+      break;
+    case "plan_limit_exceeded":
+      // Surface the upgrade CTA
+      console.log(`Plan cap hit. Upgrade: ${error.upgrade_url}`);
+      break;
+    case "mandate_violation":
+      // Switch to an allowed model/provider
+      console.log(`Allowed: ${error.details?.allowed?.join(", ")}`);
       break;
     default:
       console.error(`NullSpend error: ${error.code} — ${error.message}`);

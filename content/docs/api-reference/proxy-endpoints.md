@@ -1,4 +1,8 @@
-# Proxy Endpoints
+---
+title: "Proxy Endpoints"
+description: "Routes the NullSpend proxy exposes for upstream provider calls."
+---
+
 
 The NullSpend proxy sits between your agents and upstream providers. It authenticates requests, tracks costs, and enforces budgets transparently.
 
@@ -84,6 +88,27 @@ Local endpoints for MCP server integrations. `/budget/check` performs a pre-requ
 
 ---
 
+## Policy Endpoint
+
+`GET /v1/policy` returns the calling key's enforcement policy: current budget remaining/limit/spend, allowed models and providers, and the cheapest model per provider (filtered to the allow list). Used by SDKs to render upgrade prompts before a request is sent.
+
+Auth: API key (same as provider routes). Returns `200` with a JSON body shaped:
+
+```json
+{
+  "budget": { "remaining_microdollars": 9_000_000, "max_microdollars": 10_000_000, "spend_microdollars": 1_000_000, "period_end": "2026-05-01T00:00:00.000Z", "entity_type": "api_key", "entity_id": "..." },
+  "allowed_models": ["gpt-4o-mini", "claude-haiku-4-5"],
+  "allowed_providers": ["openai", "anthropic"],
+  "cheapest_per_provider": { "openai": { "model": "gpt-4o-mini", "input_per_mtok": 150_000, "output_per_mtok": 600_000 } },
+  "cheapest_overall": { "model": "gpt-4o-mini", "provider": "openai", "input_per_mtok": 150_000, "output_per_mtok": 600_000 },
+  "restrictions_active": true
+}
+```
+
+The dashboard mirror of this endpoint is `GET /api/policy` (same auth, same shape).
+
+---
+
 ## Health Endpoints
 
 No authentication required.
@@ -93,6 +118,7 @@ No authentication required.
 | GET | `/health` | `{ "status": "ok", "service": "nullspend-proxy" }` |
 | GET | `/health/metrics` | Analytics Engine metrics (JSON or Prometheus, based on `Accept` header) |
 | GET | `/health/ready` | `{ "status": "ok", "service": "nullspend-proxy" }` — simple readiness check |
+| GET | `/health/feature-flags` | Live runtime values of `PLAN_COUNTER_ENABLED`, `NULLSPEND_CLOUD`, `CACHE_SCHEMA_VERSION`, and `build_sha`. Used by the launch-watcher and shadow-mode alerts. |
 
 ---
 

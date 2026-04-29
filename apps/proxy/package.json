@@ -21,6 +21,7 @@
     "tier:check": "tsx scripts/check-test-tier-taxonomy.ts"
   },
   "dependencies": {
+    "@nullspend/api-versioning": "workspace:*",
     "@nullspend/cost-engine": "workspace:*",
     "@nullspend/db": "workspace:*",
     "postgres": "^3.4.9"

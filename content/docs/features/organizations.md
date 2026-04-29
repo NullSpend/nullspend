@@ -31,7 +31,7 @@ Every member has one of four roles. Roles are hierarchical — each includes all
 |---|---|
 | **Viewer** | View dashboards, analytics, activity, cost events, budgets, and members. Read-only access. |
 | **Member** | Everything Viewer can do, plus create budgets and API keys. |
-| **Admin** | Everything Member can do, plus revoke keys, delete budgets, manage webhooks, configure Slack, and invite/manage members. |
+| **Admin** | Everything Member can do, plus revoke keys, delete budgets, manage webhooks, and invite/manage members. |
 | **Owner** | Everything Admin can do, plus manage billing (upgrade/downgrade), delete the organization, and transfer ownership. |
 
 **Viewer seats are free.** Only owner, admin, and member roles count toward the team member limit. Invite as many viewers as you need — finance stakeholders, managers, or anyone who needs visibility without write access.
@@ -89,7 +89,6 @@ If you're a member of multiple organizations, use the **org switcher** in the si
 - API keys and budgets
 - Cost events and analytics
 - Webhook endpoints
-- Slack configuration
 - Subscription and billing
 
 Switching is instant — the dashboard reloads with the selected org's data.
@@ -100,7 +99,7 @@ Each organization has its own subscription. Personal orgs and team orgs are bill
 
 - **Free tier** — 100,000 governed requests/mo, 3 budgets, 10 API keys, 2 webhooks, unlimited team members, 7-day retention. Includes velocity limits, session caps, model/provider mandates, tag budgets, and multi-org. Self-hosted is unlimited.
 - **Pro ($49/mo)** — 500,000 governed requests/mo + overage, unlimited budgets/keys/members/webhooks, per-customer margin intelligence, Stripe revenue sync, cost regression alerts, 60-day retention.
-- **Scale ($199/mo)** — 2,000,000 governed requests/mo + overage, session replay, request body capture, custom cost reports, advanced RBAC, 180-day retention.
+- **Scale ($199/mo)** — 2,000,000 governed requests/mo + overage at $0.005/request, everything in Pro, 180-day retention, SLA on uptime and response time.
 - **Enterprise** — unlimited governed requests, SSO/SAML, SCIM, HIPAA BAA, EU data residency, custom retention, dedicated support.
 
 Only the **owner** can manage billing (upgrade, downgrade, access the Stripe portal).
@@ -120,7 +119,7 @@ Deleting an org:
 - Removes all members and pending invitations
 - Revokes all API keys
 - Cancels the Stripe subscription (if any)
-- Deletes all associated resources (budgets, webhooks, cost events, Slack config)
+- Deletes all associated resources (budgets, webhooks, cost events)
 
 This action is irreversible.
 

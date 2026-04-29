@@ -3,7 +3,7 @@ title: "Audit Log API"
 description: "API reference for querying organization audit events."
 ---
 
-Query the audit trail of administrative actions in your organization. Every sensitive operation (key creation, budget changes, webhook updates, etc.) is recorded as an audit event.
+Query the audit trail of administrative actions in your organization. The audit log records org membership and ownership changes that affect access — the kinds of events you'd need for a compliance review or post-incident investigation.
 
 ## List audit events
 
@@ -64,27 +64,41 @@ When `cursor` is `null`, there are no more pages.
 Pass the `cursor` object from the response as a JSON string in the next request:
 
 ```bash
-curl "https://www.nullspend.dev/api/audit-log?cursor=%7B%22createdAt%22%3A%222026-04-10T14%3A30%3A00.000Z%22%2C%22id%22%3A%22550e8400-...%22%7D"
+curl "https://nullspend.dev/api/audit-log?cursor=%7B%22createdAt%22%3A%222026-04-10T14%3A30%3A00.000Z%22%2C%22id%22%3A%22550e8400-...%22%7D"
 ```
 
 ### Filtering by action
 
 ```bash
-curl "https://www.nullspend.dev/api/audit-log?action=budget.updated"
+curl "https://nullspend.dev/api/audit-log?action=budget.updated"
 ```
 
 ## Action types
 
-Audit events are recorded for administrative operations including:
+The following action codes are currently emitted. The set grows as new features ship — always treat the `action` field as a free-form string in your consumers.
 
-- `api_key.created`, `api_key.revoked`
-- `budget.created`, `budget.updated`, `budget.deleted`
-- `webhook.created`, `webhook.updated`, `webhook.deleted`
-- `slack.configured`, `slack.deleted`
-- `action.approved`, `action.rejected`
-- `budget_increase.approved`, `budget_increase.rejected`
+### Organizations
 
-The exact set of action types grows as new features ship. Use the `action` filter parameter to query specific types.
+- `org.created` — user created a new organization
+- `org.deleted` — owner deleted the organization
+- `org.ownership_transferred` — ownership transferred to another member (`metadata.newOwnerUserId`)
+- `org_upgrade_url.updated` — org-level upgrade URL changed
+- `customer_upgrade_url.updated` — per-customer upgrade URL changed
+
+### Members & invitations
+
+- `invitation.created` — admin invited a new member (`metadata.email`, `metadata.role`)
+- `invitation.accepted` — invitee accepted the invitation
+- `invitation.revoked` — admin revoked a pending invitation
+- `member.role_changed` — admin changed a member's role (`metadata.newRole`)
+- `member.removed` — admin removed a member from the org
+- `member.left` — member left the org voluntarily
+
+### What is NOT audited (today)
+
+Key, budget, webhook, and HITL action mutations are not currently written to the audit log. They appear in their own surfaces (`/api/keys`, `/api/budgets`, `/api/webhooks`, `/api/actions`) but you cannot query them through `/api/audit-log`. If you need that coverage today, log them on your side via the SDK — first-party audit support is on the roadmap.
+
+Use the `action` filter parameter to query specific types.
 
 ## Related
 

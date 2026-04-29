@@ -128,7 +128,7 @@ Only **worsening** crossings fire events (healthy to moderate, moderate to at-ri
 
 | Variable | Required | Description |
 |---|---|---|
-| `STRIPE_ENCRYPTION_KEY` | Yes | 32-byte base64 AES key for encrypting Stripe API keys at rest |
+| `STRIPE_ENCRYPTION_KEYS` | Yes | Comma-separated 32-byte base64 AES keys (primary first). Encrypt uses primary; decrypt tries each in rotation order. |
 | `CRON_SECRET` | Yes | Bearer token for the Vercel Cron sync endpoint |
 
 ## API Endpoints

@@ -18,6 +18,8 @@ Get cost tracking for your OpenAI calls in under 2 minutes.
 
 ## Step 2: Point Your SDK at the Proxy
 
+> Prefer not to swap your base URL? Use [`@nullspend/sdk`](../sdks/javascript.md) (or [`nullspend`](../sdks/python.md) for Python) to wrap your existing OpenAI client with `createTrackedFetch`. Same accounting and enforcement, no environment variable change.
+
 Set two environment variables:
 
 ```bash

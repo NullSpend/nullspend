@@ -11,7 +11,7 @@ Adapter that routes Claude Agent SDK calls through the NullSpend proxy for autom
 npm install @nullspend/claude-agent
 ```
 
-Peer dependency: `@anthropic-ai/claude-agent-sdk`
+Requires Node.js 20.11 or higher. Peer dependency: `@anthropic-ai/claude-agent-sdk` (`>=0.2.0 <1.0.0`).
 
 ## Usage
 
@@ -30,7 +30,7 @@ const options = withNullSpend({
   proxyUrl: "https://proxy.nullspend.dev", // default
 
   // Claude Agent SDK options (passed through)
-  model: "claude-sonnet-4-20250514",
+  model: "claude-sonnet-4-6",
   prompt: "You are a helpful assistant.",
   maxTurns: 10,
 });
@@ -49,8 +49,25 @@ const options = withNullSpend({
 | `traceId` | `string` | No | — | 32-char lowercase hex trace ID for request correlation |
 | `actionId` | `string` | No | — | NullSpend action ID (`ns_act_<UUID>`) to correlate costs with an approved action |
 | `proxyUrl` | `string` | No | `https://proxy.nullspend.dev` | Override the proxy URL |
+| `budgetAwareness` | `boolean` | No | `true` | Used by `withNullSpendAsync` only — fetch the key's policy (budget remaining + allowed models/providers) and inject it into the agent's system prompt so the LLM can self-throttle. Set `false` to skip the fetch. |
 
 All other fields are passed through to the Claude Agent SDK as-is.
+
+## `withNullSpendAsync` — budget-aware variant
+
+`withNullSpend` is fully synchronous. If you also want the LLM to know its remaining budget and allowed models so it can self-throttle, use `withNullSpendAsync` — it does an extra `GET /v1/policy` round-trip and prepends a budget summary to the system prompt before returning the same `Options` shape.
+
+```typescript
+import { withNullSpendAsync } from "@nullspend/claude-agent";
+
+const options = await withNullSpendAsync({
+  apiKey: process.env.NULLSPEND_API_KEY!,
+  prompt: "Help debug this issue.",
+  // budgetAwareness defaults to true — set false to opt out
+});
+```
+
+The policy fetch is best-effort: a network failure logs a warning and falls back to `withNullSpend` behavior. Results are cached briefly per-key so repeat calls don't re-fetch.
 
 ## Validation
 

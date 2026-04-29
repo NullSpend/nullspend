@@ -36,7 +36,7 @@ const options = withNullSpend({
   tags: { project: "my-project" },
 
   // ... your existing Claude Agent SDK options
-  model: "claude-sonnet-4-20250514",
+  model: "claude-sonnet-4-6",
   prompt: "You are a helpful assistant.",
 });
 

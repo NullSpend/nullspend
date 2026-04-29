@@ -2,6 +2,7 @@
   "title": "NullSpend Docs",
   "pages": [
     "index",
+    "architecture",
     "---Getting Started---",
     "...quickstart",
     "---Features---",

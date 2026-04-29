@@ -1,4 +1,8 @@
-# Custom Headers
+---
+title: "Custom Headers"
+description: "NullSpend-specific request and response headers for cost attribution and routing."
+---
+
 
 NullSpend uses HTTP headers as its primary API surface. All NullSpend-specific headers are optional except `X-NullSpend-Key`.
 
@@ -138,6 +142,46 @@ X-NullSpend-Action-Id: ns_act_550e8400-e29b-41d4-a716-446655440000
 
 ---
 
+### `X-NullSpend-Request-Id`
+
+Idempotency / correlation key for this request. Pass a stable ID (UUID or ULID) on retries so the proxy and downstream cost ingest can de-duplicate. The same ID is echoed back in the response under `X-NullSpend-Request-Id`.
+
+| Property | Value |
+|---|---|
+| Format | UUID or ULID, max 64 characters |
+| If invalid or oversize | Silently ignored; proxy generates a fresh ID |
+| If omitted | Proxy auto-generates one |
+
+```bash
+X-NullSpend-Request-Id: 01J9F6X3R3HM6E3D6N5N0M0G7Y
+```
+
+---
+
+### `Idempotency-Key`
+
+Deduplication key for dashboard mutating endpoints (`POST /api/cost-events`, `POST /api/cost-events/batch`, `POST /api/actions`, `POST /api/tool-costs/discover`, `POST /api/actions/:id/result`). Send the same key on a retry to receive the original response without re-executing the handler.
+
+| Property | Value |
+|---|---|
+| Format | Free-form string (caller-defined; UUID or ULID recommended) |
+| TTL | Successful response cached for **24 hours** |
+| Scope | `(API key hash, route path, key)` — cannot collide across tenants or endpoints |
+| If omitted | Handler runs normally, no caching |
+| Replay response | Includes `X-Idempotent-Replayed: true` header |
+| Concurrent duplicate | Polls up to 1 second; returns `503 request_in_progress` with `Retry-After: 1` if still in flight |
+| Failure caching | 5xx responses are NOT cached — retries proceed normally |
+
+```bash
+Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
+```
+
+Alternative: many endpoints accept an `idempotencyKey` field in the request body; the header takes precedence when both are present.
+
+For proxy-side deduplication (cost-event idempotency at ingest), use [`X-NullSpend-Request-Id`](#x-nullspend-request-id) instead.
+
+---
+
 ### `X-NullSpend-Upstream`
 
 Override the upstream provider URL for this request. Only URLs in the proxy's allowlist are accepted.
@@ -194,6 +238,46 @@ The trace ID for this request. Use this to correlate requests across your system
 ```
 X-NullSpend-Trace-Id: a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
 ```
+
+### `X-NullSpend-Request-Id`
+
+The NullSpend request ID for this response. Echoes the inbound `X-NullSpend-Request-Id` if it was provided and valid; otherwise a freshly generated ID.
+
+```
+X-NullSpend-Request-Id: 01J9F6X3R3HM6E3D6N5N0M0G7Y
+```
+
+### `X-NullSpend-Effective-Tags`
+
+The merged tag set actually applied to this request — inbound `X-NullSpend-Tags` plus the API key's `default_tags`. Useful for verifying tag merge behavior.
+
+```
+X-NullSpend-Effective-Tags: {"team":"billing","env":"production"}
+```
+
+Omitted when the merged tag set is empty.
+
+### `X-NullSpend-Warning`
+
+Non-fatal warning about the request. The request still proceeds. Currently emitted values:
+
+| Value | Meaning |
+|---|---|
+| `invalid_customer` | `X-NullSpend-Customer` failed format validation; customer was dropped |
+
+```
+X-NullSpend-Warning: invalid_customer
+```
+
+### `X-NullSpend-Denied`
+
+Set to `1` on every response that was blocked by enforcement (budget, velocity, session, tag-budget, customer-budget, plan-limit, loop-detection, mandate). Use this to short-circuit response handling without parsing the JSON body.
+
+```
+X-NullSpend-Denied: 1
+```
+
+Only present on denied responses.
 
 ### `NullSpend-Version`
 

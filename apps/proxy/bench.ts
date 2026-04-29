@@ -4,8 +4,8 @@
  * Sends N requests through the proxy and measures overhead via the
  * x-nullspend-overhead-ms response header. Reports p50, p95, p99.
  *
- * Uses Bifrost's methodology: real proxy, real auth, measures the
- * overhead the proxy adds on top of the upstream provider call.
+ * Methodology: real proxy, real auth. Measures the overhead the proxy
+ * adds on top of the upstream provider call.
  *
  * Requires:
  *   - Proxy running (pnpm proxy:dev or deployed)

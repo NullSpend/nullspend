@@ -109,6 +109,9 @@ Session (dashboard)
 | `velocityCooldownSeconds` | body | integer | No | Cooldown after velocity breach. 10–3600. |
 | `sessionLimitMicrodollars` | body | integer \| null | No | Per-session spending limit. `null` removes the limit. |
 | `finalizationReserveMicrodollars` | body | integer \| null | No | Portion of budget held back for graceful shutdown. Must be less than `maxBudgetMicrodollars`. `null` removes the reserve. |
+| `loopMaxCalls` | body | integer \| null | No | Loop detection: max identical calls per window. `0` disables loop detection. `null` uses the system default (50). |
+| `loopWindowSeconds` | body | integer \| null | No | Loop detection: sliding window in seconds. 10–3600. `null` uses the system default. |
+| `loopAggregateMaxKeys` | body | integer \| null | No | Loop detection: aggregate-key threshold. `null` uses the system default (5). |
 
 ### Request
 

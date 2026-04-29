@@ -18,6 +18,8 @@ Get cost tracking for your Anthropic calls in under 2 minutes.
 
 ## Step 2: Point Your SDK at the Proxy
 
+> Prefer not to swap your base URL? Use [`@nullspend/sdk`](../sdks/javascript.md) (or [`nullspend`](../sdks/python.md) for Python) to wrap your existing Anthropic client with `createTrackedFetch`. Same accounting and enforcement, no environment variable change.
+
 Set two environment variables:
 
 ```bash
@@ -47,7 +49,7 @@ const anthropic = new Anthropic({
 
 // Use exactly as before — no other code changes
 const message = await anthropic.messages.create({
-  model: "claude-sonnet-4-20250514",
+  model: "claude-sonnet-4-6",
   max_tokens: 1024,
   messages: [{ role: "user", content: "Hello" }],
 });
@@ -67,7 +69,7 @@ client = Anthropic(
 )
 
 message = client.messages.create(
-    model="claude-sonnet-4-20250514",
+    model="claude-sonnet-4-6",
     max_tokens=1024,
     messages=[{"role": "user", "content": "Hello"}],
 )

@@ -271,8 +271,11 @@ describe("searchDocs (real data)", () => {
   const realDocs = docsData as DocPage[];
   const realIndex = buildIndex(realDocs);
 
-  it("has all 47 docs indexed", () => {
-    expect(realIndex).toHaveLength(47);
+  it("has all 48 docs indexed", () => {
+    // Bumped 47 -> 48 on 2026-04-25 when /docs/architecture was published
+    // (commit a3c75e9, PR #27). Update this count when adding/removing
+    // top-level docs under content/docs/.
+    expect(realIndex).toHaveLength(48);
   });
 
   it("no doc has CRLF in content", () => {
@@ -294,9 +297,11 @@ describe("searchDocs (real data)", () => {
   });
 
   it("no-frontmatter docs don't start with # heading in content", () => {
+    // R10 ISSUE-041 added frontmatter to api-reference/{custom-headers,
+    // proxy-endpoints,rate-limits} so the docs sidebar reads "Custom Headers"
+    // instead of "custom-headers". Those 3 are no longer in the no-fm bucket.
     const noFmPaths = [
       "sdks/javascript", "sdks/python", "sdks/mcp-server",
-      "api-reference/custom-headers", "api-reference/proxy-endpoints", "api-reference/rate-limits",
     ];
     for (const p of noFmPaths) {
       const entry = realIndex.find((e) => e.doc.path === p);

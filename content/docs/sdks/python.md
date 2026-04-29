@@ -308,7 +308,7 @@ from nullspend import CostEventInput
 
 result = ns.report_cost(CostEventInput(
     provider="anthropic",
-    model="claude-sonnet-4-20250514",
+    model="claude-sonnet-4-6",
     input_tokens=1000,
     output_tokens=500,
     cost_microdollars=6750,
@@ -351,7 +351,7 @@ event = calculate_openai_cost_event(
 
 # From an Anthropic response (with cache details)
 event = calculate_anthropic_cost_event(
-    model="claude-sonnet-4-20250514",
+    model="claude-sonnet-4-6",
     usage={"input_tokens": 1000, "output_tokens": 500},
     cache_creation_detail={"cache_creation_tokens": 200},
     duration_ms=800,
@@ -547,7 +547,7 @@ The SDK automatically retries on transient failures:
 
 ## Error Handling
 
-Nine error classes, all extending `Exception`:
+Eleven error classes, all extending `Exception`:
 
 ### `NullSpendError`
 
@@ -641,8 +641,37 @@ Raised when a tag-scoped budget is exceeded.
 | `limit_microdollars` | `int \| None` | Budget ceiling |
 | `spend_microdollars` | `int \| None` | Current spend |
 
+### `LoopDetectedError`
+
+Raised when repeated identical calls exceed the loop detection threshold (proxy or client-side detection).
+
+| Property | Type | Description |
+|---|---|---|
+| `model` | `str` | Model the loop was detected against |
+| `call_count` | `int` | Repeated-call count observed in the window |
+| `window_seconds` | `int` | Sliding window size in seconds |
+| `max_calls` | `int` | Configured ceiling that was exceeded |
+| `detection_type` | `str` | `"per_key"` or other detector mode |
+
+### `PlanLimitExceededError`
+
+Raised when an org exceeds its NullSpend plan-tier governed-request cap. Distinct from `BudgetExceededError`, which is for org-configured budgets. The error carries the upgrade URL so callers can surface a CTA.
+
+| Property | Type | Description |
+|---|---|---|
+| `count` | `int` | Governed requests used in the current period |
+| `block_at` | `int` | Cap that triggered the block |
+| `tier` | `str` | Current tier (e.g., `"free"`) |
+| `upgrade_url` | `str \| None` | URL to upgrade the plan |
+| `self_host_url` | `str \| None` | URL with self-host instructions |
+
 ```python
-from nullspend import BudgetExceededError, MandateViolationError
+from nullspend import (
+    BudgetExceededError,
+    MandateViolationError,
+    LoopDetectedError,
+    PlanLimitExceededError,
+)
 
 try:
     openai.chat.completions.create(model="gpt-4o", messages=[...])
@@ -652,6 +681,10 @@ except BudgetExceededError as err:
         print(f"Upgrade at: {err.upgrade_url}")
 except MandateViolationError as err:
     print(f"{err.mandate}: {err.requested} not in {err.allowed}")
+except LoopDetectedError as err:
+    print(f"Loop blocked: {err.call_count}/{err.max_calls} calls in {err.window_seconds}s")
+except PlanLimitExceededError as err:
+    print(f"Plan cap hit ({err.count}/{err.block_at}). Upgrade: {err.upgrade_url}")
 ```
 
 ## Types
@@ -735,7 +768,7 @@ The Python SDK (v0.2.0) has full feature parity with the JavaScript SDK for all 
 | Enforcement | `enforcement: true` | `enforcement=True` |
 | Budget negotiation | `requestBudgetIncrease()` | `request_budget_increase()` |
 | Cost calculation | via cost-engine package | Built-in (bundled pricing data) |
-| Error classes | 8 classes | 9 classes (adds `PollTimeoutError` alias) |
+| Error classes | 10 classes | 11 classes (adds `PollTimeoutError` alias) |
 | Async support | Native (`async/await`) | `AsyncNullSpend` (separate client) |
 | HTTP client | `fetch` (configurable) | `httpx` |
 | `onRetry` callback | Supported | Not yet available |

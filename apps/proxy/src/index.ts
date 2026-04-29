@@ -7,8 +7,16 @@ import { handleFeatureFlags } from "./routes/health.js";
 import { handleReconcilePlanCounterCron } from "./routes/reconcile-plan-counter-cron.js";
 import { handlePolicy } from "./routes/policy.js";
 import { authenticateRequest } from "./lib/auth.js";
-import { resolveApiVersion } from "./lib/api-version.js";
-import { errorResponse } from "./lib/errors.js";
+import {
+  type ApiVersion,
+  buildVersionsResponse,
+  InvalidVersionError,
+  NULLSPEND_REGISTRY,
+  parseVersionHeader,
+  resolveApiVersion,
+  UnknownVersionError,
+} from "@nullspend/api-versioning";
+import { errorResponse, unauthorizedResponse } from "./lib/errors.js";
 import { createWebhookDispatcher } from "./lib/webhook-dispatch.js";
 import { mergeTags } from "./lib/tags.js";
 import { parseCustomerHeader, resolveCustomerId } from "./lib/customer.js";
@@ -249,6 +257,16 @@ export default {
         return stamp(handleFeatureFlags(env));
       }
 
+      // API version discovery (mirrors dashboard `app/api/versions/route.ts`).
+      // No auth, no rate limit — self-describing endpoint for SDK codegen. Body
+      // shape comes from the shared `buildVersionsResponse` helper so the proxy
+      // and dashboard cannot drift.
+      if (url.pathname === "/v1/versions" && request.method === "GET") {
+        return stamp(Response.json(buildVersionsResponse(NULLSPEND_REGISTRY), {
+          headers: { "Cache-Control": "public, max-age=300" },
+        }));
+      }
+
       // Internal endpoints — separate auth pipeline (shared secret, not API key)
       if (url.pathname === "/internal/budget/invalidate" && request.method === "POST") {
         return stamp(await handleBudgetInvalidation(request, env));
@@ -282,7 +300,7 @@ export default {
         }
         if (!auth) {
           emitMetric("request_error", { status: 401, reason: "unauthorized" });
-          const resp = errorResponse("unauthorized", "Invalid or missing authentication header", 401);
+          const resp = unauthorizedResponse(request);
           return stamp(resp);
         }
         if (!auth.orgId) {
@@ -313,6 +331,23 @@ export default {
         return stamp(rateLimitResult);
       }
 
+      // Early version-header validation: if `nullspend-version` is present, it
+      // must be a registered CalVer. Reject malformed/unknown values with 400
+      // BEFORE auth so a typo'd header doesn't surface as a misleading 401.
+      // Full `resolveApiVersion` (with keyVersion fallback) still runs after
+      // auth — this early pass only validates the header's wire contract.
+      try {
+        parseVersionHeader(request.headers.get("nullspend-version"), NULLSPEND_REGISTRY);
+      } catch (err) {
+        if (err instanceof InvalidVersionError || err instanceof UnknownVersionError) {
+          emitMetric("request_error", { status: 400, reason: "invalid_api_version" });
+          const resp = errorResponse(err.code, err.message, 400, { supported: err.supported });
+          resp.headers.set("NullSpend-Version", NULLSPEND_REGISTRY.latest().value);
+          return stamp(resp);
+        }
+        throw err;
+      }
+
       let auth;
       try {
         auth = await authenticateRequest(request, env, connectionString);
@@ -326,7 +361,7 @@ export default {
 
       if (!auth) {
         emitMetric("request_error", { status: 401, reason: "unauthorized" });
-        const resp = errorResponse("unauthorized", "Invalid or missing authentication header", 401);
+        const resp = unauthorizedResponse(request);
         return stamp(resp);
       }
 
@@ -386,10 +421,25 @@ export default {
         console.warn("[proxy] User has webhooks but WEBHOOK_QUEUE binding is not configured");
       }
 
-      const resolvedApiVersion = resolveApiVersion(
-        request.headers.get("nullspend-version"),
-        auth.apiVersion,
-      );
+      let resolvedApiVersionInstance: ApiVersion;
+      try {
+        resolvedApiVersionInstance = resolveApiVersion({
+          headerValue: request.headers.get("nullspend-version"),
+          keyVersion: auth.apiVersion,
+          registry: NULLSPEND_REGISTRY,
+        });
+      } catch (err) {
+        if (err instanceof InvalidVersionError || err instanceof UnknownVersionError) {
+          emitMetric("request_error", { status: 400, reason: "invalid_api_version" });
+          // Canonical envelope per .claude/rules/code-conventions.md:
+          // { error: { code, message, details } }. supported[] lands inside details.
+          const resp = errorResponse(err.code, err.message, 400, { supported: err.supported });
+          resp.headers.set("NullSpend-Version", NULLSPEND_REGISTRY.latest().value);
+          return stamp(resp);
+        }
+        throw err;
+      }
+      const resolvedApiVersion = resolvedApiVersionInstance.value;
 
       const finalize = request.headers.get("x-nullspend-finalize") === "1";
 

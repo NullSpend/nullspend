@@ -86,6 +86,8 @@ curl "https://nullspend.dev/api/actions?statuses=pending,approved&limit=20" \
 
 `POST /api/actions`
 
+**Tier requirement:** `actionType: "budget_increase"` is gated to **Pro tier and above** (`FEATURES.budget_negotiation`). Free-tier callers receive `403 forbidden` for that one action type. All other action types are available on every tier.
+
 Request human approval for a sensitive operation. The action starts in `pending` status and must be approved or rejected from the dashboard.
 
 ### Authentication
@@ -100,8 +102,12 @@ API key
 | `actionType` | body | string | Yes | One of: `send_email`, `http_post`, `http_delete`, `shell_command`, `db_write`, `file_write`, `file_delete`. |
 | `payload` | body | object | Yes | Action payload. Max 64 KB serialized, max 20 nesting levels. |
 | `metadata` | body | object | No | Additional metadata. Max 16 KB serialized, max 20 nesting levels. |
-| `expiresInSeconds` | body | integer | No | Seconds until the action expires. 0–2,592,000 (30 days). `null` for no expiry. |
+| `expiresInSeconds` | body | integer | No | Seconds until the action expires. The validator accepts 0–2,592,000, but the effective ceiling is **604,800 (7 days)** — any larger value is clamped silently. `null` for no expiry. Default: 3,600 (1 hour). |
 | `Idempotency-Key` | header | string | No | Deduplication key for idempotent retries. |
+
+Valid `actionType` values: `send_email`, `http_post`, `http_delete`, `shell_command`, `db_write`, `file_write`, `file_delete`, `budget_increase`. Arbitrary strings are rejected by validation — see [Human-in-the-Loop](../features/human-in-the-loop.md#action-types).
+
+For `actionType: "budget_increase"` the `payload` must match the budget-increase shape: `{ entityType, entityId, requestedAmountMicrodollars, currentLimitMicrodollars, currentSpendMicrodollars, reason }`. The reviewer sees this in the dashboard approval UI.
 
 ### Request
 
@@ -164,15 +170,17 @@ curl -X POST https://nullspend.dev/api/actions \
 
 ```json
 {
-  "id": "ns_act_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "status": "pending",
-  "expiresAt": "2026-03-21T14:30:00.000Z"
+  "data": {
+    "id": "ns_act_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "status": "pending",
+    "expiresAt": "2026-03-21T14:30:00.000Z"
+  }
 }
 ```
 
 Rate limit headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
 
-Side effect: sends a Slack notification (if configured) to alert the human approver.
+Side effect: dispatches an `action.created` webhook so configured endpoints can alert the human approver.
 
 ### Errors
 
@@ -233,27 +241,29 @@ curl https://nullspend.dev/api/actions/ns_act_a1b2c3d4-e5f6-7890-abcd-ef12345678
 
 ```json
 {
-  "id": "ns_act_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "agentId": "support-bot",
-  "actionType": "send_email",
-  "status": "approved",
-  "payload": {
-    "to": "customer@example.com",
-    "subject": "Your refund has been processed"
-  },
-  "metadata": { "ticketId": "T-1234" },
-  "createdAt": "2026-03-20T14:30:00.000Z",
-  "approvedAt": "2026-03-20T14:35:00.000Z",
-  "rejectedAt": null,
-  "executedAt": null,
-  "expiresAt": "2026-03-21T14:30:00.000Z",
-  "expiredAt": null,
-  "approvedBy": "ns_usr_aabbccdd-eeff-0011-2233-445566778899",
-  "rejectedBy": null,
-  "result": null,
-  "errorMessage": null,
-  "environment": null,
-  "sourceFramework": null
+  "data": {
+    "id": "ns_act_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "agentId": "support-bot",
+    "actionType": "send_email",
+    "status": "approved",
+    "payload": {
+      "to": "customer@example.com",
+      "subject": "Your refund has been processed"
+    },
+    "metadata": { "ticketId": "T-1234" },
+    "createdAt": "2026-03-20T14:30:00.000Z",
+    "approvedAt": "2026-03-20T14:35:00.000Z",
+    "rejectedAt": null,
+    "executedAt": null,
+    "expiresAt": "2026-03-21T14:30:00.000Z",
+    "expiredAt": null,
+    "approvedBy": "ns_usr_aabbccdd-eeff-0011-2233-445566778899",
+    "rejectedBy": null,
+    "result": null,
+    "errorMessage": null,
+    "environment": null,
+    "sourceFramework": null
+  }
 }
 ```
 
@@ -299,9 +309,11 @@ curl -X POST https://nullspend.dev/api/actions/ns_act_a1b2c3d4-e5f6-7890-abcd-ef
 
 ```json
 {
-  "id": "ns_act_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "status": "approved",
-  "approvedAt": "2026-03-20T14:35:00.000Z"
+  "data": {
+    "id": "ns_act_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "status": "approved",
+    "approvedAt": "2026-03-20T14:35:00.000Z"
+  }
 }
 ```
 
@@ -353,9 +365,11 @@ curl -X POST https://nullspend.dev/api/actions/ns_act_a1b2c3d4-e5f6-7890-abcd-ef
 
 ```json
 {
-  "id": "ns_act_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "status": "rejected",
-  "rejectedAt": "2026-03-20T14:35:00.000Z"
+  "data": {
+    "id": "ns_act_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "status": "rejected",
+    "rejectedAt": "2026-03-20T14:35:00.000Z"
+  }
 }
 ```
 
@@ -455,9 +469,11 @@ curl -X POST https://nullspend.dev/api/actions/ns_act_a1b2c3d4-e5f6-7890-abcd-ef
 
 ```json
 {
-  "id": "ns_act_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "status": "executed",
-  "executedAt": "2026-03-20T14:36:00.000Z"
+  "data": {
+    "id": "ns_act_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "status": "executed",
+    "executedAt": "2026-03-20T14:36:00.000Z"
+  }
 }
 ```
 

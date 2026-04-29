@@ -1,6 +1,6 @@
 ---
 title: "Cost Tracking"
-description: "NullSpend calculates the cost of every LLM request automatically. No SDK or code changes beyond the initial proxy setup."
+description: "How NullSpend calculates per-request cost for every model — input, output, cached, and reasoning tokens — across the proxy and SDK paths."
 ---
 
 NullSpend calculates the cost of every LLM request automatically. No SDK or code changes beyond the initial proxy setup.
@@ -97,13 +97,14 @@ estimatedCost = round((inputCost + outputCost) × 1.1)
 
 | Models | Default Cap |
 |---|---|
-| o3, o3-mini, o4-mini, o1 | 100,000 tokens |
-| claude-opus-4-6, claude-opus-4-5 | 128,000 tokens |
-| claude-sonnet-4-6, claude-sonnet-4-5, claude-opus-4-1, claude-haiku-4-5 | 64,000 tokens |
-| claude-haiku-3.5 | 8,000 tokens |
-| claude-haiku-3 | 4,000 tokens |
+| OpenAI o3, o3-mini, o4-mini, o1 | 100,000 tokens |
 | All other OpenAI models | 16,384 tokens |
-| All other Anthropic models | 64,000 tokens |
+| Anthropic claude-opus-4-6, claude-opus-4-5 (and dated variants) | 128,000 tokens |
+| Anthropic claude-haiku-3.5 | 8,000 tokens |
+| Anthropic claude-haiku-3 | 4,000 tokens |
+| All other Anthropic models (sonnet-4-6, sonnet-4-5, sonnet-4, opus-4-1, opus-4, haiku-4-5) | 64,000 tokens |
+| Gemini 2.5 family + 3.x previews | 65,536 tokens |
+| Gemini 2.0 family | 8,192 tokens |
 
 ## What's Recorded
 
@@ -113,7 +114,7 @@ Every request produces a **cost event** with these fields:
 |---|---|---|
 | `requestId` | string | Unique request identifier |
 | `provider` | string | `"openai"`, `"anthropic"`, or `"google"` |
-| `model` | string | Model used (e.g., `gpt-4o`, `claude-sonnet-4-5`) |
+| `model` | string | Model used (e.g., `gpt-4o`, `claude-sonnet-4-6`, `gemini-2.5-flash`) |
 | `inputTokens` | integer | Total input tokens (OpenAI: prompt_tokens; Anthropic: input + cache creation + cache read) |
 | `outputTokens` | integer | Output/completion tokens |
 | `cachedInputTokens` | integer | Cached input tokens (OpenAI: cached_tokens; Anthropic: cache_read_tokens) |
@@ -123,7 +124,7 @@ Every request produces a **cost event** with these fields:
 | `durationMs` | integer | Total request duration in milliseconds |
 | `sessionId` | string? | Session ID from `X-NullSpend-Session` header |
 | `traceId` | string? | [Trace ID](tracing.md) (from `traceparent`, `X-NullSpend-Trace-Id`, or auto-generated) |
-| `source` | string | `"proxy"`, `"api"`, or `"mcp"` |
+| `source` | string | `"proxy"`, `"sdk"`, `"api"`, or `"mcp"` |
 | `tags` | object | Key-value pairs from `X-NullSpend-Tags` header |
 | `apiKeyId` | string | API key that made the request |
 | `createdAt` | timestamp | When the event was recorded |
@@ -132,11 +133,11 @@ Cost events are deduplicated by `(requestId, provider)` — reprocessing the sam
 
 ## Request / Response Body Logging
 
-**Pro and Enterprise plans** can capture the full request and response bodies for every proxied LLM call. This is useful for debugging agent behavior, auditing prompts, and replaying requests.
+**Pro, Scale, and Enterprise plans** can capture the full request and response bodies for every proxied LLM call. This is useful for debugging agent behavior, auditing prompts, and replaying requests.
 
 | Aspect | Detail |
 |---|---|
-| **Activation** | Automatic when your org has a Pro or Enterprise subscription |
+| **Activation** | Automatic when your org has a Pro, Scale, or Enterprise subscription |
 | **Storage** | Cloudflare R2, scoped by org ID and request ID |
 | **Size cap** | 1 MB per object (request body and response body are stored separately) |
 | **Streaming** | Streaming (SSE) responses are captured in full — the raw SSE text is accumulated during streaming and stored after the stream completes |
@@ -166,7 +167,7 @@ Any string up to 256 characters. Typically a conversation ID, task ID, or run ID
 3. **Session replay page** shows:
    - **Summary stats** — total cost, event count, duration, total tokens
    - **Chronological timeline** — every LLM call in the session, ordered by timestamp
-   - **Expandable events** — click any event to load the full request and response bodies (requires Pro/Enterprise body logging)
+   - **Expandable events** — click any event to load the full request and response bodies (requires Pro / Scale / Enterprise body logging)
 
 ### What You See
 

@@ -17,7 +17,7 @@ Webhooks send real-time HTTP POST notifications to your server when events happe
 
 ## Event Types
 
-NullSpend emits 18 event types:
+NullSpend emits 20 event types:
 
 | Event | Fires When |
 |---|---|
@@ -33,6 +33,8 @@ NullSpend emits 18 event types:
 | `session.limit_exceeded` | Session spend cap exceeded |
 | `tag_budget.exceeded` | Tag-level budget exceeded |
 | `customer_budget.exceeded` | Customer-scoped budget exceeded |
+| `loop.detected` | Runaway agent loop detected (repeated prompts in window) |
+| `plan_limit.exceeded` | Org exceeded its NullSpend plan-tier governed-request cap |
 | `margin.threshold_crossed` | Customer margin worsened to a lower health tier |
 | `action.created` | HITL approval action created |
 | `action.approved` | HITL action approved |
@@ -138,7 +140,7 @@ For expanded best practices with code examples, see [Best Practices](best-practi
 
 ## Related
 
-- [Event Types](event-types.md) — full catalog of all 18 events with JSON examples
+- [Event Types](event-types.md) — full catalog of all 20 events with JSON examples
 - [Delivery](delivery.md) — transport, retries, failure handling, and endpoint caching
 - [Webhook Security](security.md) — HMAC verification with code examples
 - [Webhooks API](../api-reference/webhooks-api.md) — create, update, test, and manage endpoints programmatically

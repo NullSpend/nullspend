@@ -244,5 +244,5 @@ NullSpend validates webhook endpoint URLs to prevent SSRF:
 ## Related
 
 - [Webhooks Overview](overview.md) — setup, payload modes, transport
-- [Event Types](event-types.md) — full catalog of all 18 events
+- [Event Types](event-types.md) — full catalog of all 20 events
 - [Custom Headers](../api-reference/custom-headers.md) — `X-NullSpend-Signature` and other webhook headers
